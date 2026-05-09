@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -18,9 +19,11 @@ app = typer.Typer(help="Hermes Managed Network control-plane CLI")
 token_app = typer.Typer(help="Manage one-time join tokens")
 node_app = typer.Typer(help="Manage registered nodes")
 playbook_app = typer.Typer(help="Run local playbooks")
+audit_app = typer.Typer(help="Inspect audit events")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
+app.add_typer(audit_app, name="audit")
 
 
 def _store(db: Path) -> SQLiteStore:
@@ -158,6 +161,37 @@ def run_playbook(
     run = PlaybookExecutor(dry_run=dry_run).run(playbook, values={"message": message})
     for result in run.results:
         typer.echo(f"{result.phase}: {result.command}")
+
+
+@audit_app.command("list")
+def list_audit_events(
+    limit: int = typer.Option(50, "--limit", "-n", help="Maximum number of events to show"),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON lines"),
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+) -> None:
+    events = _store(db).list_audit_events()[-limit:]
+    for event in events:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "created_at": event.created_at.isoformat(),
+                        "event_type": event.event_type,
+                        "subject_type": event.subject_type,
+                        "subject_id": event.subject_id,
+                        "action": event.action,
+                        "outcome": event.outcome,
+                        "details": event.details,
+                    },
+                    sort_keys=True,
+                )
+            )
+        else:
+            details = json.dumps(event.details, ensure_ascii=False, sort_keys=True)
+            typer.echo(
+                f"{event.created_at.isoformat()}\t{event.event_type}\t{event.subject_type}\t"
+                f"{event.subject_id}\t{event.action}\t{event.outcome}\t{details}"
+            )
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import json
+
 from typer.testing import CliRunner
 
 from hermes_managed_network.cli import app
@@ -36,3 +38,31 @@ def test_cli_can_render_join_command(tmp_path):
     assert token_value in result.stdout
     assert "HERMES_MASTER_URL='https://example.com'" in result.stdout
     assert "bash -s < <(curl -fsSL https://example.com/scripts/join.sh)" in result.stdout
+
+
+def test_cli_can_list_audit_events(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
+
+    result = runner.invoke(app, ["audit", "list", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert token_value in result.stdout
+    assert "join_token" in result.stdout
+    assert "create" in result.stdout
+
+
+def test_cli_can_list_audit_events_as_json_lines(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "C"]).stdout.strip()
+
+    result = runner.invoke(app, ["audit", "list", "--db", str(db), "--json"])
+
+    assert result.exit_code == 0
+    event = json.loads(result.stdout.strip())
+    assert event["subject_id"] == token_value
+    assert event["subject_type"] == "join_token"
+    assert event["action"] == "create"
+    assert event["details"]["trust_level"] == "C"
