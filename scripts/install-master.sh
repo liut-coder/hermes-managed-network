@@ -74,7 +74,7 @@ install_package() {
     "$PYTHON_BIN" -m venv "$HMN_HOME/.venv"
   fi
   "$HMN_HOME/.venv/bin/python" -m pip install --upgrade pip
-  "$HMN_HOME/.venv/bin/python" -m pip install "$HMN_PACKAGE"
+  "$HMN_HOME/.venv/bin/python" -m pip install --upgrade --force-reinstall --no-cache-dir "$HMN_PACKAGE"
 }
 
 write_env() {
