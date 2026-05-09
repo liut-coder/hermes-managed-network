@@ -93,6 +93,7 @@ def test_menu_shows_quick_actions():
     assert "HMN 控制台" in result.stdout
     assert "hmn node confirm" in result.stdout
     assert "hmn node status" in result.stdout
+    assert "hmn node doctor" in result.stdout
     assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
@@ -108,6 +109,8 @@ def test_root_command_shows_menu_instead_of_missing_command():
     assert "接入新机器" in result.stdout
     assert "hmn node confirm" in result.stdout
     assert "hmn node status" in result.stdout
+    assert "hmn node doctor" in result.stdout
+    assert "hmn version" in result.stdout
     assert "hmn update" in result.stdout
     assert "hmn uninstall" in result.stdout
 
@@ -122,6 +125,8 @@ def test_menu_plain_prints_quick_actions():
     assert "hmn wake" in result.stdout
     assert "hmn node confirm" in result.stdout
     assert "hmn node status" in result.stdout
+    assert "hmn node doctor" in result.stdout
+    assert "hmn version" in result.stdout
     assert "示例" in result.stdout
 
 
@@ -182,7 +187,7 @@ def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
     monkeypatch.setenv("HMN_DB", str(db))
     token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
 
-    result = runner.invoke(app, [], input="5\n")
+    result = runner.invoke(app, [], input="6\n")
 
     assert result.exit_code == 0
     assert token_value in result.stdout
@@ -194,7 +199,7 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
 
-    result = runner.invoke(app, [], input="6\n")
+    result = runner.invoke(app, [], input="7\n")
 
     assert result.exit_code == 0
     token_value = result.stdout.strip().splitlines()[-1]
@@ -370,6 +375,97 @@ def test_root_menu_can_show_node_status(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "node: node_menu_status" in result.stdout
     assert "host: menu-status-node" in result.stdout
+
+
+
+def test_node_doctor_auto_selects_and_records_audit(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_doctor",
+            fingerprint="fp",
+            hostname="doctor-node",
+            addresses=["10.0.0.9"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(app, ["node", "doctor", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "自动选择 managed 节点: node_doctor (doctor-node)" in result.stdout
+    assert "doctor: node_doctor" in result.stdout
+    assert "登记状态: OK" in result.stdout
+    assert "权限包: OK" in result.stdout
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "doctor"
+    assert events[-1].subject_id == "node_doctor"
+    assert events[-1].outcome == "ok"
+
+
+def test_node_doctor_reports_missing_permission_bundle(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_weak",
+            fingerprint="fp",
+            hostname="weak-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+        )
+    )
+
+    result = runner.invoke(app, ["node", "doctor", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "权限包: WARN" in result.stdout
+    assert SQLiteStore(db).list_audit_events()[-1].outcome == "warn"
+
+
+def test_root_menu_can_run_node_doctor(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_menu_doctor",
+            fingerprint="fp",
+            hostname="menu-doctor-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(app, [], input="5\n")
+
+    assert result.exit_code == 0
+    assert "doctor: node_menu_doctor" in result.stdout
+
+
+def test_version_command_prints_package_version():
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["version"])
+
+    assert result.exit_code == 0
+    assert "hmn" in result.stdout
+    assert "version" in result.stdout
 
 
 def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
