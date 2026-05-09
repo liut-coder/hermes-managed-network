@@ -3,7 +3,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from hermes_managed_network.cli import app
-from hermes_managed_network.components import load_builtin_components, load_component_manifest
+from hermes_managed_network.components import ComponentRegistry, load_builtin_components, load_component_manifest
 from hermes_managed_network.storage import SQLiteStore
 from hermes_managed_network.inventory import Node
 
@@ -50,6 +50,94 @@ def test_load_component_manifest_validates_required_fields(tmp_path):
         assert "risk" in str(exc)
     else:
         raise AssertionError("invalid manifest should fail")
+
+
+def _valid_manifest_text(**overrides):
+    data = {
+        "id": "example",
+        "name": "Example",
+        "version": "0.1.0",
+        "api_version": 1,
+        "summary": "Example component",
+        "risk": "low",
+        "requires": {"capabilities": ["network.bind"]},
+        "provides": {"services": ["example"]},
+        "config_schema": {"type": "object", "required": ["domain"], "properties": {"domain": {"type": "string"}}},
+        "drivers": {"default": "caddy", "options": ["caddy", "nginx"]},
+        "playbooks": {
+            "install": "playbooks/install.yaml",
+            "configure": "playbooks/configure.yaml",
+            "verify": "playbooks/verify.yaml",
+            "uninstall": "playbooks/uninstall.yaml",
+        },
+        "audit": {"category": "component.example"},
+    }
+    data.update(overrides)
+    import yaml
+
+    return yaml.safe_dump(data)
+
+
+def test_component_manifest_rejects_invalid_risk_default_driver_and_missing_playbook(tmp_path):
+    cases = [
+        ({"risk": "extreme"}, "risk"),
+        ({"drivers": {"default": "apache", "options": ["caddy", "nginx"]}}, "drivers.default"),
+        ({"playbooks": {"install": "playbooks/install.yaml", "configure": "playbooks/configure.yaml", "verify": "playbooks/verify.yaml"}}, "playbooks.uninstall"),
+    ]
+
+    for idx, (overrides, expected) in enumerate(cases):
+        manifest = tmp_path / f"component-{idx}.yaml"
+        manifest.write_text(_valid_manifest_text(**overrides), encoding="utf-8")
+
+        try:
+            load_component_manifest(manifest)
+        except ValueError as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError(f"manifest with invalid {expected} should fail")
+
+
+def test_component_manifest_requires_declared_config_properties_and_audit_category(tmp_path):
+    cases = [
+        ({"config_schema": {"type": "object", "required": ["domain"], "properties": {}}}, "config_schema.required"),
+        ({"audit": {}}, "audit.category"),
+    ]
+
+    for idx, (overrides, expected) in enumerate(cases):
+        manifest = tmp_path / f"component-schema-{idx}.yaml"
+        manifest.write_text(_valid_manifest_text(**overrides), encoding="utf-8")
+
+        try:
+            load_component_manifest(manifest)
+        except ValueError as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError(f"manifest missing {expected} should fail")
+
+
+def test_component_registry_lists_gets_and_validates_builtin_components():
+    registry = ComponentRegistry.from_builtin()
+
+    listed = registry.list()
+    reverse_proxy = registry.get("reverse-proxy")
+
+    assert [component.id for component in listed] == ["reverse-proxy"]
+    assert reverse_proxy.name == "Reverse Proxy"
+    assert registry.validate("reverse-proxy") is reverse_proxy
+    try:
+        registry.get("missing")
+    except KeyError as exc:
+        assert "missing" in str(exc)
+    else:
+        raise AssertionError("missing component should fail")
+
+
+def test_builtin_component_manifests_are_package_data():
+    from importlib import resources
+
+    manifest = resources.files("hermes_managed_network").joinpath("components", "reverse-proxy", "component.yaml")
+
+    assert manifest.is_file()
 
 
 def test_store_can_register_components_and_node_status(tmp_path):

@@ -1,2 +1,3 @@
 include src/hermes_managed_network/assets/join.sh
 include src/hermes_managed_network/assets/worker.sh
+recursive-include src/hermes_managed_network/components component.yaml
