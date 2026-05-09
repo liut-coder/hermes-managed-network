@@ -116,6 +116,23 @@ def test_menu_plain_prints_quick_actions():
     assert "hmn wake" in result.stdout
 
 
+def test_root_menu_can_start_wake_flow(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+
+    result = runner.invoke(
+        app,
+        [],
+        input="1\n\n\nhttp://master.internal:8765\n\n\n\n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "唤醒脚本已生成" in result.stdout
+    assert "机器: node-server1" in result.stdout
+    assert "HERMES_JOIN_TOKEN=" in result.stdout
+
+
 def test_update_command_prints_raw_github_update_command():
     runner = CliRunner()
 

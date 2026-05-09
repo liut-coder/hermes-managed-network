@@ -33,6 +33,10 @@ app.add_typer(playbook_app, name="playbook")
 app.add_typer(audit_app, name="audit")
 
 
+def _default_db() -> Path:
+    return Path(os.environ.get("HMN_DB", str(DEFAULT_DB))).expanduser()
+
+
 def _store(db: Path) -> SQLiteStore:
     return SQLiteStore(db)
 
@@ -124,7 +128,8 @@ def _show_menu() -> None:
     typer.echo("帮助：hmn --help")
 
 
-def _show_interactive_menu() -> None:
+def _show_interactive_menu(db: Path | None = None) -> None:
+    db = db or _default_db()
     while True:
         typer.echo("")
         typer.echo("HMN 交互菜单")
@@ -138,16 +143,16 @@ def _show_interactive_menu() -> None:
         choice = typer.prompt("请选择", default="1")
         normalized = choice.strip().lower()
         if normalized in {"1", "wake"}:
-            wake()
+            wake(db=db, master_url=None)
             return
         if normalized in {"2", "node", "nodes"}:
-            list_nodes()
+            list_nodes(db=db)
             return
         if normalized in {"3", "audit"}:
-            list_audit_events()
+            list_audit_events(db=db)
             return
         if normalized in {"4", "token"}:
-            create_token()
+            create_token(db=db)
             return
         if normalized in {"5", "update"}:
             update()
