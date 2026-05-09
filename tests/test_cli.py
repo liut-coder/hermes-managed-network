@@ -189,7 +189,7 @@ def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
     monkeypatch.setenv("HMN_DB", str(db))
     token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
 
-    result = runner.invoke(app, [], input="7\n")
+    result = runner.invoke(app, [], input="10\n")
 
     assert result.exit_code == 0
     assert token_value in result.stdout
@@ -201,7 +201,7 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
 
-    result = runner.invoke(app, [], input="8\n")
+    result = runner.invoke(app, [], input="11\n")
 
     assert result.exit_code == 0
     token_value = result.stdout.strip().splitlines()[-1]
@@ -552,9 +552,84 @@ def test_node_install_heartbeat_prints_systemd_timer(tmp_path):
     )
 
     assert result.exit_code == 0
+    assert "自动选择 managed 节点: node_timer (timer-node)" in result.stdout
+    assert "sudo bash -lc" in result.stdout
+    assert "install -d -m 0700 /etc/hermes-managed-network" in result.stdout
+    assert "HERMES_MASTER_URL=https://master.example" in result.stdout
+    assert "HERMES_NODE_ID=node_timer" in result.stdout
+    assert "HERMES_NODE_FINGERPRINT=sha256:timer" in result.stdout
+    assert "HMN_ENABLE_EXEC=0" in result.stdout
+    assert "chmod 0600 /etc/hermes-managed-network/node.env" in result.stdout
+    assert "https://master.example/scripts/worker.sh" in result.stdout
+    assert "chmod 0755 /usr/local/bin/hmn-worker" in result.stdout
+    assert "hermes-managed-network-heartbeat.service" in result.stdout
     assert "hermes-managed-network-heartbeat.timer" in result.stdout
-    assert "scripts/worker.sh" in result.stdout
     assert "systemctl enable --now hermes-managed-network-heartbeat.timer" in result.stdout
+
+
+def test_root_menu_can_show_install_heartbeat_command(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+    monkeypatch.setenv("HMN_PUBLIC_URL", "https://master.example")
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_menu_timer",
+            fingerprint="sha256:timer",
+            hostname="menu-timer-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(app, [], input="7\n")
+
+    assert result.exit_code == 0
+    assert "node_menu_timer" in result.stdout
+    assert "hermes-managed-network-heartbeat.timer" in result.stdout
+    assert "HMN_ENABLE_EXEC=0" in result.stdout
+
+
+def test_node_install_heartbeat_records_audit_event(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_timer_audit",
+            fingerprint="sha256:timer-audit",
+            hostname="timer-audit-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["node", "install-heartbeat", "--db", str(db), "--master-url", "https://master.example"],
+    )
+
+    assert result.exit_code == 0
+    event = store.list_audit_events()[-1]
+    assert event.event_type == "node"
+    assert event.subject_id == "node_timer_audit"
+    assert event.action == "install-heartbeat"
+    assert event.outcome == "rendered"
+    assert event.details == {
+        "master_url": "https://master.example",
+        "service_manager": "systemd",
+        "enable_exec": False,
+    }
 
 
 def test_task_run_creates_task_for_auto_selected_node(tmp_path):

@@ -215,7 +215,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"6", "heartbeat", "heartbeat-command", "node heartbeat-command", "hmn node heartbeat-command"}:
             heartbeat_command(node_id=None, master_url=None, db=db)
             return
-        if normalized in {"install-heartbeat", "node install-heartbeat", "hmn node install-heartbeat"}:
+        if normalized in {"7", "install-heartbeat", "node install-heartbeat", "hmn node install-heartbeat"}:
             install_heartbeat(node_id=None, master_url=None, db=db)
             return
         if normalized in {"task run", "hmn task run"}:
@@ -572,6 +572,7 @@ cat >/etc/hermes-managed-network/node.env <<'EOF'
 HERMES_MASTER_URL={url}
 HERMES_NODE_ID={node.node_id}
 HERMES_NODE_FINGERPRINT={node.fingerprint}
+HMN_ENABLE_EXEC=0
 EOF
 chmod 0600 /etc/hermes-managed-network/node.env
 curl -fsSL {url}/scripts/worker.sh -o /usr/local/bin/hmn-worker
@@ -584,6 +585,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+EnvironmentFile=/etc/hermes-managed-network/node.env
 Environment=HMN_ENABLE_EXEC=0
 ExecStart=/usr/local/bin/hmn-worker
 EOF
@@ -614,7 +616,16 @@ def install_heartbeat(
     store = _store(db)
     node = _select_managed_node(store, node_id)
     url = (master_url or _default_master_url()).rstrip("/")
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id=node.node_id,
+        action="install-heartbeat",
+        outcome="rendered",
+        details={"master_url": url, "service_manager": "systemd", "enable_exec": False},
+    )
     typer.echo("请复制下面命令到目标节点执行，它会安装心跳/worker 定时器：")
+    typer.echo("默认安全模式：HMN_ENABLE_EXEC=0，不会执行下发 shell 命令。")
     typer.echo(_render_worker_installer(node, url))
 
 
