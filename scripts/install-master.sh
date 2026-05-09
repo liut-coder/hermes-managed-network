@@ -88,6 +88,11 @@ EOF
   chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/master.env
 }
 
+install_cli_links() {
+  ln -sf "$HMN_HOME/.venv/bin/hmn" /usr/local/bin/hmn
+  ln -sf "$HMN_HOME/.venv/bin/hmn-server" /usr/local/bin/hmn-server
+}
+
 write_service() {
   install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" "$(dirname "$HMN_DB")"
   cat >/etc/systemd/system/hermes-managed-network.service <<EOF
@@ -123,6 +128,7 @@ main() {
   ensure_user
   install_package
   write_env
+  install_cli_links
   write_service
   systemctl daemon-reload
   systemctl enable --now hermes-managed-network.service
