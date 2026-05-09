@@ -13,11 +13,15 @@
 
 ## v0.2：脚本型 MVP
 
-- [ ] `scripts/join.sh`
-- [ ] 节点盘点脚本
-- [ ] systemd reporter 示例
+- [x] `scripts/join.sh`
+- [x] 节点能力探测抽象
+- [ ] POSIX sh lite worker
+- [ ] beacon-only 心跳脚本
+- [ ] OpenWrt procd 模板
+- [ ] OpenRC 模板
+- [x] systemd reporter 示例
 - [ ] 文档生成模板
-- [ ] 本地 dry-run 模式
+- [x] 本地 dry-run 模式
 
 ## v0.3：控制面 MVP
 
@@ -30,11 +34,13 @@
 
 ## v0.4：Worker 模式
 
-- [ ] worker pull task
+- [x] worker pull task
 - [ ] task signing
-- [ ] heartbeat
+- [x] heartbeat
 - [ ] node token rotation
 - [ ] offline node handling
+- [ ] runtime profile 自动选择
+- [ ] service manager adapter 安装器
 
 ## v0.5：资产文档自动化
 

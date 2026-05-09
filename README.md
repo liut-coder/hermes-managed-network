@@ -77,6 +77,7 @@ Docs / Backup / Monitor
 ## 文档
 
 - [架构总览](docs/architecture.md)
+- [平台与运行时扩展架构](docs/platform-architecture.md)
 - [安全模型](docs/security-model.md)
 - [节点生命周期](docs/node-lifecycle.md)
 - [权限模型](docs/permission-model.md)

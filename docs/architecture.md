@@ -17,7 +17,7 @@ Hermes Master / Approval / Audit / Inventory / Scheduler
 Headscale / Tailscale / ACL / Node Identity
 
 执行面
-SSH Executor / Worker Agent / sudo allowlist / Playbook Runner
+SSH Executor / Worker Agent / Runtime Profile / Service Adapter / sudo allowlist / Playbook Runner
 
 资产层
 Docs / Backup / Monitor / Domain Index
@@ -36,6 +36,15 @@ Hermes Master 负责：
 - 同步机器 / 服务 / 域名文档
 
 ## 执行模式
+
+HMN 的执行面分成两层：
+
+- Runtime Profile：决定节点能跑到什么程度。
+- Service Manager Adapter：决定如何在该平台上持久运行。
+
+不要假设所有节点都是 systemd Linux。老路由器和非标固件应先能力探测，再选择 `full-worker`、`lite-worker`、`beacon-only` 或 `proxy-managed`。
+
+详见：[平台与运行时扩展架构](platform-architecture.md)
 
 ### SSH 模式
 
