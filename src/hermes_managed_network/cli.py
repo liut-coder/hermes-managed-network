@@ -338,11 +338,29 @@ def list_nodes(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据�
 
 @node_app.command("confirm")
 def confirm_node(
-    node_id: str = typer.Argument(...),
+    node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 pending 节点"),
     bundle: list[str] = typer.Option(["observe"], "--bundle", "-b", help="授予的权限包，可重复填写"),
     db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
+    if node_id is None:
+        pending_nodes = [node for node in store.list_nodes() if node.status == "pending"]
+        if len(pending_nodes) == 1:
+            node_id = pending_nodes[0].node_id
+            typer.echo(f"自动选择 pending 节点: {node_id} ({pending_nodes[0].hostname})")
+        elif not pending_nodes:
+            typer.echo("没有 pending 节点可确认。")
+            raise typer.Exit(1)
+        else:
+            typer.echo("有多个 pending 节点，请选择：")
+            for index, node in enumerate(pending_nodes, start=1):
+                typer.echo(f"{index}) {node.node_id}  {node.hostname}  trust={node.trust_level}")
+            choice = typer.prompt("选择编号", default="1", type=int)
+            if choice < 1 or choice > len(pending_nodes):
+                typer.echo("无效选择。")
+                raise typer.Exit(1)
+            node_id = pending_nodes[choice - 1].node_id
+
     node = store.load_node(node_id)
     if node is None:
         raise typer.Exit(1)

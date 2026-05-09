@@ -157,6 +157,55 @@ def test_uninstall_without_yes_prints_safe_command_only():
     assert "systemctl disable --now hermes-managed-network.service" in result.stdout
 
 
+def test_node_confirm_without_id_auto_selects_single_pending_node(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_auto",
+            fingerprint="fp",
+            hostname="lazy-node",
+            addresses=["10.0.0.2"],
+            trust_level="B",
+            labels=[],
+        )
+    )
+
+    result = runner.invoke(app, ["node", "confirm", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "自动选择 pending 节点: node_auto (lazy-node)" in result.stdout
+    assert "confirmed node_auto" in result.stdout
+    assert SQLiteStore(db).load_node("node_auto").status == "managed"
+
+
+def test_node_confirm_without_id_prompts_when_multiple_pending_nodes(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    for node_id, hostname in [("node_a", "a"), ("node_b", "b")]:
+        SQLiteStore(db).save_node(
+            Node(
+                node_id=node_id,
+                fingerprint=f"fp-{node_id}",
+                hostname=hostname,
+                addresses=[],
+                trust_level="B",
+                labels=[],
+            )
+        )
+
+    result = runner.invoke(app, ["node", "confirm", "--db", str(db)], input="2\n")
+
+    assert result.exit_code == 0
+    assert "有多个 pending 节点" in result.stdout
+    assert "confirmed node_b" in result.stdout
+    assert SQLiteStore(db).load_node("node_a").status == "pending"
+    assert SQLiteStore(db).load_node("node_b").status == "managed"
+
 def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
