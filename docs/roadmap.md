@@ -58,4 +58,5 @@
 - [x] component audit events
 - [x] reverse-proxy 内置组件 MVP
 - [x] forwarder 内置组件 MVP
-- [ ] monitor / backup / docs-sync 组件
+- [x] monitor 内置组件 MVP
+- [ ] backup / docs-sync 组件

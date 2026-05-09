@@ -56,6 +56,24 @@ def test_load_builtin_forwarder_manifest():
     assert forwarder.audit["category"] == "component.forwarder"
 
 
+def test_load_builtin_monitor_manifest():
+    components = load_builtin_components()
+
+    monitor = components["monitor"]
+
+    assert monitor.id == "monitor"
+    assert monitor.version == "0.1.0"
+    assert monitor.api_version == 1
+    assert monitor.risk == "low"
+    assert "metrics.read" in monitor.requires["capabilities"]
+    assert "monitor" in monitor.provides["services"]
+    assert monitor.drivers["default"] == "heartbeat"
+    assert set(monitor.drivers["options"]) >= {"heartbeat", "node-exporter", "agent-metrics"}
+    assert monitor.config_schema["required"] == []
+    assert monitor.health["checks"][0]["type"] == "heartbeat"
+    assert monitor.audit["category"] == "component.monitor"
+
+
 def test_load_component_manifest_validates_required_fields(tmp_path):
     manifest = tmp_path / "component.yaml"
     manifest.write_text("id: broken\nname: Broken\n", encoding="utf-8")
@@ -139,12 +157,15 @@ def test_component_registry_lists_gets_and_validates_builtin_components():
     listed = registry.list()
     reverse_proxy = registry.get("reverse-proxy")
 
-    assert [component.id for component in listed] == ["forwarder", "reverse-proxy"]
+    assert [component.id for component in listed] == ["forwarder", "monitor", "reverse-proxy"]
     assert reverse_proxy.name == "Reverse Proxy"
     forwarder = registry.get("forwarder")
     assert forwarder.name == "Forwarder"
+    monitor = registry.get("monitor")
+    assert monitor.name == "Monitor"
     assert registry.validate("reverse-proxy") is reverse_proxy
     assert registry.validate("forwarder") is forwarder
+    assert registry.validate("monitor") is monitor
     try:
         registry.get("missing")
     except KeyError as exc:
@@ -158,9 +179,11 @@ def test_builtin_component_manifests_are_package_data():
 
     reverse_proxy_manifest = resources.files("hermes_managed_network").joinpath("components", "reverse-proxy", "component.yaml")
     forwarder_manifest = resources.files("hermes_managed_network").joinpath("components", "forwarder", "component.yaml")
+    monitor_manifest = resources.files("hermes_managed_network").joinpath("components", "monitor", "component.yaml")
 
     assert reverse_proxy_manifest.is_file()
     assert forwarder_manifest.is_file()
+    assert monitor_manifest.is_file()
 
 
 def test_store_can_register_components_and_node_status(tmp_path):
