@@ -4,6 +4,7 @@ set -euo pipefail
 HMN_DIR="${HMN_DIR:-/etc/hermes-managed-network}"
 ENV_FILE="${HMN_ENV_FILE:-$HMN_DIR/node.env}"
 : "${HMN_ENABLE_EXEC:=0}"
+HMN_WORKER_PROTOCOL_VERSION="${HMN_WORKER_PROTOCOL_VERSION:-0.1}"
 
 if [ ! -r "$ENV_FILE" ]; then
   echo "missing node env: $ENV_FILE" >&2
@@ -21,11 +22,11 @@ need_command python3
 json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 
 heartbeat() {
-  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/heartbeat"     -H 'Content-Type: application/json'     --data "{"fingerprint":"${HERMES_NODE_FINGERPRINT}","status":"ok","facts":{}}" >/dev/null
+  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/heartbeat"     -H 'Content-Type: application/json'     --data "{"fingerprint":"${HERMES_NODE_FINGERPRINT}","status":"ok","facts":{"worker_protocol_version":"${HMN_WORKER_PROTOCOL_VERSION}"}}" >/dev/null
 }
 
 poll_task() {
-  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/tasks/next"     -H 'Content-Type: application/json'     --data "{"fingerprint":"${HERMES_NODE_FINGERPRINT}"}"
+  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/tasks/next"     -H 'Content-Type: application/json'     --data "{"fingerprint":"${HERMES_NODE_FINGERPRINT}","worker_protocol_version":"${HMN_WORKER_PROTOCOL_VERSION}"}"
 }
 
 submit_result() {

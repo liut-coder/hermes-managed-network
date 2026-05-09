@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from hermes_managed_network.api import create_app
 from hermes_managed_network.storage import SQLiteStore
 from hermes_managed_network.tokens import JoinTokenStore
+from hermes_managed_network.version import current_version_info
 
 
 def test_join_endpoint_consumes_token_and_registers_pending_node(tmp_path):
@@ -93,6 +94,17 @@ def test_control_plane_serves_worker_script(tmp_path):
     assert response.headers["content-type"].startswith("text/x-shellscript")
 
 
+def test_control_plane_version_endpoint_reports_protocol_versions(tmp_path):
+    client = TestClient(create_app(tmp_path / "hmn.db"))
+
+    response = client.get("/api/v1/version")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["api_version"] == current_version_info().api_version
+    assert data["worker_protocol_version"] == current_version_info().worker_protocol_version
+    assert "package_version" in data
+
 
 def test_node_heartbeat_endpoint_updates_status_and_records_audit(tmp_path):
     from hermes_managed_network.inventory import Node
@@ -120,11 +132,13 @@ def test_node_heartbeat_endpoint_updates_status_and_records_audit(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["worker_compatible"] is True
     events = store.list_audit_events()
     assert events[-1].action == "heartbeat"
     assert events[-1].subject_id == "node_hb"
     assert events[-1].outcome == "ok"
     assert events[-1].details["facts"] == {"uptime": "1 day"}
+    assert events[-1].details["worker_compatible"] is True
 
 
 def test_node_heartbeat_rejects_wrong_fingerprint(tmp_path):
@@ -176,7 +190,7 @@ def test_task_lifecycle_assigns_next_task_and_records_result(tmp_path):
 
     next_response = client.post(
         "/api/v1/nodes/node_task/tasks/next",
-        json={"fingerprint": "sha256:task"},
+        json={"fingerprint": "sha256:task", "worker_protocol_version": current_version_info().worker_protocol_version},
     )
 
     assert next_response.status_code == 200
@@ -218,7 +232,7 @@ def test_task_next_returns_no_task_when_queue_empty(tmp_path):
 
     response = client.post(
         "/api/v1/nodes/node_empty/tasks/next",
-        json={"fingerprint": "sha256:empty"},
+        json={"fingerprint": "sha256:empty", "worker_protocol_version": current_version_info().worker_protocol_version},
     )
 
     assert response.status_code == 200
@@ -235,3 +249,31 @@ def test_join_endpoint_rejects_reused_token(tmp_path):
 
     assert client.post("/api/v1/join", json=payload).status_code == 200
     assert client.post("/api/v1/join", json=payload).status_code == 409
+
+
+def test_task_next_rejects_incompatible_worker_protocol(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_old_worker",
+            fingerprint="sha256:old-worker",
+            hostname="old-worker-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    store.create_task(node_id="node_old_worker", command="uptime", risk="low", created_by="test")
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_old_worker/tasks/next",
+        json={"fingerprint": "sha256:old-worker", "worker_protocol_version": "99.0"},
+    )
+
+    assert response.status_code == 426

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from typing import Any
 
 from .storage import SQLiteStore
+from .version import current_version_info, is_worker_compatible
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 
@@ -36,10 +37,19 @@ class HeartbeatRequest(BaseModel):
 class HeartbeatResponse(BaseModel):
     node_id: str
     status: str
+    master_version: str
+    worker_compatible: bool = True
+
+
+class VersionResponse(BaseModel):
+    package_version: str
+    api_version: str
+    worker_protocol_version: str
 
 
 class NodeAuthRequest(BaseModel):
     fingerprint: str
+    worker_protocol_version: str | None = None
 
 
 class TaskResponse(BaseModel):
@@ -71,6 +81,15 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/v1/version", response_model=VersionResponse)
+    def version() -> VersionResponse:
+        info = current_version_info()
+        return VersionResponse(
+            package_version=info.package_version,
+            api_version=info.api_version,
+            worker_protocol_version=info.worker_protocol_version,
+        )
 
     def _asset_script(name: str) -> Response:
         script_path = Path(hermes_managed_network.__file__).resolve().parent / "assets" / name
@@ -134,15 +153,22 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         if node.fingerprint != request.fingerprint:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         outcome = "ok" if request.status == "ok" else "warn"
+        worker_protocol = request.facts.get("worker_protocol_version") if isinstance(request.facts, dict) else None
+        worker_compatible = is_worker_compatible(current_version_info().worker_protocol_version, worker_protocol)
         store.record_audit(
             event_type="node",
             subject_type="node",
             subject_id=node.node_id,
             action="heartbeat",
-            outcome=outcome,
-            details={"status": request.status, "facts": request.facts},
+            outcome=outcome if worker_compatible else "warn",
+            details={"status": request.status, "facts": request.facts, "worker_compatible": worker_compatible},
         )
-        return HeartbeatResponse(node_id=node.node_id, status=request.status)
+        return HeartbeatResponse(
+            node_id=node.node_id,
+            status=request.status,
+            master_version=current_version_info().worker_protocol_version,
+            worker_compatible=worker_compatible,
+        )
 
     @app.post("/api/v1/nodes/{node_id}/tasks/next", response_model=TaskResponse | NoTaskResponse)
     def next_task(node_id: str, request: NodeAuthRequest) -> TaskResponse | NoTaskResponse:
@@ -151,6 +177,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             raise HTTPException(status_code=404, detail="node not found")
         if node.fingerprint != request.fingerprint:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
+        if not is_worker_compatible(current_version_info().worker_protocol_version, request.worker_protocol_version):
+            raise HTTPException(status_code=426, detail="worker protocol version mismatch; update node worker")
         task = store.next_pending_task(node_id)
         if task is None:
             return NoTaskResponse(task=None)

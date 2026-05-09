@@ -8,6 +8,12 @@ HMN_HOST="${HMN_HOST:-127.0.0.1}"
 HMN_PORT="${HMN_PORT:-8765}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 HMN_PACKAGE="${HMN_PACKAGE:-hermes-managed-network}"
+HMN_ASSUME_YES="${HMN_ASSUME_YES:-0}"
+HMN_UPGRADE_POLICY="${HMN_UPGRADE_POLICY:-prompt}"
+HMN_BACKUP_DIR="${HMN_BACKUP_DIR:-/var/backups/hermes-managed-network}"
+CURRENT_VERSION="unknown"
+EXISTING_VERSION="not-installed"
+VERSION_POLICY="install"
 
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
@@ -21,6 +27,31 @@ need_command() {
     echo "missing required command: $1" >&2
     exit 1
   fi
+}
+
+prompt_default() {
+  local var_name="$1"
+  local label="$2"
+  local default_value="${!var_name}"
+  local value=""
+  if [ "$HMN_ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
+    printf -v "$var_name" '%s' "$default_value"
+    return
+  fi
+  read -r -p "${label} [${default_value}]: " value
+  if [ -n "$value" ]; then
+    printf -v "$var_name" '%s' "$value"
+  fi
+}
+
+interactive_config() {
+  echo "交互配置 HMN 主控，可直接回车使用当前默认值。"
+  echo "当前默认值：host=${HMN_HOST}, port=${HMN_PORT}, user=${HMN_USER}, home=${HMN_HOME}, db=${HMN_DB}"
+  prompt_default HMN_HOST "监听地址"
+  prompt_default HMN_PORT "监听端口"
+  prompt_default HMN_USER "运行用户"
+  prompt_default HMN_HOME "安装目录"
+  prompt_default HMN_DB "数据库路径"
 }
 
 install_dependencies() {
@@ -65,6 +96,73 @@ ensure_user() {
   if ! id "$HMN_USER" >/dev/null 2>&1; then
     useradd --system --home-dir "$HMN_HOME" --create-home --shell /usr/sbin/nologin "$HMN_USER"
   fi
+}
+
+detect_existing_version() {
+  if [ -x "$HMN_HOME/.venv/bin/hmn" ]; then
+    EXISTING_VERSION="$($HMN_HOME/.venv/bin/hmn version 2>/dev/null | awk '{print $NF}' || true)"
+    [ -n "$EXISTING_VERSION" ] || EXISTING_VERSION="unknown"
+  else
+    EXISTING_VERSION="not-installed"
+  fi
+}
+
+backup_existing_state() {
+  if [ "$EXISTING_VERSION" = "not-installed" ]; then
+    return
+  fi
+  install -d -m 0750 "$HMN_BACKUP_DIR"
+  local stamp
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  if [ -f "$HMN_DB" ]; then
+    cp -a "$HMN_DB" "$HMN_BACKUP_DIR/control-plane.${stamp}.db"
+  fi
+  if [ -f /etc/hermes-managed-network/master.env ]; then
+    cp -a /etc/hermes-managed-network/master.env "$HMN_BACKUP_DIR/master.${stamp}.env"
+  fi
+}
+
+version_policy() {
+  detect_existing_version
+  if [ "$EXISTING_VERSION" = "not-installed" ]; then
+    VERSION_POLICY="install"
+    echo "未发现已部署版本，将执行新安装。"
+    return
+  fi
+  CURRENT_VERSION="$($HMN_HOME/.venv/bin/python - <<'PY' 2>/dev/null || true
+from hermes_managed_network.version import package_version
+print(package_version())
+PY
+)"
+  [ -n "$CURRENT_VERSION" ] || CURRENT_VERSION="target"
+  if [ "$EXISTING_VERSION" = "$CURRENT_VERSION" ]; then
+    VERSION_POLICY="reinstall"
+    echo "版本一致：${EXISTING_VERSION}，将执行幂等重装/修复并自检。"
+    return
+  fi
+  VERSION_POLICY="upgrade"
+  echo "版本不同：已部署=${EXISTING_VERSION}，当前安装=${CURRENT_VERSION}。"
+  case "$HMN_UPGRADE_POLICY" in
+    auto|yes)
+      backup_existing_state
+      ;;
+    abort|no)
+      echo "HMN_UPGRADE_POLICY=abort，停止安装。" >&2
+      exit 1
+      ;;
+    prompt|*)
+      if [ "$HMN_ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
+        backup_existing_state
+      else
+        local answer
+        read -r -p "是否备份状态并继续升级？[Y/n]: " answer
+        case "$answer" in
+          n|N|no|NO) exit 1 ;;
+          *) backup_existing_state ;;
+        esac
+      fi
+      ;;
+  esac
 }
 
 install_package() {
@@ -129,12 +227,28 @@ WantedBy=multi-user.target
 EOF
 }
 
+self_check() {
+  echo "执行部署后自检..."
+  systemctl is-active --quiet hermes-managed-network.service
+  curl -fsS "http://127.0.0.1:${HMN_PORT}/healthz" >/dev/null
+  curl -fsS "http://127.0.0.1:${HMN_PORT}/api/v1/version" >/dev/null
+  "$HMN_HOME/.venv/bin/hmn" version
+  echo "自检通过。"
+}
+
+print_failure_hint() {
+  echo "部署自检失败，最近日志如下：" >&2
+  journalctl -u hermes-managed-network.service -n 80 --no-pager >&2 || true
+}
+
 main() {
   need_root
+  interactive_config
   install_dependencies
   need_command "$PYTHON_BIN"
   check_platform
   ensure_user
+  version_policy
   install_package
   verify_install
   write_env
@@ -142,6 +256,10 @@ main() {
   write_service
   systemctl daemon-reload
   systemctl enable --now hermes-managed-network.service
+  if ! self_check; then
+    print_failure_hint
+    exit 1
+  fi
   systemctl --no-pager --full status hermes-managed-network.service || true
 }
 

@@ -16,3 +16,5 @@ def test_worker_script_asset_exists_and_has_task_loop():
     assert "/api/v1/tasks/${task_id}/result" in script
     assert "HMN_ENABLE_EXEC" in script
     assert "execution disabled; set HMN_ENABLE_EXEC=1" in script
+    assert "HMN_WORKER_PROTOCOL_VERSION" in script
+    assert "worker_protocol_version" in script

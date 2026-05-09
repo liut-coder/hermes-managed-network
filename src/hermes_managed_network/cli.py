@@ -17,6 +17,7 @@ from .inventory import NodeRegistry
 from .playbook import Playbook
 from .storage import SQLiteStore
 from .tokens import JoinTokenStore
+from .version import current_version_info
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_PLAYBOOK_DIR = Path("playbooks")
@@ -263,11 +264,10 @@ def menu(plain: bool = typer.Option(False, "--plain", help="只打印快捷命�
 @app.command("version")
 def version() -> None:
     """查看当前 hmn 版本。"""
-    try:
-        current = package_version("hermes-managed-network")
-    except PackageNotFoundError:
-        current = "dev"
-    typer.echo(f"hmn version {current}")
+    info = current_version_info()
+    typer.echo(f"hmn version {info.package_version}")
+    typer.echo(f"api version {info.api_version}")
+    typer.echo(f"worker protocol {info.worker_protocol_version}")
 
 
 @app.command("update")

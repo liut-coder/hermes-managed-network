@@ -36,3 +36,38 @@ def test_master_installer_has_linux_dependency_detection():
     assert "dnf install -y python3 python3-pip curl" in script
     assert "yum install -y python3 python3-pip curl" in script
     assert "apk add --no-cache python3 py3-pip curl" in script
+
+
+def test_master_installer_prompts_for_optional_values_with_defaults():
+    script = (ROOT / "scripts/install-master.sh").read_text()
+
+    assert "HMN_ASSUME_YES" in script
+    assert "prompt_default HMN_HOST" in script
+    assert "prompt_default HMN_PORT" in script
+    assert "prompt_default HMN_USER" in script
+    assert "prompt_default HMN_HOME" in script
+    assert "prompt_default HMN_DB" in script
+    assert "交互配置" in script
+    assert "当前默认值" in script
+
+
+def test_master_installer_detects_existing_version_and_policy():
+    script = (ROOT / "scripts/install-master.sh").read_text()
+
+    assert "detect_existing_version" in script
+    assert "VERSION_POLICY" in script
+    assert "版本一致" in script
+    assert "版本不同" in script
+    assert "HMN_UPGRADE_POLICY" in script
+    assert "backup_existing_state" in script
+    assert "HMN_BACKUP_DIR" in script
+
+
+def test_master_installer_runs_post_deploy_self_check():
+    script = (ROOT / "scripts/install-master.sh").read_text()
+
+    assert "self_check" in script
+    assert "systemctl is-active --quiet hermes-managed-network.service" in script
+    assert "curl -fsS \"http://127.0.0.1:${HMN_PORT}/healthz\"" in script
+    assert "curl -fsS \"http://127.0.0.1:${HMN_PORT}/api/v1/version\"" in script
+    assert "journalctl -u hermes-managed-network.service" in script
