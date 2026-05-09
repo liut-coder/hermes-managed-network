@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from datetime import timedelta
 from pathlib import Path
 
@@ -28,6 +29,23 @@ app.add_typer(audit_app, name="audit")
 
 def _store(db: Path) -> SQLiteStore:
     return SQLiteStore(db)
+
+
+def _shell_quote(value: str) -> str:
+    return shlex.quote(value)
+
+
+@app.command("menu")
+def menu() -> None:
+    typer.echo("HMN 快速菜单")
+    typer.echo("1. token create")
+    typer.echo("2. token join-command")
+    typer.echo("3. token list")
+    typer.echo("4. node list")
+    typer.echo("5. audit list")
+    typer.echo("6. playbook run")
+    typer.echo("")
+    typer.echo("直接用子命令也可以，更适合自动化。")
 
 
 @token_app.command("create")
@@ -89,10 +107,25 @@ def join_command(
     token_value: str = typer.Argument(...),
     master_url: str = typer.Option(..., "--master-url", help="Master control-plane URL"),
     user: str = typer.Option("hermes", "--user", help="System user to create"),
+    safe: bool = typer.Option(False, "--safe/--unsafe", help="Emit a safer download-and-run command"),
 ) -> None:
+    base_url = master_url.rstrip("/")
+    if safe:
+        typer.echo(
+            "tmp=$(mktemp) && curl -fsSL {url}/scripts/join.sh -o \"$tmp\" && "
+            "sha256sum \"$tmp\" && sudo HERMES_JOIN_TOKEN={token} HERMES_MASTER_URL={url} HERMES_USER={user} bash \"$tmp\"".format(
+                token=_shell_quote(token_value),
+                url=_shell_quote(base_url),
+                user=_shell_quote(user),
+            )
+        )
+        return
     typer.echo(
-        "sudo HERMES_JOIN_TOKEN='{token}' HERMES_MASTER_URL='{url}' HERMES_USER='{user}' "
-        "bash -s < <(curl -fsSL {url}/scripts/join.sh)".format(token=token_value, url=master_url.rstrip("/"), user=user)
+        "sudo HERMES_JOIN_TOKEN={token} HERMES_MASTER_URL={url} HERMES_USER={user} bash -s < <(curl -fsSL {url}/scripts/join.sh)".format(
+            token=_shell_quote(token_value),
+            url=_shell_quote(base_url),
+            user=_shell_quote(user),
+        )
     )
 
 

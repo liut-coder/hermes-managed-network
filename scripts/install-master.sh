@@ -7,6 +7,7 @@ HMN_DB="${HMN_DB:-/var/lib/hermes-managed-network/control-plane.db}"
 HMN_HOST="${HMN_HOST:-127.0.0.1}"
 HMN_PORT="${HMN_PORT:-8765}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+HMN_PACKAGE="${HMN_PACKAGE:-hermes-managed-network}"
 
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
@@ -18,6 +19,44 @@ need_root() {
 need_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required command: $1" >&2
+    exit 1
+  fi
+}
+
+install_dependencies() {
+  local missing=()
+  for cmd in "$PYTHON_BIN" curl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+  if ! "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
+    missing+=("python3-venv")
+  fi
+  if [ "${#missing[@]}" -eq 0 ]; then
+    return
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y python3 python3-venv python3-pip curl
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y python3 python3-pip curl
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y python3 python3-pip curl
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache python3 py3-pip curl
+  else
+    echo "missing dependencies: ${missing[*]}" >&2
+    echo "please install python3, venv/pip and curl manually" >&2
+    exit 1
+  fi
+}
+
+check_platform() {
+  if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+    echo "systemd is required by this installer" >&2
+    echo "OpenRC/procd/launchd templates will be added separately" >&2
     exit 1
   fi
 }
@@ -35,7 +74,18 @@ install_package() {
     "$PYTHON_BIN" -m venv "$HMN_HOME/.venv"
   fi
   "$HMN_HOME/.venv/bin/python" -m pip install --upgrade pip
-  "$HMN_HOME/.venv/bin/python" -m pip install "${HMN_PACKAGE:-hermes-managed-network}"
+  "$HMN_HOME/.venv/bin/python" -m pip install "$HMN_PACKAGE"
+}
+
+write_env() {
+  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  cat >/etc/hermes-managed-network/master.env <<EOF
+HMN_DB=${HMN_DB}
+HMN_HOST=${HMN_HOST}
+HMN_PORT=${HMN_PORT}
+EOF
+  chmod 0640 /etc/hermes-managed-network/master.env
+  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/master.env
 }
 
 write_service() {
@@ -50,9 +100,7 @@ Wants=network-online.target
 Type=simple
 User=${HMN_USER}
 Group=${HMN_USER}
-Environment=HMN_DB=${HMN_DB}
-Environment=HMN_HOST=${HMN_HOST}
-Environment=HMN_PORT=${HMN_PORT}
+EnvironmentFile=/etc/hermes-managed-network/master.env
 ExecStart=${HMN_HOME}/.venv/bin/python -m hermes_managed_network.server
 Restart=always
 RestartSec=3
@@ -69,9 +117,12 @@ EOF
 
 main() {
   need_root
+  install_dependencies
   need_command "$PYTHON_BIN"
+  check_platform
   ensure_user
   install_package
+  write_env
   write_service
   systemctl daemon-reload
   systemctl enable --now hermes-managed-network.service

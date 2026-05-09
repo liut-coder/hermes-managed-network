@@ -34,10 +34,26 @@ def test_cli_can_render_join_command(tmp_path):
     )
 
     assert result.exit_code == 0
-    assert "HERMES_JOIN_TOKEN='" in result.stdout
+    assert "HERMES_JOIN_TOKEN=" in result.stdout
     assert token_value in result.stdout
-    assert "HERMES_MASTER_URL='https://example.com'" in result.stdout
+    assert "HERMES_MASTER_URL=https://example.com" in result.stdout
     assert "bash -s < <(curl -fsSL https://example.com/scripts/join.sh)" in result.stdout
+
+
+def test_cli_can_render_safe_join_command(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db)]).stdout.strip()
+
+    result = runner.invoke(
+        app,
+        ["token", "join-command", token_value, "--master-url", "https://example.com", "--safe"],
+    )
+
+    assert result.exit_code == 0
+    assert "mktemp" in result.stdout
+    assert "sha256sum" in result.stdout
+    assert token_value in result.stdout
 
 
 def test_cli_can_list_audit_events(tmp_path):
@@ -66,3 +82,13 @@ def test_cli_can_list_audit_events_as_json_lines(tmp_path):
     assert event["subject_type"] == "join_token"
     assert event["action"] == "create"
     assert event["details"]["trust_level"] == "C"
+
+
+def test_menu_shows_quick_actions():
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["menu"])
+
+    assert result.exit_code == 0
+    assert "HMN 快速菜单" in result.stdout
+    assert "audit list" in result.stdout
