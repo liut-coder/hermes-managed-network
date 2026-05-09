@@ -81,6 +81,7 @@ Docs / Backup / Monitor
 - [节点生命周期](docs/node-lifecycle.md)
 - [权限模型](docs/permission-model.md)
 - [Playbook 规范](docs/playbooks.md)
+- [部署指南](docs/deployment.md)
 - [Roadmap](docs/roadmap.md)
 
 ## CLI
@@ -105,8 +106,16 @@ Docs / Backup / Monitor
 
 ### 启动 master
 
+推荐使用脚本中心短入口：
+
 ```bash
-sudo bash scripts/install-master.sh
+bash <(curl -fsSL https://sh.misk.cc) hmn-install
+```
+
+如果脚本中心缓存未刷新，可用 GitHub raw 备用入口：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
 ```
 
 ### 唤醒一台新节点
@@ -136,6 +145,18 @@ hmn token create --trust B --label managed
 
 ```bash
 hmn token join-command <TOKEN> --master-url https://your-master.example
+```
+
+### 更新已安装主控
+
+```bash
+bash <(curl -fsSL https://sh.misk.cc) hmn-install
+```
+
+或使用脚本中心安装后的别名：
+
+```bash
+hmnup
 ```
 
 ### 本地演练 playbook
