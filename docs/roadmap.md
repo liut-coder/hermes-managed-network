@@ -52,9 +52,9 @@
 ## v0.6：插件化组件架构
 
 - [x] Component Bundle 架构文档
-- [ ] component manifest schema
-- [ ] component registry / loader
-- [ ] `hmn component list/show/plan/apply/verify/uninstall/status`
+- [x] component manifest schema
+- [x] component registry / loader
+- [x] `hmn component list/show/plan/apply/verify/uninstall/status`
 - [x] component audit events
 - [x] reverse-proxy 内置组件 MVP
 - [ ] forwarder 内置组件 MVP
