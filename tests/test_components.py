@@ -402,7 +402,10 @@ def test_monitor_component_status_summarizes_latest_heartbeat(tmp_path):
                 "worker_protocol_version": "0.1",
                 "worker_version": "0.1.0",
                 "exec_enabled": False,
-                "uptime": "3 days",
+                "uptime": {"seconds": 259200},
+                "load_average": {"1m": "0.01", "5m": "0.05", "15m": "0.10"},
+                "memory": {"total_kb": 1024, "available_kb": 512, "free_kb": 256},
+                "disk": {"path": "/", "total_bytes": 1000, "used_bytes": 400, "free_bytes": 600},
             },
             "worker_compatible": True,
         },
@@ -416,6 +419,10 @@ def test_monitor_component_status_summarizes_latest_heartbeat(tmp_path):
     assert "worker_protocol=0.1" in result.stdout
     assert "worker_version=0.1.0" in result.stdout
     assert "exec=SAFE" in result.stdout
+    assert "uptime_seconds=259200" in result.stdout
+    assert "load_average=0.01/0.05/0.10" in result.stdout
+    assert "memory_kb total=1024 available=512 free=256" in result.stdout
+    assert "disk / total=1000 used=400 free=600" in result.stdout
 
 
 def test_monitor_component_verify_uses_heartbeat_audit_and_records_result(tmp_path):

@@ -705,6 +705,31 @@ def _echo_monitor_summary(summary: dict[str, object]) -> None:
     typer.echo(f"worker_version={summary['worker_version']}")
     typer.echo(f"worker_compatible={'yes' if summary['worker_compatible'] else 'no'}")
     typer.echo(f"exec={summary['exec_mode']}")
+    facts = summary.get("facts", {})
+    if not isinstance(facts, dict):
+        return
+    uptime = facts.get("uptime")
+    if isinstance(uptime, dict) and uptime.get("seconds") is not None:
+        typer.echo(f"uptime_seconds={uptime['seconds']}")
+    load = facts.get("load_average")
+    if isinstance(load, dict) and any(load.get(key) for key in ("1m", "5m", "15m")):
+        typer.echo(f"load_average={load.get('1m', '?')}/{load.get('5m', '?')}/{load.get('15m', '?')}")
+    memory = facts.get("memory")
+    if isinstance(memory, dict) and any(memory.get(key) is not None for key in ("total_kb", "available_kb", "free_kb")):
+        typer.echo(
+            "memory_kb "
+            f"total={memory.get('total_kb')} "
+            f"available={memory.get('available_kb')} "
+            f"free={memory.get('free_kb')}"
+        )
+    disk = facts.get("disk")
+    if isinstance(disk, dict) and any(disk.get(key) is not None for key in ("total_bytes", "used_bytes", "free_bytes")):
+        typer.echo(
+            f"disk {disk.get('path', '/')} "
+            f"total={disk.get('total_bytes')} "
+            f"used={disk.get('used_bytes')} "
+            f"free={disk.get('free_bytes')}"
+        )
 
 
 @node_app.command("worker-status")
