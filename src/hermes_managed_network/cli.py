@@ -48,11 +48,17 @@ app.add_typer(audit_app, name="audit")
 
 
 def _default_db() -> Path:
-    return Path(os.environ.get("HMN_DB", str(DEFAULT_DB))).expanduser()
+    env_db = os.environ.get("HMN_DB")
+    if env_db:
+        return Path(env_db).expanduser()
+    master_env = _read_master_env()
+    if master_env.get("HMN_DB"):
+        return Path(master_env["HMN_DB"]).expanduser()
+    return DEFAULT_DB
 
 
-def _store(db: Path) -> SQLiteStore:
-    return SQLiteStore(db)
+def _store(db: Path | None) -> SQLiteStore:
+    return SQLiteStore(db or _default_db())
 
 
 def _shell_quote(value: str) -> str:
@@ -240,7 +246,7 @@ def uninstall(
 
 @app.command("wake")
 def wake(
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
     master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
 ) -> None:
     """交互式生成节点一次性接入脚本。"""
@@ -291,7 +297,7 @@ def create_token(
     trust_level: str = typer.Option("B", "--trust", "-t", help="信任级别：A、B 或 C"),
     label: list[str] = typer.Option([], "--label", "-l", help="给接入节点附加标签，可重复填写"),
     ttl_minutes: int = typer.Option(30, "--ttl-minutes", help="令牌有效期，单位分钟"),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     token_store = JoinTokenStore()
     token = token_store.create(
@@ -321,7 +327,7 @@ def list_tokens(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据�
 @token_app.command("revoke")
 def revoke_token(
     token_value: str = typer.Argument(...),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
     token = store.load_token(token_value)
@@ -351,7 +357,7 @@ def join_command(
 
 
 @node_app.command("list")
-def list_nodes(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径")) -> None:
+def list_nodes(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
     for node in _store(db).list_nodes():
         typer.echo(f"{node.node_id}\t{node.status}\t{node.hostname}\ttrust={node.trust_level}")
 
@@ -360,7 +366,7 @@ def list_nodes(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据�
 def confirm_node(
     node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 pending 节点", show_default=False),
     bundle: list[str] = typer.Option(["observe"], "--bundle", "-b", help="授予的权限包，可重复填写"),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
     if node_id is None:
@@ -403,7 +409,7 @@ def confirm_node(
 @node_app.command("revoke")
 def revoke_node(
     node_id: str = typer.Argument(...),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
     node = store.load_node(node_id)
@@ -439,7 +445,7 @@ def run_playbook(
 def list_audit_events(
     limit: int = typer.Option(50, "--limit", "-n", help="最多显示多少条事件"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON Lines"),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     events = _store(db).list_audit_events()[-limit:]
     for event in events:

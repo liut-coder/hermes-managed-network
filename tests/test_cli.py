@@ -199,6 +199,24 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     assert SQLiteStore(db).load_token(token_value).trust_level == "B"
 
 
+def test_default_db_reads_installer_master_env(tmp_path, monkeypatch):
+    import hermes_managed_network.cli as cli
+
+    db = tmp_path / "installed.db"
+    env_file = tmp_path / "master.env"
+    env_file.write_text(f"HMN_DB={db}\n")
+    monkeypatch.delenv("HMN_DB", raising=False)
+    monkeypatch.setattr(cli, "_read_master_env", lambda: {"HMN_DB": str(db)})
+
+    runner = CliRunner()
+    runner.invoke(app, ["token", "create", "--trust", "B"])
+
+    result = runner.invoke(app, ["node", "list"])
+
+    assert result.exit_code == 0
+    assert db.exists()
+
+
 def test_update_command_prints_raw_github_update_command():
     runner = CliRunner()
 
