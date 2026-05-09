@@ -383,3 +383,78 @@ def test_component_status_reports_node_components(tmp_path):
     assert "reverse-proxy" in result.stdout
     assert "desired=enabled" in result.stdout
     assert "current=planned" in result.stdout
+
+
+def test_monitor_component_status_summarizes_latest_heartbeat(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _save_managed_node(store, "node_monitor_status")
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_monitor_status",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_protocol_version": "0.1",
+                "worker_version": "0.1.0",
+                "exec_enabled": False,
+                "uptime": "3 days",
+            },
+            "worker_compatible": True,
+        },
+    )
+
+    result = runner.invoke(app, ["component", "status", "--node", "node_monitor_status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "monitor:" in result.stdout
+    assert "heartbeat=OK" in result.stdout
+    assert "worker_protocol=0.1" in result.stdout
+    assert "worker_version=0.1.0" in result.stdout
+    assert "exec=SAFE" in result.stdout
+
+
+def test_monitor_component_verify_uses_heartbeat_audit_and_records_result(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _save_managed_node(store, "node_monitor_verify")
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_monitor_verify",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
+    )
+
+    result = runner.invoke(app, ["component", "verify", "monitor", "--node", "node_monitor_verify", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "verify: monitor" in result.stdout
+    assert "heartbeat: OK" in result.stdout
+    assert "remote_check: heartbeat_audit" in result.stdout
+    runs = store.list_component_runs()
+    assert runs[-1].component_id == "monitor"
+    assert runs[-1].status == "ok"
+    assert runs[-1].result["heartbeat_seen"] is True
+    assert runs[-1].result["worker_compatible"] is True
+    events = store.list_audit_events()
+    assert events[-1].event_type == "component.monitor"
+    assert events[-1].action == "verify"
+    assert events[-1].outcome == "ok"
+
+
+def test_monitor_component_verify_warns_without_heartbeat(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    _save_managed_node(SQLiteStore(db), "node_monitor_missing")
+
+    result = runner.invoke(app, ["component", "verify", "monitor", "--node", "node_monitor_missing", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "heartbeat: WARN missing" in result.stdout

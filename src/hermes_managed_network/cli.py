@@ -673,6 +673,40 @@ def _latest_heartbeat_event(store: SQLiteStore, node_id: str):
     return None
 
 
+def _monitor_summary(store: SQLiteStore, node_id: str) -> dict[str, object]:
+    event = _latest_heartbeat_event(store, node_id)
+    facts = event.details.get("facts", {}) if event else {}
+    compatible = bool(event.details.get("worker_compatible", True)) if event else False
+    heartbeat_ok = event is not None and event.outcome == "ok" and compatible
+    exec_enabled = bool(facts.get("exec_enabled", False))
+    return {
+        "heartbeat_seen": event is not None,
+        "heartbeat_ok": heartbeat_ok,
+        "heartbeat_outcome": event.outcome if event else "missing",
+        "heartbeat_at": event.created_at.isoformat() if event else "",
+        "worker_protocol_version": facts.get("worker_protocol_version") or "unknown",
+        "worker_version": facts.get("worker_version") or "unknown",
+        "worker_compatible": compatible,
+        "exec_enabled": exec_enabled,
+        "exec_mode": "ENABLED" if exec_enabled else "SAFE",
+        "facts": facts,
+    }
+
+
+def _echo_monitor_summary(summary: dict[str, object]) -> None:
+    if summary["heartbeat_seen"]:
+        typer.echo(
+            f"heartbeat={'OK' if summary['heartbeat_ok'] else 'WARN'} "
+            f"at={summary['heartbeat_at']}"
+        )
+    else:
+        typer.echo("heartbeat=WARN missing")
+    typer.echo(f"worker_protocol={summary['worker_protocol_version']}")
+    typer.echo(f"worker_version={summary['worker_version']}")
+    typer.echo(f"worker_compatible={'yes' if summary['worker_compatible'] else 'no'}")
+    typer.echo(f"exec={summary['exec_mode']}")
+
+
 @node_app.command("worker-status")
 def worker_status(
     node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
@@ -959,6 +993,39 @@ def verify_component(
     store = _store(db)
     component, _node = _load_component_for_node(store, component_id, node_id)
     plan = _component_plan(component, node_id=node_id, config={}, action="verify", mutating=False)
+    if component.id == "monitor":
+        result = _monitor_summary(store, node_id)
+        status = "ok" if result["heartbeat_ok"] else "warn"
+        run = store.record_component_run(
+            component_id=component.id,
+            node_id=node_id,
+            action="verify",
+            risk=component.risk,
+            status=status,
+            plan=plan,
+            result=result,
+        )
+        store.record_audit(
+            event_type="component.monitor",
+            subject_type="component",
+            subject_id=component.id,
+            action="verify",
+            outcome=status,
+            details={"node_id": node_id, "run_id": run.run_id, **result},
+        )
+        typer.echo(f"verify: {component.id}")
+        typer.echo(f"run: {run.run_id}")
+        typer.echo(f"node: {node_id}")
+        typer.echo("independent: yes")
+        typer.echo("remote_check: heartbeat_audit")
+        if result["heartbeat_seen"]:
+            typer.echo(f"heartbeat: {'OK' if result['heartbeat_ok'] else 'WARN'}")
+        else:
+            typer.echo("heartbeat: WARN missing")
+        _echo_monitor_summary(result)
+        if status != "ok":
+            raise typer.Exit(1)
+        return
     result = {
         "independent_from_apply": True,
         "remote_check": "not_enabled",
@@ -1031,6 +1098,11 @@ def component_status(
     items = store.list_node_components(node_id)
     if node_id:
         typer.echo(f"node: {node_id}")
+        if store.load_node(node_id) is not None:
+            summary = _monitor_summary(store, node_id)
+            if summary["heartbeat_seen"]:
+                typer.echo("monitor:")
+                _echo_monitor_summary(summary)
     if not items:
         typer.echo("暂无组件状态")
         return
