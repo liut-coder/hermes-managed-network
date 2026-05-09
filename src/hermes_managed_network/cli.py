@@ -149,10 +149,10 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             list_nodes(db=db)
             return
         if normalized in {"3", "audit"}:
-            list_audit_events(db=db)
+            list_audit_events(limit=50, json_output=False, db=db)
             return
         if normalized in {"4", "token"}:
-            create_token(db=db)
+            create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
         if normalized in {"5", "update"}:
             update()

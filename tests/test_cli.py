@@ -135,6 +135,32 @@ def test_root_menu_can_start_wake_flow(tmp_path, monkeypatch):
     assert "HERMES_JOIN_TOKEN=" in result.stdout
 
 
+def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
+
+    result = runner.invoke(app, [], input="3\n")
+
+    assert result.exit_code == 0
+    assert token_value in result.stdout
+    assert "join_token" in result.stdout
+
+
+def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+
+    result = runner.invoke(app, [], input="4\n")
+
+    assert result.exit_code == 0
+    token_value = result.stdout.strip().splitlines()[-1]
+    assert token_value.startswith("j_")
+    assert SQLiteStore(db).load_token(token_value).trust_level == "B"
+
+
 def test_update_command_prints_raw_github_update_command():
     runner = CliRunner()
 
