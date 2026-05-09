@@ -30,6 +30,8 @@ def test_join_endpoint_consumes_token_and_registers_pending_node(tmp_path):
 
     persisted_token = store.load_token(token.value)
     assert persisted_token.status == "used"
+    assert persisted_token.node_fingerprint == "sha256:abc"
+    assert persisted_token.used_at is not None
     node = store.load_node(data["node_id"])
     assert node.hostname == "demo"
     assert node.fingerprint == "sha256:abc"

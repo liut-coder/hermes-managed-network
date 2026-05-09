@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -111,10 +111,48 @@ class SQLiteStore:
             node_fingerprint=row["node_fingerprint"],
         )
 
+    def consume_token(self, value: str, *, node_fingerprint: str) -> JoinToken | None:
+        token = self.load_token(value)
+        if token is None:
+            return None
+        now = datetime.now(timezone.utc)
+        if token.status == "pending" and now > token.expires_at:
+            token.status = "expired"
+            self.save_token(token)
+            return None
+        if token.status != "pending":
+            return None
+        token.status = "used"
+        token.used_at = now
+        token.node_fingerprint = node_fingerprint
+        self.save_token(token)
+        return token
+
     def list_tokens(self) -> list[JoinToken]:
         with self.connect() as conn:
             rows = conn.execute("SELECT value FROM join_tokens ORDER BY created_at DESC").fetchall()
         return [token for row in rows if (token := self.load_token(row["value"])) is not None]
+
+    def register_pending_node(
+        self,
+        *,
+        node_id: str,
+        fingerprint: str,
+        hostname: str,
+        addresses: list[str],
+        trust_level: str,
+        labels: list[str],
+    ) -> Node:
+        node = Node(
+            node_id=node_id,
+            fingerprint=fingerprint,
+            hostname=hostname,
+            addresses=list(addresses),
+            trust_level=trust_level,
+            labels=list(labels),
+        )
+        self.save_node(node)
+        return node
 
     def save_node(self, node: Node) -> None:
         with self.connect() as conn:

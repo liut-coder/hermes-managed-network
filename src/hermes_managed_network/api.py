@@ -6,9 +6,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .inventory import NodeRegistry
 from .storage import SQLiteStore
-from .tokens import JoinTokenStore
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 
@@ -40,25 +38,21 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         token = store.load_token(request.token)
         if token is None:
             raise HTTPException(status_code=404, detail="join token not found")
-
-        token_store = JoinTokenStore()
-        token_store._tokens[token.value] = token  # local lifecycle reuse for the MVP
-        consumed = token_store.consume(token.value, node_fingerprint=request.fingerprint)
+        consumed = store.consume_token(request.token, node_fingerprint=request.fingerprint)
         if consumed is None:
-            store.save_token(token)
-            raise HTTPException(status_code=409, detail=f"join token is {token.status}")
+            refreshed = store.load_token(request.token)
+            status = refreshed.status if refreshed is not None else "unknown"
+            raise HTTPException(status_code=409, detail=f"join token is {status}")
 
-        store.save_token(consumed)
-        registry = NodeRegistry()
-        node = registry.register_pending(
-            node_id="node_" + uuid4().hex[:12],
+        node_id = "node_" + uuid4().hex[:12]
+        node = store.register_pending_node(
+            node_id=node_id,
             fingerprint=request.fingerprint,
             hostname=request.hostname,
             addresses=request.addresses,
             trust_level=consumed.trust_level,
             labels=consumed.labels,
         )
-        store.save_node(node)
         return JoinResponse(
             node_id=node.node_id,
             status=node.status,
