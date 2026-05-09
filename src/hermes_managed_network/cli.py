@@ -12,6 +12,7 @@ from pathlib import Path
 
 import typer
 
+from .components import ComponentManifest, load_builtin_components
 from .executor import PlaybookExecutor
 from .inventory import NodeRegistry
 from .playbook import Playbook
@@ -39,6 +40,11 @@ app = typer.Typer(
         "  hmn node worker-status     查看节点 worker 安装状态\n"
         "  hmn task run              下发低风险任务\n"
         "  hmn task list             查看任务队列\n"
+        "  hmn component list        查看可用组件\n"
+        "  hmn component plan        生成组件执行计划\n"
+        "  hmn component apply       记录组件期望状态\n"
+        "  hmn component verify      独立验证组件\n"
+        "  hmn component uninstall   卸载组件\n"
         "  hmn audit list            查看审计\n"
         "  hmn token create          创建 token\n"
         "  hmn version               查看版本\n"
@@ -52,11 +58,13 @@ node_app = typer.Typer(help="管理已登记节点")
 playbook_app = typer.Typer(help="运行本地 playbook")
 audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
+component_app = typer.Typer(help="管理按需加载组件")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
 app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
+app.add_typer(component_app, name="component")
 
 
 def _default_db() -> Path:
@@ -100,6 +108,56 @@ def _render_join_command(token_value: str, master_url: str, user: str, safe: boo
 
 def _parse_labels(labels_csv: str) -> list[str]:
     return [label.strip() for label in labels_csv.split(",") if label.strip()]
+
+
+def _ensure_builtin_components(store: SQLiteStore) -> dict[str, ComponentManifest]:
+    components = load_builtin_components()
+    for component in components.values():
+        store.save_component(component)
+    return components
+
+
+def _parse_key_values(items: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise typer.BadParameter("--set 需要 KEY=VALUE 格式")
+        key, value = item.split("=", 1)
+        values[key] = value
+    return values
+
+
+def _component_plan(
+    component: ComponentManifest,
+    *,
+    node_id: str,
+    config: dict[str, str],
+    action: str = "plan",
+    mutating: bool = False,
+) -> dict[str, object]:
+    return {
+        "component_id": component.id,
+        "version": component.version,
+        "node_id": node_id,
+        "action": action,
+        "risk": component.risk,
+        "driver": component.drivers.get("default", ""),
+        "config": config,
+        "playbooks": component.playbooks,
+        "mutating": mutating,
+        "next_action": "approve/apply" if action == "plan" else "verify",
+    }
+
+
+def _load_component_for_node(store: SQLiteStore, component_id: str, node_id: str) -> tuple[ComponentManifest, object]:
+    _ensure_builtin_components(store)
+    component = store.load_component(component_id)
+    if component is None:
+        raise typer.BadParameter(f"未知组件: {component_id}")
+    node = store.load_node(node_id)
+    if node is None or node.status != "managed":
+        raise typer.BadParameter(f"节点不可用或未 managed: {node_id}")
+    return component, node
 
 
 def _read_master_env(path: Path = Path("/etc/hermes-managed-network/master.env")) -> dict[str, str]:
@@ -157,11 +215,16 @@ def _show_menu() -> None:
     typer.echo("8. hmn node worker-status           查看 worker 状态")
     typer.echo("9. hmn task run                     下发低风险任务")
     typer.echo("10. hmn task list                   查看任务")
-    typer.echo("11. hmn audit list                  查看审计")
-    typer.echo("12. hmn token create                创建 token")
-    typer.echo("13. hmn version                     查看版本")
-    typer.echo("14. hmn update                      更新主控")
-    typer.echo("15. hmn uninstall                   卸载主控")
+    typer.echo("11. hmn component list              查看组件")
+    typer.echo("12. hmn component status            查看组件状态")
+    typer.echo("13. hmn component apply             记录组件状态")
+    typer.echo("14. hmn component verify            独立验证组件")
+    typer.echo("15. hmn component uninstall         卸载组件")
+    typer.echo("16. hmn audit list                  查看审计")
+    typer.echo("17. hmn token create                创建 token")
+    typer.echo("18. hmn version                     查看版本")
+    typer.echo("19. hmn update                      更新主控")
+    typer.echo("20. hmn uninstall                   卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
@@ -173,6 +236,11 @@ def _show_menu() -> None:
     typer.echo("  hmn node worker-status")
     typer.echo("  hmn task run 'uptime'")
     typer.echo("  hmn task list")
+    typer.echo("  hmn component list")
+    typer.echo("  hmn component plan reverse-proxy --node node1 --set domain=example.com --set upstream=http://127.0.0.1:3000")
+    typer.echo("  hmn component apply reverse-proxy --node node1 --set domain=example.com")
+    typer.echo("  hmn component verify reverse-proxy --node node1")
+    typer.echo("  hmn component uninstall reverse-proxy --node node1")
     typer.echo("  hmn audit list")
     typer.echo("  hmn version")
     typer.echo("帮助：hmn <command> --help")
@@ -193,11 +261,16 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("8) hmn node worker-status     worker 状态")
         typer.echo("9) hmn task run      下发任务")
         typer.echo("10) hmn task list    查看任务")
-        typer.echo("11) hmn audit list   查看审计")
-        typer.echo("12) hmn token create 创建 token")
-        typer.echo("13) hmn version      查看版本")
-        typer.echo("14) hmn update       更新主控")
-        typer.echo("15) hmn uninstall    卸载主控")
+        typer.echo("11) hmn component list   查看组件")
+        typer.echo("12) hmn component status 组件状态")
+        typer.echo("13) hmn component apply  记录组件状态")
+        typer.echo("14) hmn component verify 独立验证组件")
+        typer.echo("15) hmn component uninstall 卸载组件")
+        typer.echo("16) hmn audit list   查看审计")
+        typer.echo("17) hmn token create 创建 token")
+        typer.echo("18) hmn version      查看版本")
+        typer.echo("19) hmn update       更新主控")
+        typer.echo("20) hmn uninstall    卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -232,19 +305,40 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"10", "task", "task list", "hmn task list"}:
             list_task_commands(db=db)
             return
-        if normalized in {"11", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"11", "component", "component list", "hmn component list"}:
+            list_components(db=db)
+            return
+        if normalized in {"12", "component status", "hmn component status"}:
+            component_status(node_id=None, db=db)
+            return
+        if normalized in {"13", "apply", "component apply", "hmn component apply"}:
+            component = typer.prompt("组件 ID", default="reverse-proxy")
+            node_id = typer.prompt("节点 ID", default="node1")
+            apply_component(component_id=component, node_id=node_id, set_values=[], db=db)
+            return
+        if normalized in {"14", "verify", "component verify", "hmn component verify"}:
+            component = typer.prompt("组件 ID", default="reverse-proxy")
+            node_id = typer.prompt("节点 ID", default="node1")
+            verify_component(component_id=component, node_id=node_id, db=db)
+            return
+        if normalized in {"15", "uninstall component", "component uninstall", "hmn component uninstall"}:
+            component = typer.prompt("组件 ID", default="reverse-proxy")
+            node_id = typer.prompt("节点 ID", default="node1")
+            uninstall_component(component_id=component, node_id=node_id, db=db)
+            return
+        if normalized in {"16", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"12", "token", "token create", "hmn token create"}:
+        if normalized in {"17", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
-        if normalized in {"13", "version", "hmn version"}:
+        if normalized in {"18", "version", "hmn version"}:
             version()
             return
-        if normalized in {"14", "update", "hmn update"}:
+        if normalized in {"19", "update", "hmn update"}:
             update()
             return
-        if normalized in {"15", "uninstall", "hmn uninstall"}:
+        if normalized in {"20", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -748,6 +842,201 @@ def create_task_command(
 def list_task_commands(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
     for task in _store(db).list_tasks():
         typer.echo(f"{task.task_id}	{task.node_id}	{task.status}	risk={task.risk}	{task.command}")
+
+
+@component_app.command("list")
+def list_components(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    store = _store(db)
+    components = _ensure_builtin_components(store)
+    for component in components.values():
+        typer.echo(f"{component.id}\t{component.name}\t{component.version}\trisk={component.risk}")
+
+
+@component_app.command("show")
+def show_component(
+    component_id: str = typer.Argument(..., help="组件 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    _ensure_builtin_components(store)
+    component = store.load_component(component_id)
+    if component is None:
+        raise typer.BadParameter(f"未知组件: {component_id}")
+    typer.echo(f"component: {component.id}")
+    typer.echo(f"name: {component.name}")
+    typer.echo(f"version: {component.version}")
+    typer.echo(f"api_version: {component.api_version}")
+    typer.echo(f"risk: {component.risk}")
+    typer.echo(f"driver: {component.drivers.get('default', '')}")
+    typer.echo("requires:")
+    for key, value in component.requires.items():
+        typer.echo(f"  {key}: {value}")
+    typer.echo("provides:")
+    for key, value in component.provides.items():
+        typer.echo(f"  {key}: {value}")
+
+
+@component_app.command("plan")
+def plan_component(
+    component_id: str = typer.Argument(..., help="组件 ID"),
+    node_id: str = typer.Option(..., "--node", help="目标节点 ID"),
+    set_values: list[str] = typer.Option([], "--set", help="组件配置 KEY=VALUE，可重复"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    component, _node = _load_component_for_node(store, component_id, node_id)
+    config = _parse_key_values(set_values)
+    plan = _component_plan(component, node_id=node_id, config=config)
+    run = store.record_component_run(
+        component_id=component.id,
+        node_id=node_id,
+        action="plan",
+        risk=component.risk,
+        status="planned",
+        plan=plan,
+    )
+    typer.echo(f"plan: {component.id}")
+    typer.echo(f"run: {run.run_id}")
+    typer.echo(f"node: {node_id}")
+    typer.echo(f"risk: {component.risk}")
+    typer.echo("mutating: no")
+    typer.echo(f"driver: {plan['driver']}")
+    typer.echo("config:")
+    for key, value in config.items():
+        typer.echo(f"  {key}: {value}")
+    typer.echo("apply command:")
+    typer.echo(f"  hmn component apply {component.id} --node {node_id}")
+
+
+@component_app.command("apply")
+def apply_component(
+    component_id: str = typer.Argument(..., help="组件 ID"),
+    node_id: str = typer.Option(..., "--node", help="目标节点 ID"),
+    set_values: list[str] = typer.Option([], "--set", help="组件配置 KEY=VALUE，可重复"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    """记录组件期望状态；MVP 不真实修改机器。"""
+    store = _store(db)
+    component, _node = _load_component_for_node(store, component_id, node_id)
+    config = _parse_key_values(set_values)
+    plan = _component_plan(component, node_id=node_id, config=config, action="apply", mutating=False)
+    result = {"machine_changed": False, "state_closed_loop": True, "remote_execution": "not_enabled"}
+    run = store.record_component_run(
+        component_id=component.id,
+        node_id=node_id,
+        action="apply",
+        risk=component.risk,
+        status="state_recorded",
+        plan=plan,
+        result=result,
+    )
+    store.set_node_component(
+        node_id=node_id,
+        component_id=component.id,
+        desired_state="enabled",
+        current_state="planned",
+        config=config,
+        installed_version=component.version,
+        driver=str(component.drivers.get("default", "")),
+        last_run_id=run.run_id,
+    )
+    typer.echo(f"apply: {component.id}")
+    typer.echo(f"run: {run.run_id}")
+    typer.echo(f"node: {node_id}")
+    typer.echo("machine_changed: no")
+    typer.echo("state: enabled/planned")
+    typer.echo("说明: MVP 只闭环状态与审计，不真实改机器。")
+
+
+@component_app.command("verify")
+def verify_component(
+    component_id: str = typer.Argument(..., help="组件 ID"),
+    node_id: str = typer.Option(..., "--node", help="目标节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    """独立检查组件状态；不依赖 apply 记录。"""
+    store = _store(db)
+    component, _node = _load_component_for_node(store, component_id, node_id)
+    plan = _component_plan(component, node_id=node_id, config={}, action="verify", mutating=False)
+    result = {
+        "independent_from_apply": True,
+        "remote_check": "not_enabled",
+        "message": "remote component verification is not enabled in MVP",
+    }
+    run = store.record_component_run(
+        component_id=component.id,
+        node_id=node_id,
+        action="verify",
+        risk=component.risk,
+        status="checked",
+        plan=plan,
+        result=result,
+    )
+    typer.echo(f"verify: {component.id}")
+    typer.echo(f"run: {run.run_id}")
+    typer.echo(f"node: {node_id}")
+    typer.echo("independent: yes")
+    typer.echo("remote_check: not_enabled")
+
+
+@component_app.command("uninstall")
+def uninstall_component(
+    component_id: str = typer.Argument(..., help="组件 ID"),
+    node_id: str = typer.Option(..., "--node", help="目标节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    """记录组件卸载期望状态；卸载是一等动作。"""
+    store = _store(db)
+    component, _node = _load_component_for_node(store, component_id, node_id)
+    plan = _component_plan(component, node_id=node_id, config={}, action="uninstall", mutating=False)
+    result = {"machine_changed": False, "state_closed_loop": True, "remote_execution": "not_enabled"}
+    run = store.record_component_run(
+        component_id=component.id,
+        node_id=node_id,
+        action="uninstall",
+        risk=component.risk,
+        status="state_recorded",
+        plan=plan,
+        result=result,
+    )
+    existing = next(
+        (item for item in store.list_node_components(node_id) if item.component_id == component.id),
+        None,
+    )
+    store.set_node_component(
+        node_id=node_id,
+        component_id=component.id,
+        desired_state="absent",
+        current_state="planned",
+        config=existing.config if existing else {},
+        installed_version=existing.installed_version if existing else component.version,
+        driver=existing.driver if existing else str(component.drivers.get("default", "")),
+        last_run_id=run.run_id,
+    )
+    typer.echo(f"uninstall: {component.id}")
+    typer.echo(f"run: {run.run_id}")
+    typer.echo(f"node: {node_id}")
+    typer.echo("machine_changed: no")
+    typer.echo("state: absent/planned")
+
+
+@component_app.command("status")
+def component_status(
+    node_id: str | None = typer.Option(None, "--node", help="目标节点 ID；省略时显示所有节点组件"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    _ensure_builtin_components(store)
+    items = store.list_node_components(node_id)
+    if node_id:
+        typer.echo(f"node: {node_id}")
+    if not items:
+        typer.echo("暂无组件状态")
+        return
+    for item in items:
+        typer.echo(
+            f"{item.node_id}\t{item.component_id}\tdesired={item.desired_state}\tcurrent={item.current_state}\tdriver={item.driver}"
+        )
 
 
 @audit_app.command("list")

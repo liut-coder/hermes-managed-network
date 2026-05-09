@@ -54,8 +54,8 @@
 - [x] Component Bundle 架构文档
 - [ ] component manifest schema
 - [ ] component registry / loader
-- [ ] `hmn component list/show/plan/status`
-- [ ] component audit events
-- [ ] reverse-proxy 内置组件 MVP
+- [ ] `hmn component list/show/plan/apply/verify/uninstall/status`
+- [x] component audit events
+- [x] reverse-proxy 内置组件 MVP
 - [ ] forwarder 内置组件 MVP
 - [ ] monitor / backup / docs-sync 组件

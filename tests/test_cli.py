@@ -208,7 +208,7 @@ def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
     monkeypatch.setenv("HMN_DB", str(db))
     token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
 
-    result = runner.invoke(app, [], input="11\n")
+    result = runner.invoke(app, [], input="16\n")
 
     assert result.exit_code == 0
     assert token_value in result.stdout
@@ -220,7 +220,7 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
 
-    result = runner.invoke(app, [], input="12\n")
+    result = runner.invoke(app, [], input="17\n")
 
     assert result.exit_code == 0
     token_value = result.stdout.strip().splitlines()[-1]

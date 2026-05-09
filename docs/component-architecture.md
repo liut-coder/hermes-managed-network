@@ -450,6 +450,9 @@ MVP 先复用 node heartbeat facts，再逐步增加指标。
 - `hmn component list`
 - `hmn component show`
 - `hmn component plan`
+- `hmn component apply`：MVP 只记录 desired/current 状态与审计，不真实改机器
+- `hmn component verify`：独立于 apply，可在没有 apply 记录时运行并写审计
+- `hmn component uninstall`：一等动作，记录 absent/planned 状态与审计
 - `hmn component status`
 - 内置 manifest loader
 - SQLite 表迁移

@@ -11,6 +11,36 @@ from typing import Any, Iterator
 
 from .inventory import Node
 from .tokens import JoinToken
+from .components import ComponentManifest
+
+
+@dataclass
+class NodeComponent:
+    node_id: str
+    component_id: str
+    desired_state: str
+    current_state: str
+    config: dict[str, Any]
+    installed_version: str = ""
+    driver: str = ""
+    last_plan_id: str = ""
+    last_run_id: str = ""
+    last_verified_at: datetime | None = None
+
+
+@dataclass
+class ComponentRun:
+    run_id: str
+    component_id: str
+    node_id: str
+    action: str
+    risk: str
+    status: str
+    plan: dict[str, Any]
+    result: dict[str, Any]
+    created_by: str
+    created_at: datetime
+    completed_at: datetime | None = None
 
 
 @dataclass
@@ -117,6 +147,45 @@ class SQLiteStore:
                     exit_code INTEGER,
                     stdout TEXT NOT NULL DEFAULT '',
                     stderr TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS components (
+                    component_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    api_version INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    enabled_at TEXT,
+                    manifest_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS node_components (
+                    node_id TEXT NOT NULL,
+                    component_id TEXT NOT NULL,
+                    desired_state TEXT NOT NULL,
+                    current_state TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    installed_version TEXT NOT NULL DEFAULT '',
+                    driver TEXT NOT NULL DEFAULT '',
+                    last_plan_id TEXT NOT NULL DEFAULT '',
+                    last_run_id TEXT NOT NULL DEFAULT '',
+                    last_verified_at TEXT,
+                    PRIMARY KEY (node_id, component_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS component_runs (
+                    run_id TEXT PRIMARY KEY,
+                    component_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT
                 );
                 """
             )
@@ -303,6 +372,208 @@ class SQLiteStore:
             details={"node_id": task.node_id, "exit_code": exit_code},
         )
         return task
+
+    def save_component(self, component: ComponentManifest) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO components (
+                    component_id, name, version, api_version, source, status,
+                    enabled_at, manifest_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(component_id) DO UPDATE SET
+                    name=excluded.name,
+                    version=excluded.version,
+                    api_version=excluded.api_version,
+                    source=excluded.source,
+                    status=excluded.status,
+                    manifest_json=excluded.manifest_json
+                """,
+                (
+                    component.id,
+                    component.name,
+                    component.version,
+                    component.api_version,
+                    component.source,
+                    "available",
+                    None,
+                    json.dumps(component.manifest_json, sort_keys=True),
+                ),
+            )
+
+    def load_component(self, component_id: str) -> ComponentManifest | None:
+        from .components import _from_dict
+
+        with self.connect() as conn:
+            row = conn.execute("SELECT manifest_json, source FROM components WHERE component_id = ?", (component_id,)).fetchone()
+        if row is None:
+            return None
+        data = json.loads(row["manifest_json"])
+        return _from_dict(data, source=row["source"])
+
+    def list_components(self) -> list[ComponentManifest]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT component_id FROM components ORDER BY component_id").fetchall()
+        return [component for row in rows if (component := self.load_component(row["component_id"])) is not None]
+
+    def set_node_component(
+        self,
+        *,
+        node_id: str,
+        component_id: str,
+        desired_state: str,
+        current_state: str,
+        config: dict[str, Any] | None = None,
+        installed_version: str = "",
+        driver: str = "",
+        last_plan_id: str = "",
+        last_run_id: str = "",
+        last_verified_at: datetime | None = None,
+    ) -> NodeComponent:
+        item = NodeComponent(
+            node_id=node_id,
+            component_id=component_id,
+            desired_state=desired_state,
+            current_state=current_state,
+            config=config or {},
+            installed_version=installed_version,
+            driver=driver,
+            last_plan_id=last_plan_id,
+            last_run_id=last_run_id,
+            last_verified_at=last_verified_at,
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO node_components (
+                    node_id, component_id, desired_state, current_state, config_json,
+                    installed_version, driver, last_plan_id, last_run_id, last_verified_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id, component_id) DO UPDATE SET
+                    desired_state=excluded.desired_state,
+                    current_state=excluded.current_state,
+                    config_json=excluded.config_json,
+                    installed_version=excluded.installed_version,
+                    driver=excluded.driver,
+                    last_plan_id=excluded.last_plan_id,
+                    last_run_id=excluded.last_run_id,
+                    last_verified_at=excluded.last_verified_at
+                """,
+                (
+                    item.node_id,
+                    item.component_id,
+                    item.desired_state,
+                    item.current_state,
+                    json.dumps(item.config, sort_keys=True),
+                    item.installed_version,
+                    item.driver,
+                    item.last_plan_id,
+                    item.last_run_id,
+                    _dt(item.last_verified_at),
+                ),
+            )
+        return item
+
+    def _node_component_from_row(self, row) -> NodeComponent:
+        return NodeComponent(
+            node_id=row["node_id"],
+            component_id=row["component_id"],
+            desired_state=row["desired_state"],
+            current_state=row["current_state"],
+            config=json.loads(row["config_json"]),
+            installed_version=row["installed_version"],
+            driver=row["driver"],
+            last_plan_id=row["last_plan_id"],
+            last_run_id=row["last_run_id"],
+            last_verified_at=_parse_dt(row["last_verified_at"]),
+        )
+
+    def list_node_components(self, node_id: str | None = None) -> list[NodeComponent]:
+        with self.connect() as conn:
+            if node_id:
+                rows = conn.execute(
+                    "SELECT * FROM node_components WHERE node_id = ? ORDER BY component_id",
+                    (node_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM node_components ORDER BY node_id, component_id").fetchall()
+        return [self._node_component_from_row(row) for row in rows]
+
+    def record_component_run(
+        self,
+        *,
+        component_id: str,
+        node_id: str,
+        action: str,
+        risk: str,
+        status: str,
+        plan: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        created_by: str = "hmn",
+    ) -> ComponentRun:
+        run = ComponentRun(
+            run_id="crun_" + uuid4().hex[:12],
+            component_id=component_id,
+            node_id=node_id,
+            action=action,
+            risk=risk,
+            status=status,
+            plan=plan or {},
+            result=result or {},
+            created_by=created_by,
+            created_at=datetime.now(timezone.utc),
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO component_runs (
+                    run_id, component_id, node_id, action, risk, status,
+                    plan_json, result_json, created_by, created_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.run_id,
+                    run.component_id,
+                    run.node_id,
+                    run.action,
+                    run.risk,
+                    run.status,
+                    json.dumps(run.plan, sort_keys=True),
+                    json.dumps(run.result, sort_keys=True),
+                    run.created_by,
+                    _dt(run.created_at),
+                    _dt(run.completed_at),
+                ),
+            )
+        self.record_audit(
+            event_type="component",
+            subject_type="component",
+            subject_id=component_id,
+            action=action,
+            outcome=status,
+            details={"node_id": node_id, "run_id": run.run_id, "risk": risk},
+        )
+        return run
+
+    def _component_run_from_row(self, row) -> ComponentRun:
+        return ComponentRun(
+            run_id=row["run_id"],
+            component_id=row["component_id"],
+            node_id=row["node_id"],
+            action=row["action"],
+            risk=row["risk"],
+            status=row["status"],
+            plan=json.loads(row["plan_json"]),
+            result=json.loads(row["result_json"]),
+            created_by=row["created_by"],
+            created_at=_parse_dt(row["created_at"]),
+            completed_at=_parse_dt(row["completed_at"]),
+        )
+
+    def list_component_runs(self) -> list[ComponentRun]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM component_runs ORDER BY created_at DESC").fetchall()
+        return [self._component_run_from_row(row) for row in rows]
 
     def save_token(self, token: JoinToken) -> None:
         with self.connect() as conn:
