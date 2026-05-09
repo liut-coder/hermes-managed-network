@@ -83,6 +83,13 @@ Docs / Backup / Monitor
 - [Playbook 规范](docs/playbooks.md)
 - [Roadmap](docs/roadmap.md)
 
+## CLI
+
+- `hmn token create`：创建一次性 join token
+- `hmn token join-command`：生成节点接入命令
+- `hmn node list`：查看节点
+- `hmn playbook run`：本地演练 playbook
+
 ## 设计原则
 
 1. 全托管不等于全权限
@@ -91,6 +98,32 @@ Docs / Backup / Monitor
 4. 所有动作必须审计
 5. 所有资产必须可反查
 6. 节点接入凭证必须短期、一次性、可撤销
+
+## 快速开始
+
+### 启动 master
+
+```bash
+sudo bash scripts/install-master.sh
+```
+
+### 创建 join token
+
+```bash
+hmn token create --trust B --label managed
+```
+
+### 生成节点接入命令
+
+```bash
+hmn token join-command <TOKEN> --master-url https://your-master.example
+```
+
+### 本地演练 playbook
+
+```bash
+hmn playbook run playbooks/demo.yml --message hello
+```
 
 ## License
 

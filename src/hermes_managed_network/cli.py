@@ -5,17 +5,22 @@ from pathlib import Path
 
 import typer
 
+from .executor import PlaybookExecutor
 from .inventory import NodeRegistry
+from .playbook import Playbook
 from .storage import SQLiteStore
 from .tokens import JoinTokenStore
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
+DEFAULT_PLAYBOOK_DIR = Path("playbooks")
 
 app = typer.Typer(help="Hermes Managed Network control-plane CLI")
 token_app = typer.Typer(help="Manage one-time join tokens")
 node_app = typer.Typer(help="Manage registered nodes")
+playbook_app = typer.Typer(help="Run local playbooks")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
+app.add_typer(playbook_app, name="playbook")
 
 
 def _store(db: Path) -> SQLiteStore:
@@ -108,6 +113,18 @@ def revoke_node(
     updated = registry.revoke(node_id)
     store.save_node(updated)
     typer.echo(f"revoked {updated.node_id}")
+
+
+@playbook_app.command("run")
+def run_playbook(
+    file: Path = typer.Argument(..., exists=True, dir_okay=False),
+    message: str = typer.Option(..., "--message", help="Input message for the playbook"),
+    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Do not execute shell commands"),
+) -> None:
+    playbook = Playbook.load(file)
+    run = PlaybookExecutor(dry_run=dry_run).run(playbook, values={"message": message})
+    for result in run.results:
+        typer.echo(f"{result.phase}: {result.command}")
 
 
 if __name__ == "__main__":
