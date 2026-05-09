@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import socket
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 
@@ -16,11 +19,11 @@ from .tokens import JoinTokenStore
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_PLAYBOOK_DIR = Path("playbooks")
 
-app = typer.Typer(help="Hermes Managed Network control-plane CLI")
-token_app = typer.Typer(help="Manage one-time join tokens")
-node_app = typer.Typer(help="Manage registered nodes")
-playbook_app = typer.Typer(help="Run local playbooks")
-audit_app = typer.Typer(help="Inspect audit events")
+app = typer.Typer(help="Hermes 托管组网主控命令行")
+token_app = typer.Typer(help="管理一次性节点接入令牌")
+node_app = typer.Typer(help="管理已登记节点")
+playbook_app = typer.Typer(help="运行本地 playbook")
+audit_app = typer.Typer(help="查看审计事件")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -60,6 +63,49 @@ def _parse_labels(labels_csv: str) -> list[str]:
     return [label.strip() for label in labels_csv.split(",") if label.strip()]
 
 
+def _read_master_env(path: Path = Path("/etc/hermes-managed-network/master.env")) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _first_non_loopback_ip() -> str:
+    try:
+        output = subprocess.check_output(["hostname", "-I"], text=True, timeout=2).strip()
+        for item in output.split():
+            if item and not item.startswith("127.") and ":" not in item:
+                return item
+    except Exception:
+        pass
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except Exception:
+        return "127.0.0.1"
+
+
+def _default_master_url() -> str:
+    public_url = os.environ.get("HMN_PUBLIC_URL")
+    if public_url:
+        return public_url.rstrip("/")
+    env = _read_master_env()
+    host = os.environ.get("HMN_HOST") or env.get("HMN_HOST") or "127.0.0.1"
+    port = os.environ.get("HMN_PORT") or env.get("HMN_PORT") or "8765"
+    if host in {"0.0.0.0", "::", ""}:
+        host = _first_non_loopback_ip()
+    return f"http://{host}:{port}"
+
+
+def _default_node_hostname(store: SQLiteStore) -> str:
+    return f"node-server{len(store.list_nodes()) + 1}"
+
+
 @app.command("menu")
 def menu() -> None:
     typer.echo("HMN 快速菜单")
@@ -76,14 +122,18 @@ def menu() -> None:
 
 @app.command("wake")
 def wake(
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
+    master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
 ) -> None:
-    """Interactively create a one-time join token and node bootstrap command."""
-    hostname = typer.prompt("要接入的机器 hostname", default="s22900.dartnode.com")
-    address = typer.prompt("机器 IP/地址", default="23.165.105.105")
-    master_url = typer.prompt("主控 URL，例如 http://100.64.0.10:8765")
+    """交互式生成节点一次性接入脚本。"""
+    store = _store(db)
+    default_hostname = _default_node_hostname(store)
+    default_master_url = (master_url or _default_master_url()).rstrip("/")
+    hostname = typer.prompt("要接入的机器 hostname", default=default_hostname)
+    address = typer.prompt("机器 IP/地址，可留空", default="")
+    selected_master_url = typer.prompt("主控 URL", default=default_master_url)
     trust_level = typer.prompt("信任级别 A/B/C", default="B").upper()
-    labels_csv = typer.prompt("标签，逗号分隔", default="d2,worker,s22900")
+    labels_csv = typer.prompt("标签，逗号分隔", default="worker")
     user = typer.prompt("节点系统用户", default="hermes")
     ttl_minutes = typer.prompt("token 有效期分钟", default=30, type=int)
     labels = _parse_labels(labels_csv)
@@ -94,7 +144,6 @@ def wake(
         labels=labels,
         ttl=timedelta(minutes=ttl_minutes),
     )
-    store = _store(db)
     store.save_token(token)
     store.record_audit(
         event_type="token",
@@ -116,15 +165,15 @@ def wake(
     typer.echo(f"地址: {address}")
     typer.echo(f"信任级别: {trust_level}")
     typer.echo("请复制下面这条命令到目标机器执行：")
-    typer.echo(_render_join_command(token.value, master_url, user, safe=True))
+    typer.echo(_render_join_command(token.value, selected_master_url, user, safe=True))
 
 
 @token_app.command("create")
 def create_token(
-    trust_level: str = typer.Option("B", "--trust", "-t", help="Trust level: A, B, or C"),
-    label: list[str] = typer.Option([], "--label", "-l", help="Label to attach to the joining node"),
-    ttl_minutes: int = typer.Option(30, "--ttl-minutes", help="Token lifetime in minutes"),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+    trust_level: str = typer.Option("B", "--trust", "-t", help="信任级别：A、B 或 C"),
+    label: list[str] = typer.Option([], "--label", "-l", help="给接入节点附加标签，可重复填写"),
+    ttl_minutes: int = typer.Option(30, "--ttl-minutes", help="令牌有效期，单位分钟"),
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
 ) -> None:
     token_store = JoinTokenStore()
     token = token_store.create(
@@ -146,7 +195,7 @@ def create_token(
 
 
 @token_app.command("list")
-def list_tokens(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path")) -> None:
+def list_tokens(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径")) -> None:
     for token in _store(db).list_tokens():
         typer.echo(f"{token.value}\t{token.status}\ttrust={token.trust_level}\tlabels={','.join(token.labels)}")
 
@@ -154,7 +203,7 @@ def list_tokens(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite databas
 @token_app.command("revoke")
 def revoke_token(
     token_value: str = typer.Argument(...),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
     token = store.load_token(token_value)
@@ -176,15 +225,15 @@ def revoke_token(
 @token_app.command("join-command")
 def join_command(
     token_value: str = typer.Argument(...),
-    master_url: str = typer.Option(..., "--master-url", help="Master control-plane URL"),
-    user: str = typer.Option("hermes", "--user", help="System user to create"),
-    safe: bool = typer.Option(False, "--safe/--unsafe", help="Emit a safer download-and-run command"),
+    master_url: str = typer.Option(..., "--master-url", help="主控 URL"),
+    user: str = typer.Option("hermes", "--user", help="目标节点上创建/使用的系统用户"),
+    safe: bool = typer.Option(False, "--safe/--unsafe", help="输出更安全的下载后执行命令"),
 ) -> None:
     typer.echo(_render_join_command(token_value, master_url, user, safe=safe))
 
 
 @node_app.command("list")
-def list_nodes(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path")) -> None:
+def list_nodes(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径")) -> None:
     for node in _store(db).list_nodes():
         typer.echo(f"{node.node_id}\t{node.status}\t{node.hostname}\ttrust={node.trust_level}")
 
@@ -192,8 +241,8 @@ def list_nodes(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database
 @node_app.command("confirm")
 def confirm_node(
     node_id: str = typer.Argument(...),
-    bundle: list[str] = typer.Option(["observe"], "--bundle", "-b", help="Permission bundle to grant"),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+    bundle: list[str] = typer.Option(["observe"], "--bundle", "-b", help="授予的权限包，可重复填写"),
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
     node = store.load_node(node_id)
@@ -218,7 +267,7 @@ def confirm_node(
 @node_app.command("revoke")
 def revoke_node(
     node_id: str = typer.Argument(...),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
     node = store.load_node(node_id)
@@ -241,8 +290,8 @@ def revoke_node(
 @playbook_app.command("run")
 def run_playbook(
     file: Path = typer.Argument(..., exists=True, dir_okay=False),
-    message: str = typer.Option(..., "--message", help="Input message for the playbook"),
-    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Do not execute shell commands"),
+    message: str = typer.Option(..., "--message", help="传给 playbook 的输入消息"),
+    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="只演练，不实际执行 shell 命令"),
 ) -> None:
     playbook = Playbook.load(file)
     run = PlaybookExecutor(dry_run=dry_run).run(playbook, values={"message": message})
@@ -252,9 +301,9 @@ def run_playbook(
 
 @audit_app.command("list")
 def list_audit_events(
-    limit: int = typer.Option(50, "--limit", "-n", help="Maximum number of events to show"),
-    json_output: bool = typer.Option(False, "--json", help="Print JSON lines"),
-    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+    limit: int = typer.Option(50, "--limit", "-n", help="最多显示多少条事件"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON Lines"),
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径"),
 ) -> None:
     events = _store(db).list_audit_events()[-limit:]
     for event in events:

@@ -100,8 +100,8 @@ def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
 
     result = runner.invoke(
         app,
-        ["wake", "--db", str(db)],
-        input="s22900.dartnode.com\n23.165.105.105\nhttp://master.internal:8765\nB\nd2,worker,s22900\nhermes\n30\n",
+        ["wake", "--db", str(db), "--master-url", "http://master.internal:8765"],
+        input="s22900.dartnode.com\n23.165.105.105\n\nB\nd2,worker,s22900\nhermes\n30\n",
     )
 
     assert result.exit_code == 0
@@ -116,3 +116,45 @@ def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
     assert len(tokens) == 1
     assert tokens[0].trust_level == "B"
     assert tokens[0].labels == ["d2", "worker", "s22900"]
+
+
+def test_wake_defaults_to_generic_next_node_name(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+
+    result = runner.invoke(
+        app,
+        ["wake", "--db", str(db), "--master-url", "http://master.internal:8765"],
+        input="\n\n\n\n\n\n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "机器: node-server1" in result.stdout
+    assert "s22900" not in result.stdout
+    assert "23.165.105.105" not in result.stdout
+
+
+def test_wake_uses_next_node_number_from_inventory(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_existing",
+            fingerprint="fp",
+            hostname="already-there",
+            addresses=["10.0.0.2"],
+            trust_level="B",
+            labels=[],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["wake", "--db", str(db), "--master-url", "http://master.internal:8765"],
+        input="\n\n\n\n\n\n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "机器: node-server2" in result.stdout

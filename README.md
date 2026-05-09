@@ -117,7 +117,14 @@ sudo bash scripts/install-master.sh
 hmn wake
 ```
 
-向导会询问 hostname、机器地址、主控 URL、信任级别、标签和 token 有效期，随后输出一条可复制到目标机器执行的安全接入命令。
+向导会自动给出默认值：
+
+- hostname 默认是 `node-serverN`，N 为当前主控已接入节点数 + 1
+- 主控 URL 默认读取 `HMN_PUBLIC_URL`；没有则读取 `/etc/hermes-managed-network/master.env` 的 `HMN_HOST/HMN_PORT`
+- 如果主控监听 `0.0.0.0`，会尝试使用本机第一个非 `127.0.0.1` 的 IPv4
+- 不会默认写入任何真实机器 hostname/IP
+
+确认默认值可以直接回车。随后输出一条可复制到目标机器执行的安全接入命令。
 
 ### 创建 join token
 
