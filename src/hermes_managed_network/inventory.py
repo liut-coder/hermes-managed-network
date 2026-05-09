@@ -18,8 +18,8 @@ class Node:
 class NodeRegistry:
     """In-memory node registry for the MVP control plane."""
 
-    def __init__(self) -> None:
-        self._nodes: dict[str, Node] = {}
+    def __init__(self, nodes: dict[str, Node] | None = None) -> None:
+        self._nodes: dict[str, Node] = dict(nodes or {})
 
     def register_pending(
         self,
