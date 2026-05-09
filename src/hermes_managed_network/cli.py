@@ -30,6 +30,7 @@ app = typer.Typer(
         "  hmn wake                  接入新机器\n"
         "  hmn node list             查看节点\n"
         "  hmn node confirm          自动确认 pending 节点\n"
+        "  hmn node status           查看节点详情\n"
         "  hmn audit list            查看审计\n"
         "  hmn token create          创建 token\n"
         "  hmn update                输出更新命令\n"
@@ -138,14 +139,16 @@ def _show_menu() -> None:
     typer.echo("1. hmn wake                         接入新机器")
     typer.echo("2. hmn node list                    查看节点")
     typer.echo("3. hmn node confirm                 确认 pending 节点")
-    typer.echo("4. hmn audit list                   查看审计")
-    typer.echo("5. hmn token create                 创建 token")
-    typer.echo("6. hmn update                       更新主控")
-    typer.echo("7. hmn uninstall                    卸载主控")
+    typer.echo("4. hmn node status                  查看节点详情")
+    typer.echo("5. hmn audit list                   查看审计")
+    typer.echo("6. hmn token create                 创建 token")
+    typer.echo("7. hmn update                       更新主控")
+    typer.echo("8. hmn uninstall                    卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
     typer.echo("  hmn node confirm")
+    typer.echo("  hmn node status")
     typer.echo("  hmn audit list")
     typer.echo("帮助：hmn <command> --help")
 
@@ -158,10 +161,11 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("1) hmn wake          接入新机器")
         typer.echo("2) hmn node list     查看节点")
         typer.echo("3) hmn node confirm  确认节点")
-        typer.echo("4) hmn audit list    查看审计")
-        typer.echo("5) hmn token create  创建 token")
-        typer.echo("6) hmn update        更新主控")
-        typer.echo("7) hmn uninstall     卸载主控")
+        typer.echo("4) hmn node status   节点详情")
+        typer.echo("5) hmn audit list    查看审计")
+        typer.echo("6) hmn token create  创建 token")
+        typer.echo("7) hmn update        更新主控")
+        typer.echo("8) hmn uninstall     卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -174,16 +178,19 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"3", "confirm", "node confirm", "hmn node confirm"}:
             confirm_node(node_id=None, bundle=["observe"], db=db)
             return
-        if normalized in {"4", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"4", "status", "node status", "hmn node status"}:
+            status_node(node_id=None, db=db)
+            return
+        if normalized in {"5", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"5", "token", "token create", "hmn token create"}:
+        if normalized in {"6", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
-        if normalized in {"6", "update", "hmn update"}:
+        if normalized in {"7", "update", "hmn update"}:
             update()
             return
-        if normalized in {"7", "uninstall", "hmn uninstall"}:
+        if normalized in {"8", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -404,6 +411,47 @@ def confirm_node(
         details={"bundles": list(bundle)},
     )
     typer.echo(f"confirmed {updated.node_id}")
+
+
+def _render_node_status(node) -> None:
+    typer.echo(f"node: {node.node_id}")
+    typer.echo(f"status: {node.status}")
+    typer.echo(f"host: {node.hostname}")
+    typer.echo(f"trust: {node.trust_level}")
+    typer.echo(f"labels: {', '.join(node.labels) if node.labels else '-'}")
+    typer.echo(f"addresses: {', '.join(node.addresses) if node.addresses else '-'}")
+    typer.echo(f"bundles: {', '.join(node.permission_bundles) if node.permission_bundles else '-'}")
+
+
+@node_app.command("status")
+def status_node(
+    node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    if node_id is None:
+        managed_nodes = [node for node in store.list_nodes() if node.status == "managed"]
+        if len(managed_nodes) == 1:
+            node = managed_nodes[0]
+            typer.echo(f"自动选择 managed 节点: {node.node_id} ({node.hostname})")
+        elif not managed_nodes:
+            typer.echo("没有 managed 节点。请先执行 hmn node confirm。")
+            raise typer.Exit(1)
+        else:
+            typer.echo("有多个 managed 节点，请选择：")
+            for index, node in enumerate(managed_nodes, start=1):
+                typer.echo(f"{index}) {node.node_id}  {node.hostname}  trust={node.trust_level}")
+            choice = typer.prompt("选择编号", default="1", type=int)
+            if choice < 1 or choice > len(managed_nodes):
+                typer.echo("无效选择。")
+                raise typer.Exit(1)
+            node = managed_nodes[choice - 1]
+    else:
+        node = store.load_node(node_id)
+        if node is None:
+            typer.echo("节点不存在。")
+            raise typer.Exit(1)
+    _render_node_status(node)
 
 
 @node_app.command("revoke")

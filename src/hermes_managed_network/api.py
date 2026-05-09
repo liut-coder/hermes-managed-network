@@ -61,6 +61,19 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             trust_level=consumed.trust_level,
             labels=consumed.labels,
         )
+        store.record_audit(
+            event_type="node",
+            subject_type="node",
+            subject_id=node.node_id,
+            action="join",
+            outcome="ok",
+            details={
+                "hostname": node.hostname,
+                "addresses": node.addresses,
+                "trust_level": node.trust_level,
+                "labels": node.labels,
+            },
+        )
         return JoinResponse(
             node_id=node.node_id,
             status=node.status,

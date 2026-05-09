@@ -37,6 +37,42 @@ def test_join_endpoint_consumes_token_and_registers_pending_node(tmp_path):
     assert node.fingerprint == "sha256:abc"
 
 
+def test_join_endpoint_records_node_join_audit_event(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    token = JoinTokenStore().create(trust_level="B", labels=["backup", "worker"])
+    store.save_token(token)
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/join",
+        json={
+            "token": token.value,
+            "fingerprint": "sha256:join-audit",
+            "hostname": "joined-node",
+            "addresses": ["10.0.0.8"],
+        },
+    )
+
+    assert response.status_code == 200
+    node_id = response.json()["node_id"]
+    events = store.list_audit_events()
+    assert any(
+        event.event_type == "node"
+        and event.subject_type == "node"
+        and event.subject_id == node_id
+        and event.action == "join"
+        and event.outcome == "ok"
+        and event.details == {
+            "hostname": "joined-node",
+            "addresses": ["10.0.0.8"],
+            "trust_level": "B",
+            "labels": ["backup", "worker"],
+        }
+        for event in events
+    )
+
+
 def test_join_script_endpoint_serves_node_bootstrap_script(tmp_path):
     client = TestClient(create_app(tmp_path / "hmn.db"))
 

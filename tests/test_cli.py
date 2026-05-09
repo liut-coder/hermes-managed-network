@@ -92,6 +92,7 @@ def test_menu_shows_quick_actions():
     assert result.exit_code == 0
     assert "HMN 控制台" in result.stdout
     assert "hmn node confirm" in result.stdout
+    assert "hmn node status" in result.stdout
     assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
@@ -106,6 +107,7 @@ def test_root_command_shows_menu_instead_of_missing_command():
     assert "hmn wake" in result.stdout
     assert "接入新机器" in result.stdout
     assert "hmn node confirm" in result.stdout
+    assert "hmn node status" in result.stdout
     assert "hmn update" in result.stdout
     assert "hmn uninstall" in result.stdout
 
@@ -119,6 +121,7 @@ def test_menu_plain_prints_quick_actions():
     assert "HMN 快速菜单" in result.stdout
     assert "hmn wake" in result.stdout
     assert "hmn node confirm" in result.stdout
+    assert "hmn node status" in result.stdout
     assert "示例" in result.stdout
 
 
@@ -179,7 +182,7 @@ def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
     monkeypatch.setenv("HMN_DB", str(db))
     token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
 
-    result = runner.invoke(app, [], input="4\n")
+    result = runner.invoke(app, [], input="5\n")
 
     assert result.exit_code == 0
     assert token_value in result.stdout
@@ -191,7 +194,7 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
 
-    result = runner.invoke(app, [], input="5\n")
+    result = runner.invoke(app, [], input="6\n")
 
     assert result.exit_code == 0
     token_value = result.stdout.strip().splitlines()[-1]
@@ -287,6 +290,87 @@ def test_node_confirm_without_id_prompts_when_multiple_pending_nodes(tmp_path):
     assert "confirmed node_b" in result.stdout
     assert SQLiteStore(db).load_node("node_a").status == "pending"
     assert SQLiteStore(db).load_node("node_b").status == "managed"
+
+
+def test_node_status_without_id_auto_selects_single_managed_node(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    node = Node(
+        node_id="node_status",
+        fingerprint="fp-status",
+        hostname="status-node",
+        addresses=["10.0.0.3"],
+        trust_level="B",
+        labels=["backup", "worker"],
+        status="managed",
+        permission_bundles=["observe"],
+    )
+    SQLiteStore(db).save_node(node)
+
+    result = runner.invoke(app, ["node", "status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "自动选择 managed 节点: node_status (status-node)" in result.stdout
+    assert "node: node_status" in result.stdout
+    assert "status: managed" in result.stdout
+    assert "host: status-node" in result.stdout
+    assert "labels: backup, worker" in result.stdout
+    assert "addresses: 10.0.0.3" in result.stdout
+    assert "bundles: observe" in result.stdout
+
+
+def test_node_status_without_id_prompts_when_multiple_managed_nodes(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    for node_id, hostname in [("node_a", "a"), ("node_b", "b")]:
+        SQLiteStore(db).save_node(
+            Node(
+                node_id=node_id,
+                fingerprint=f"fp-{node_id}",
+                hostname=hostname,
+                addresses=[],
+                trust_level="B",
+                labels=[],
+                status="managed",
+            )
+        )
+
+    result = runner.invoke(app, ["node", "status", "--db", str(db)], input="2\n")
+
+    assert result.exit_code == 0
+    assert "有多个 managed 节点，请选择：" in result.stdout
+    assert "node: node_b" in result.stdout
+    assert "host: b" in result.stdout
+
+
+def test_root_menu_can_show_node_status(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_menu_status",
+            fingerprint="fp",
+            hostname="menu-status-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+        )
+    )
+
+    result = runner.invoke(app, [], input="4\n")
+
+    assert result.exit_code == 0
+    assert "node: node_menu_status" in result.stdout
+    assert "host: menu-status-node" in result.stdout
+
 
 def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
     runner = CliRunner()
