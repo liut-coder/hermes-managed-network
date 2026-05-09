@@ -91,7 +91,8 @@ def test_menu_shows_quick_actions():
 
     assert result.exit_code == 0
     assert "HMN 控制台" in result.stdout
-    assert "audit list" in result.stdout
+    assert "hmn node confirm" in result.stdout
+    assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
 
@@ -102,10 +103,11 @@ def test_root_command_shows_menu_instead_of_missing_command():
 
     assert result.exit_code == 0
     assert "HMN 控制台" in result.stdout
-    assert "wake" in result.stdout
+    assert "hmn wake" in result.stdout
     assert "接入新机器" in result.stdout
-    assert "update" in result.stdout
-    assert "uninstall" in result.stdout
+    assert "hmn node confirm" in result.stdout
+    assert "hmn update" in result.stdout
+    assert "hmn uninstall" in result.stdout
 
 
 def test_menu_plain_prints_quick_actions():
@@ -116,6 +118,18 @@ def test_menu_plain_prints_quick_actions():
     assert result.exit_code == 0
     assert "HMN 快速菜单" in result.stdout
     assert "hmn wake" in result.stdout
+    assert "hmn node confirm" in result.stdout
+    assert "示例" in result.stdout
+
+
+def test_command_help_includes_examples():
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "示例" in result.stdout
+    assert "hmn node confirm" in result.stdout
 
 
 def test_root_menu_can_start_wake_flow(tmp_path, monkeypatch):
@@ -135,13 +149,37 @@ def test_root_menu_can_start_wake_flow(tmp_path, monkeypatch):
     assert "HERMES_JOIN_TOKEN=" in result.stdout
 
 
+def test_root_menu_can_confirm_pending_node(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_menu",
+            fingerprint="fp",
+            hostname="menu-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+        )
+    )
+
+    result = runner.invoke(app, [], input="3\n")
+
+    assert result.exit_code == 0
+    assert "自动选择 pending 节点: node_menu (menu-node)" in result.stdout
+    assert SQLiteStore(db).load_node("node_menu").status == "managed"
+
+
 def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
     token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
 
-    result = runner.invoke(app, [], input="3\n")
+    result = runner.invoke(app, [], input="4\n")
 
     assert result.exit_code == 0
     assert token_value in result.stdout
@@ -153,7 +191,7 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
 
-    result = runner.invoke(app, [], input="4\n")
+    result = runner.invoke(app, [], input="5\n")
 
     assert result.exit_code == 0
     token_value = result.stdout.strip().splitlines()[-1]
