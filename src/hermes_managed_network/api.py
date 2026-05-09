@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from .storage import SQLiteStore
@@ -32,6 +32,13 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/scripts/join.sh", include_in_schema=False)
+    def join_script() -> Response:
+        script_path = Path(__file__).resolve().parents[2] / "scripts" / "join.sh"
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail="join script not found")
+        return Response(script_path.read_text(), media_type="text/x-shellscript")
 
     @app.post("/api/v1/join", response_model=JoinResponse)
     def join(request: JoinRequest) -> JoinResponse:

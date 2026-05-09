@@ -37,6 +37,17 @@ def test_join_endpoint_consumes_token_and_registers_pending_node(tmp_path):
     assert node.fingerprint == "sha256:abc"
 
 
+def test_join_script_endpoint_serves_node_bootstrap_script(tmp_path):
+    client = TestClient(create_app(tmp_path / "hmn.db"))
+
+    response = client.get("/scripts/join.sh")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/x-shellscript")
+    assert "HERMES_JOIN_TOKEN is required" in response.text
+    assert "/api/v1/join" in response.text
+
+
 def test_join_endpoint_rejects_reused_token(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
