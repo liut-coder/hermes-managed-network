@@ -1,0 +1,36 @@
+# Example Headscale ACL
+
+# This file is illustrative. Adjust users, tags, and ports for your environment.
+
+acls:
+  # Admin devices can reach Hermes master management ports.
+  - action: accept
+    src:
+      - tag:admin
+    dst:
+      - tag:master:22
+      - tag:master:443
+
+  # Hermes master can SSH into managed nodes.
+  - action: accept
+    src:
+      - tag:master
+    dst:
+      - tag:managed:22
+
+  # Worker nodes can only talk back to master task API.
+  - action: accept
+    src:
+      - tag:worker
+    dst:
+      - tag:master:443
+
+  # Managed nodes may reach infra services explicitly.
+  - action: accept
+    src:
+      - tag:managed
+    dst:
+      - tag:infra:443
+      - tag:infra:9100
+
+# Default deny is expected.

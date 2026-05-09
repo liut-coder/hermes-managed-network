@@ -1,0 +1,20 @@
+id: restart-container
+name: Restart Docker container
+risk: low
+permissions:
+  - restart.container
+inputs:
+  container:
+    type: string
+    required: true
+precheck:
+  - docker ps --filter name={{ container }}
+backup: []
+action:
+  - docker restart {{ container }}
+verify:
+  - docker ps --filter name={{ container }}
+rollback_hint:
+  - docker logs --tail=100 {{ container }}
+audit:
+  redact: []

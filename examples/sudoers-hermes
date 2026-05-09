@@ -1,0 +1,21 @@
+# Example sudoers policy for Hermes B-level daily maintenance.
+# Install as /etc/sudoers.d/hermes after validation with visudo.
+
+Defaults:hermes !requiretty
+
+# Read-only inspection
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl status *
+hermes ALL=(root) NOPASSWD: /usr/bin/journalctl *
+hermes ALL=(root) NOPASSWD: /usr/bin/docker ps *
+hermes ALL=(root) NOPASSWD: /usr/bin/docker logs *
+hermes ALL=(root) NOPASSWD: /usr/bin/df *
+hermes ALL=(root) NOPASSWD: /usr/bin/free *
+hermes ALL=(root) NOPASSWD: /usr/bin/ss *
+
+# Low-risk maintenance. Prefer replacing wildcards with generated allowlists.
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl restart nginx
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx
+hermes ALL=(root) NOPASSWD: /usr/bin/docker restart *
+
+# Never grant this by default:
+# hermes ALL=(ALL) NOPASSWD: ALL

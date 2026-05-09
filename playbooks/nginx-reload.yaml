@@ -1,0 +1,15 @@
+id: reload-nginx
+name: Validate and reload Nginx
+risk: medium
+permissions:
+  - reload.proxy
+precheck:
+  - nginx -t
+backup:
+  - cp -a /etc/nginx /var/backups/nginx-$(date +%Y%m%d-%H%M%S)
+action:
+  - systemctl reload nginx
+verify:
+  - systemctl status nginx --no-pager
+rollback_hint:
+  - restore previous /etc/nginx backup and reload
