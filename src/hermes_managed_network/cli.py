@@ -40,7 +40,16 @@ def create_token(
         labels=list(label),
         ttl=timedelta(minutes=ttl_minutes),
     )
-    _store(db).save_token(token)
+    store = _store(db)
+    store.save_token(token)
+    store.record_audit(
+        event_type="token",
+        subject_type="join_token",
+        subject_id=token.value,
+        action="create",
+        outcome="ok",
+        details={"trust_level": token.trust_level, "labels": token.labels, "ttl_minutes": ttl_minutes},
+    )
     typer.echo(token.value)
 
 
@@ -61,6 +70,14 @@ def revoke_token(
         raise typer.Exit(1)
     token.status = "revoked"
     store.save_token(token)
+    store.record_audit(
+        event_type="token",
+        subject_type="join_token",
+        subject_id=token.value,
+        action="revoke",
+        outcome="ok",
+        details={},
+    )
     typer.echo(f"revoked {token.value}")
 
 
@@ -97,6 +114,14 @@ def confirm_node(
     if updated is None:
         raise typer.Exit(1)
     store.save_node(updated)
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id=updated.node_id,
+        action="confirm",
+        outcome="ok",
+        details={"bundles": list(bundle)},
+    )
     typer.echo(f"confirmed {updated.node_id}")
 
 
@@ -112,6 +137,14 @@ def revoke_node(
     registry = NodeRegistry({node.node_id: node})
     updated = registry.revoke(node_id)
     store.save_node(updated)
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id=updated.node_id,
+        action="revoke",
+        outcome="ok",
+        details={},
+    )
     typer.echo(f"revoked {updated.node_id}")
 
 

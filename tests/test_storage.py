@@ -38,3 +38,23 @@ def test_sqlite_persists_nodes(tmp_path):
 
     assert loaded == node
     assert store.list_nodes() == [node]
+
+
+def test_sqlite_records_audit_events(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+
+    event = store.record_audit(
+        event_type="token",
+        subject_type="join_token",
+        subject_id="j_demo",
+        action="create",
+        outcome="ok",
+        details={"trust_level": "B"},
+    )
+
+    assert event.outcome == "ok"
+    events = store.list_audit_events()
+    assert len(events) == 1
+    assert events[0].subject_id == "j_demo"
+    assert events[0].details == {"trust_level": "B"}

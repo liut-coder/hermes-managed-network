@@ -3,12 +3,24 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from .inventory import Node
 from .tokens import JoinToken
+
+
+@dataclass
+class AuditEvent:
+    event_type: str
+    subject_type: str
+    subject_id: str
+    action: str
+    outcome: str
+    details: dict[str, Any]
+    created_at: datetime
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -63,8 +75,76 @@ class SQLiteStore:
                     status TEXT NOT NULL,
                     permission_bundles_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    subject_type TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
+
+    def record_audit(
+        self,
+        *,
+        event_type: str,
+        subject_type: str,
+        subject_id: str,
+        action: str,
+        outcome: str,
+        details: dict[str, Any] | None = None,
+    ) -> AuditEvent:
+        event = AuditEvent(
+            event_type=event_type,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            action=action,
+            outcome=outcome,
+            details=details or {},
+            created_at=datetime.now(timezone.utc),
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_events (
+                    event_type, subject_type, subject_id, action, outcome,
+                    details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_type,
+                    event.subject_type,
+                    event.subject_id,
+                    event.action,
+                    event.outcome,
+                    json.dumps(event.details, sort_keys=True),
+                    _dt(event.created_at),
+                ),
+            )
+        return event
+
+    def list_audit_events(self) -> list[AuditEvent]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT event_type, subject_type, subject_id, action, outcome, details_json, created_at FROM audit_events ORDER BY id"
+            ).fetchall()
+        return [
+            AuditEvent(
+                event_type=row["event_type"],
+                subject_type=row["subject_type"],
+                subject_id=row["subject_id"],
+                action=row["action"],
+                outcome=row["outcome"],
+                details=json.loads(row["details_json"]),
+                created_at=_parse_dt(row["created_at"]),
+            )
+            for row in rows
+        ]
 
     def save_token(self, token: JoinToken) -> None:
         with self.connect() as conn:
