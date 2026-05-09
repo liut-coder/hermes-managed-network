@@ -19,7 +19,7 @@ from .tokens import JoinTokenStore
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_PLAYBOOK_DIR = Path("playbooks")
 
-app = typer.Typer(help="Hermes 托管组网主控命令行")
+app = typer.Typer(help="Hermes 托管组网主控命令行", invoke_without_command=True)
 token_app = typer.Typer(help="管理一次性节点接入令牌")
 node_app = typer.Typer(help="管理已登记节点")
 playbook_app = typer.Typer(help="运行本地 playbook")
@@ -106,18 +106,29 @@ def _default_node_hostname(store: SQLiteStore) -> str:
     return f"node-server{len(store.list_nodes()) + 1}"
 
 
+def _show_menu() -> None:
+    typer.echo("HMN 快速菜单")
+    typer.echo("1. hmn wake                         交互生成节点接入命令")
+    typer.echo("2. hmn node list                    查看节点")
+    typer.echo("3. hmn audit list                   查看审计")
+    typer.echo("4. hmn token create                 创建一次性 token")
+    typer.echo("5. hmn token join-command <TOKEN>   生成节点接入命令")
+    typer.echo("6. hmn playbook run <FILE>          演练 playbook")
+    typer.echo("")
+    typer.echo("提示：直接运行 `hmn wake` 开始接入新机器。")
+    typer.echo("帮助：hmn --help")
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """Hermes 托管组网主控命令行。"""
+    if ctx.invoked_subcommand is None:
+        _show_menu()
+
+
 @app.command("menu")
 def menu() -> None:
-    typer.echo("HMN 快速菜单")
-    typer.echo("1. wake")
-    typer.echo("2. token create")
-    typer.echo("3. token join-command")
-    typer.echo("4. token list")
-    typer.echo("5. node list")
-    typer.echo("6. audit list")
-    typer.echo("7. playbook run")
-    typer.echo("")
-    typer.echo("直接用子命令也可以，更适合自动化。")
+    _show_menu()
 
 
 @app.command("wake")

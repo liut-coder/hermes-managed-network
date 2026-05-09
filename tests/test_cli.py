@@ -94,6 +94,16 @@ def test_menu_shows_quick_actions():
     assert "audit list" in result.stdout
 
 
+def test_root_command_shows_menu_instead_of_missing_command():
+    runner = CliRunner()
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "HMN 快速菜单" in result.stdout
+    assert "hmn wake" in result.stdout
+
+
 def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
