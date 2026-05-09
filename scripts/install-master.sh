@@ -30,7 +30,7 @@ install_dependencies() {
       missing+=("$cmd")
     fi
   done
-  if ! "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
+  if command -v "$PYTHON_BIN" >/dev/null 2>&1 && ! "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
     missing+=("python3-venv")
   fi
   if [ "${#missing[@]}" -eq 0 ]; then
@@ -75,6 +75,15 @@ install_package() {
   fi
   "$HMN_HOME/.venv/bin/python" -m pip install --upgrade pip
   "$HMN_HOME/.venv/bin/python" -m pip install --upgrade --force-reinstall --no-cache-dir "$HMN_PACKAGE"
+}
+
+verify_install() {
+  "$HMN_HOME/.venv/bin/hmn" version >/dev/null
+  "$HMN_HOME/.venv/bin/python" - <<'PY'
+from hermes_managed_network.api import create_app
+app = create_app('/tmp/hmn-install-smoke.db')
+assert app.title == 'Hermes Managed Network'
+PY
 }
 
 write_env() {
@@ -127,6 +136,7 @@ main() {
   check_platform
   ensure_user
   install_package
+  verify_install
   write_env
   install_cli_links
   write_service
