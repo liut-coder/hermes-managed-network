@@ -23,6 +23,7 @@ dev = ["httpx>=0.27", "pytest>=8.0"]
 
 [project.scripts]
 hmn = "hermes_managed_network.cli:app"
+hmn-server = "hermes_managed_network.server:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

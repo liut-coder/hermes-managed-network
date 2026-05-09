@@ -59,6 +59,18 @@ def revoke_token(
     typer.echo(f"revoked {token.value}")
 
 
+@token_app.command("join-command")
+def join_command(
+    token_value: str = typer.Argument(...),
+    master_url: str = typer.Option(..., "--master-url", help="Master control-plane URL"),
+    user: str = typer.Option("hermes", "--user", help="System user to create"),
+) -> None:
+    typer.echo(
+        "sudo HERMES_JOIN_TOKEN='{token}' HERMES_MASTER_URL='{url}' HERMES_USER='{user}' "
+        "bash -s < <(curl -fsSL {url}/scripts/join.sh)".format(token=token_value, url=master_url.rstrip("/"), user=user)
+    )
+
+
 @node_app.command("list")
 def list_nodes(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path")) -> None:
     for node in _store(db).list_nodes():

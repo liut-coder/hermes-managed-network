@@ -19,3 +19,20 @@ def test_cli_can_create_and_revoke_token(tmp_path):
 
     assert revoked.exit_code == 0
     assert SQLiteStore(db).load_token(token_value).status == "revoked"
+
+
+def test_cli_can_render_join_command(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db)]).stdout.strip()
+
+    result = runner.invoke(
+        app,
+        ["token", "join-command", token_value, "--master-url", "https://example.com", "--user", "hermes"],
+    )
+
+    assert result.exit_code == 0
+    assert "HERMES_JOIN_TOKEN='" in result.stdout
+    assert token_value in result.stdout
+    assert "HERMES_MASTER_URL='https://example.com'" in result.stdout
+    assert "bash -s < <(curl -fsSL https://example.com/scripts/join.sh)" in result.stdout
