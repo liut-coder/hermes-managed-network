@@ -1,0 +1,84 @@
+id: forwarder
+name: Forwarder
+version: 0.1.0
+api_version: 1
+summary: TCP/UDP port and tunnel forwarding component
+risk: medium
+
+requires:
+  runtime_profiles:
+    - full-worker
+    - lite-worker
+  service_managers:
+    - systemd
+    - openrc
+    - procd
+    - cron
+  capabilities:
+    - network.connect
+    - network.listen
+    - file.write
+    - service.manage
+  ports: []
+
+provides:
+  services:
+    - forwarder
+  commands:
+    - forwarder.rule.create
+    - forwarder.rule.remove
+    - forwarder.reload
+
+permissions:
+  observe:
+    - component.status
+    - component.verify
+  operate:
+    - component.configure
+    - component.restart
+  admin:
+    - component.install
+    - component.uninstall
+
+config_schema:
+  type: object
+  required:
+    - listen
+    - target
+  properties:
+    listen:
+      type: string
+      description: Local listen address, for example tcp://0.0.0.0:8443
+    target:
+      type: string
+      description: Upstream target address, for example tcp://10.0.0.10:443
+    protocol:
+      type: string
+      default: tcp
+    mode:
+      type: string
+      default: tunnel
+
+drivers:
+  default: gost
+  options:
+    - gost
+    - frp
+    - socat
+    - nftables
+
+playbooks:
+  install: playbooks/install.yaml
+  configure: playbooks/configure.yaml
+  verify: playbooks/verify.yaml
+  uninstall: playbooks/uninstall.yaml
+
+health:
+  checks:
+    - type: command
+      command: hmn-forwarder --version
+    - type: tcp
+      address: "{{ listen }}"
+
+audit:
+  category: component.forwarder

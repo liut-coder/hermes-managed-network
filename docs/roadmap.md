@@ -57,5 +57,5 @@
 - [x] `hmn component list/show/plan/apply/verify/uninstall/status`
 - [x] component audit events
 - [x] reverse-proxy 内置组件 MVP
-- [ ] forwarder 内置组件 MVP
+- [x] forwarder 内置组件 MVP
 - [ ] monitor / backup / docs-sync 组件

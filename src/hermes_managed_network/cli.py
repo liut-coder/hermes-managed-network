@@ -238,6 +238,7 @@ def _show_menu() -> None:
     typer.echo("  hmn task list")
     typer.echo("  hmn component list")
     typer.echo("  hmn component plan reverse-proxy --node node1 --set domain=example.com --set upstream=http://127.0.0.1:3000")
+    typer.echo("  hmn component plan forwarder --node node1 --set listen=tcp://0.0.0.0:8443 --set target=tcp://10.0.0.10:443")
     typer.echo("  hmn component apply reverse-proxy --node node1 --set domain=example.com")
     typer.echo("  hmn component verify reverse-proxy --node node1")
     typer.echo("  hmn component uninstall reverse-proxy --node node1")
@@ -312,17 +313,17 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             component_status(node_id=None, db=db)
             return
         if normalized in {"13", "apply", "component apply", "hmn component apply"}:
-            component = typer.prompt("组件 ID", default="reverse-proxy")
+            component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             apply_component(component_id=component, node_id=node_id, set_values=[], db=db)
             return
         if normalized in {"14", "verify", "component verify", "hmn component verify"}:
-            component = typer.prompt("组件 ID", default="reverse-proxy")
+            component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             verify_component(component_id=component, node_id=node_id, db=db)
             return
         if normalized in {"15", "uninstall component", "component uninstall", "hmn component uninstall"}:
-            component = typer.prompt("组件 ID", default="reverse-proxy")
+            component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             uninstall_component(component_id=component, node_id=node_id, db=db)
             return
