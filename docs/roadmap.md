@@ -48,3 +48,14 @@
 - [ ] service docs 生成
 - [ ] domain index 生成
 - [ ] runbook index 生成
+
+## v0.6：插件化组件架构
+
+- [x] Component Bundle 架构文档
+- [ ] component manifest schema
+- [ ] component registry / loader
+- [ ] `hmn component list/show/plan/status`
+- [ ] component audit events
+- [ ] reverse-proxy 内置组件 MVP
+- [ ] forwarder 内置组件 MVP
+- [ ] monitor / backup / docs-sync 组件

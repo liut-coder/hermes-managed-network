@@ -46,6 +46,33 @@ HMN 的执行面分成两层：
 
 详见：[平台与运行时扩展架构](platform-architecture.md)
 
+## 插件化组件
+
+HMN 的扩展能力采用 **核心控制面 + Component Bundle** 模型。
+
+控制面只负责身份、授权、审计、调度和状态；反代、转发、负载均衡、集群、备份、监控、文档同步等能力都作为按需加载组件接入。
+
+```text
+HMN Core
+  - component registry
+  - plan / approve / apply / verify
+  - task / playbook dispatch
+  - audit / status
+
+Components
+  - reverse-proxy
+  - forwarder
+  - load-balancer
+  - cluster
+  - monitor
+  - backup
+  - docs-sync
+```
+
+组件必须先声明 manifest、能力需求、风险等级、配置 schema、playbook 和 verify 规则。所有组件动作都应先生成 plan，再按风险进入审批或执行。
+
+详见：[插件化组件架构](component-architecture.md)
+
 ### SSH 模式
 
 适合公网 VPS 或 Tailscale 可达节点。
