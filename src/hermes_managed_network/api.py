@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
+import hermes_managed_network
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
@@ -35,7 +36,7 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
 
     @app.get("/scripts/join.sh", include_in_schema=False)
     def join_script() -> Response:
-        script_path = Path(__file__).resolve().parents[2] / "scripts" / "join.sh"
+        script_path = Path(hermes_managed_network.__file__).resolve().parent / "assets" / "join.sh"
         if not script_path.exists():
             raise HTTPException(status_code=404, detail="join script not found")
         return Response(script_path.read_text(), media_type="text/x-shellscript")
