@@ -90,7 +90,8 @@ def test_menu_shows_quick_actions():
     result = runner.invoke(app, ["menu"], input="q\n")
 
     assert result.exit_code == 0
-    assert "HMN 交互菜单" in result.stdout
+    assert "HMN 控制台" in result.stdout
+    assert "audit list" in result.stdout
     assert "查看审计" in result.stdout
 
 
@@ -100,10 +101,11 @@ def test_root_command_shows_menu_instead_of_missing_command():
     result = runner.invoke(app, [], input="q\n")
 
     assert result.exit_code == 0
-    assert "HMN 交互菜单" in result.stdout
+    assert "HMN 控制台" in result.stdout
+    assert "wake" in result.stdout
     assert "接入新机器" in result.stdout
-    assert "更新主控" in result.stdout
-    assert "卸载主控" in result.stdout
+    assert "update" in result.stdout
+    assert "uninstall" in result.stdout
 
 
 def test_menu_plain_prints_quick_actions():
