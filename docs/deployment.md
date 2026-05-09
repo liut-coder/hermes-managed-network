@@ -2,12 +2,12 @@
 
 本页记录 HMN 主控和节点接入的推荐部署方式。
 
-## 推荐入口：脚本中心
+## 安装主控
 
-主控全新安装或更新，优先使用 openbox 脚本中心入口：
+使用仓库提供的短安装脚本：
 
 ```bash
-bash <(curl -fsSL https://sh.misk.cc) hmn-install
+curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
 ```
 
 安装完成后执行：
@@ -17,20 +17,6 @@ hmn wake
 ```
 
 `hmn wake` 会交互生成一条节点接入命令。把输出命令复制到目标节点执行即可。
-
-## 备用入口：仓库短安装脚本
-
-如果脚本中心缓存未刷新，或需要绕过 `sh.misk.cc`，可以直接使用 GitHub raw：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
-```
-
-安装完成后：
-
-```bash
-hmn wake
-```
 
 ## hmn wake 默认值
 
@@ -101,16 +87,10 @@ token 有效期: 30
 
 ## 更新已安装主控
 
-直接再次执行脚本中心入口：
+再次执行仓库短安装脚本即可：
 
 ```bash
-bash <(curl -fsSL https://sh.misk.cc) hmn-install
-```
-
-或使用已安装别名：
-
-```bash
-hmnup
+curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
 ```
 
 验证：

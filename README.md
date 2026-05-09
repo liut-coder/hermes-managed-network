@@ -106,14 +106,6 @@ Docs / Backup / Monitor
 
 ### 启动 master
 
-推荐使用脚本中心短入口：
-
-```bash
-bash <(curl -fsSL https://sh.misk.cc) hmn-install
-```
-
-如果脚本中心缓存未刷新，可用 GitHub raw 备用入口：
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
 ```
@@ -150,13 +142,7 @@ hmn token join-command <TOKEN> --master-url https://your-master.example
 ### 更新已安装主控
 
 ```bash
-bash <(curl -fsSL https://sh.misk.cc) hmn-install
-```
-
-或使用脚本中心安装后的别名：
-
-```bash
-hmnup
+curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
 ```
 
 ### 本地演练 playbook
