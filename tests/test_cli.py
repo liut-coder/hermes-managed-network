@@ -527,6 +527,93 @@ def test_root_menu_can_show_heartbeat_command(tmp_path, monkeypatch):
     assert "node_menu_hb/heartbeat" in result.stdout
 
 
+
+def test_node_install_heartbeat_prints_systemd_timer(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_timer",
+            fingerprint="sha256:timer",
+            hostname="timer-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["node", "install-heartbeat", "--db", str(db), "--master-url", "https://master.example"],
+    )
+
+    assert result.exit_code == 0
+    assert "hermes-managed-network-heartbeat.timer" in result.stdout
+    assert "scripts/worker.sh" in result.stdout
+    assert "systemctl enable --now hermes-managed-network-heartbeat.timer" in result.stdout
+
+
+def test_task_run_creates_task_for_auto_selected_node(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_task_cli",
+            fingerprint="sha256:task",
+            hostname="task-cli-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(app, ["task", "run", "uptime", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "已创建任务" in result.stdout
+    tasks = SQLiteStore(db).list_tasks()
+    assert len(tasks) == 1
+    assert tasks[0].node_id == "node_task_cli"
+    assert tasks[0].command == "uptime"
+    assert tasks[0].status == "pending"
+
+
+def test_task_list_shows_created_tasks(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_task_list",
+            fingerprint="sha256:task",
+            hostname="task-list-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    task = store.create_task(node_id="node_task_list", command="date", risk="low", created_by="test")
+
+    result = runner.invoke(app, ["task", "list", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert task.task_id in result.stdout
+    assert "node_task_list" in result.stdout
+    assert "pending" in result.stdout
+
+
 def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -534,13 +621,13 @@ def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
     result = runner.invoke(
         app,
         ["wake", "--db", str(db), "--master-url", "http://master.internal:8765"],
-        input="s22900.dartnode.com\n23.165.105.105\n\nB\nd2,worker,s22900\nhermes\n30\n",
+        input="backup-node.example\n10.0.0.10\n\nB\nbackup,worker\nhermes\n30\n",
     )
 
     assert result.exit_code == 0
     assert "唤醒脚本已生成" in result.stdout
-    assert "机器: s22900.dartnode.com" in result.stdout
-    assert "地址: 23.165.105.105" in result.stdout
+    assert "机器: backup-node.example" in result.stdout
+    assert "地址: 10.0.0.10" in result.stdout
     assert "HERMES_JOIN_TOKEN=" in result.stdout
     assert "HERMES_MASTER_URL=http://master.internal:8765" in result.stdout
     assert "mktemp" in result.stdout
@@ -548,7 +635,7 @@ def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
     tokens = SQLiteStore(db).list_tokens()
     assert len(tokens) == 1
     assert tokens[0].trust_level == "B"
-    assert tokens[0].labels == ["d2", "worker", "s22900"]
+    assert tokens[0].labels == ["backup", "worker"]
 
 
 def test_wake_defaults_to_generic_next_node_name(tmp_path):

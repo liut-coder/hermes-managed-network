@@ -73,15 +73,25 @@ def test_join_endpoint_records_node_join_audit_event(tmp_path):
     )
 
 
-def test_join_script_endpoint_serves_node_bootstrap_script(tmp_path):
+def test_control_plane_serves_join_script(tmp_path):
     client = TestClient(create_app(tmp_path / "hmn.db"))
 
     response = client.get("/scripts/join.sh")
 
     assert response.status_code == 200
+    assert "HERMES_JOIN_TOKEN" in response.text
     assert response.headers["content-type"].startswith("text/x-shellscript")
-    assert "HERMES_JOIN_TOKEN is required" in response.text
-    assert "/api/v1/join" in response.text
+
+
+def test_control_plane_serves_worker_script(tmp_path):
+    client = TestClient(create_app(tmp_path / "hmn.db"))
+
+    response = client.get("/scripts/worker.sh")
+
+    assert response.status_code == 200
+    assert "HMN_ENABLE_EXEC" in response.text
+    assert response.headers["content-type"].startswith("text/x-shellscript")
+
 
 
 def test_node_heartbeat_endpoint_updates_status_and_records_audit(tmp_path):
@@ -142,6 +152,77 @@ def test_node_heartbeat_rejects_wrong_fingerprint(tmp_path):
     )
 
     assert response.status_code == 403
+
+
+def test_task_lifecycle_assigns_next_task_and_records_result(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_task",
+            fingerprint="sha256:task",
+            hostname="task-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    task = store.create_task(node_id="node_task", command="uptime", risk="low", created_by="test")
+    client = TestClient(create_app(db))
+
+    next_response = client.post(
+        "/api/v1/nodes/node_task/tasks/next",
+        json={"fingerprint": "sha256:task"},
+    )
+
+    assert next_response.status_code == 200
+    assert next_response.json()["task_id"] == task.task_id
+    assert next_response.json()["command"] == "uptime"
+    assert store.load_task(task.task_id).status == "running"
+
+    result_response = client.post(
+        f"/api/v1/tasks/{task.task_id}/result",
+        json={"fingerprint": "sha256:task", "exit_code": 0, "stdout": "ok", "stderr": ""},
+    )
+
+    assert result_response.status_code == 200
+    completed = store.load_task(task.task_id)
+    assert completed.status == "succeeded"
+    assert completed.exit_code == 0
+    assert completed.stdout == "ok"
+    assert store.list_audit_events()[-1].action == "task_result"
+
+
+def test_task_next_returns_no_task_when_queue_empty(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_empty",
+            fingerprint="sha256:empty",
+            hostname="empty-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_empty/tasks/next",
+        json={"fingerprint": "sha256:empty"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"task": None}
 
 
 def test_join_endpoint_rejects_reused_token(tmp_path):

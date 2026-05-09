@@ -5,11 +5,28 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Iterator
 
 from .inventory import Node
 from .tokens import JoinToken
+
+
+@dataclass
+class Task:
+    task_id: str
+    node_id: str
+    command: str
+    risk: str
+    status: str
+    created_by: str
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
 
 
 @dataclass
@@ -86,6 +103,21 @@ class SQLiteStore:
                     details_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    exit_code INTEGER,
+                    stdout TEXT NOT NULL DEFAULT '',
+                    stderr TEXT NOT NULL DEFAULT ''
+                );
                 """
             )
 
@@ -145,6 +177,132 @@ class SQLiteStore:
             )
             for row in rows
         ]
+
+    def create_task(self, *, node_id: str, command: str, risk: str = "low", created_by: str = "hmn") -> Task:
+        task = Task(
+            task_id="task_" + uuid4().hex[:12],
+            node_id=node_id,
+            command=command,
+            risk=risk,
+            status="pending",
+            created_by=created_by,
+            created_at=datetime.now(timezone.utc),
+        )
+        self.save_task(task)
+        self.record_audit(
+            event_type="task",
+            subject_type="task",
+            subject_id=task.task_id,
+            action="create",
+            outcome="ok",
+            details={"node_id": node_id, "command": command, "risk": risk},
+        )
+        return task
+
+    def save_task(self, task: Task) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, node_id, command, risk, status, created_by, created_at,
+                    started_at, completed_at, exit_code, stdout, stderr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    node_id=excluded.node_id,
+                    command=excluded.command,
+                    risk=excluded.risk,
+                    status=excluded.status,
+                    created_by=excluded.created_by,
+                    created_at=excluded.created_at,
+                    started_at=excluded.started_at,
+                    completed_at=excluded.completed_at,
+                    exit_code=excluded.exit_code,
+                    stdout=excluded.stdout,
+                    stderr=excluded.stderr
+                """,
+                (
+                    task.task_id,
+                    task.node_id,
+                    task.command,
+                    task.risk,
+                    task.status,
+                    task.created_by,
+                    _dt(task.created_at),
+                    _dt(task.started_at),
+                    _dt(task.completed_at),
+                    task.exit_code,
+                    task.stdout,
+                    task.stderr,
+                ),
+            )
+
+    def _task_from_row(self, row) -> Task:
+        return Task(
+            task_id=row["task_id"],
+            node_id=row["node_id"],
+            command=row["command"],
+            risk=row["risk"],
+            status=row["status"],
+            created_by=row["created_by"],
+            created_at=_parse_dt(row["created_at"]),
+            started_at=_parse_dt(row["started_at"]),
+            completed_at=_parse_dt(row["completed_at"]),
+            exit_code=row["exit_code"],
+            stdout=row["stdout"],
+            stderr=row["stderr"],
+        )
+
+    def load_task(self, task_id: str) -> Task | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        return self._task_from_row(row) if row else None
+
+    def list_tasks(self) -> list[Task]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def next_pending_task(self, node_id: str) -> Task | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE node_id = ? AND status = 'pending' ORDER BY created_at LIMIT 1",
+                (node_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        task = self._task_from_row(row)
+        task.status = "running"
+        task.started_at = datetime.now(timezone.utc)
+        self.save_task(task)
+        self.record_audit(
+            event_type="task",
+            subject_type="task",
+            subject_id=task.task_id,
+            action="dispatch",
+            outcome="ok",
+            details={"node_id": node_id},
+        )
+        return task
+
+    def complete_task(self, task_id: str, *, exit_code: int, stdout: str, stderr: str) -> Task | None:
+        task = self.load_task(task_id)
+        if task is None:
+            return None
+        task.exit_code = exit_code
+        task.stdout = stdout
+        task.stderr = stderr
+        task.completed_at = datetime.now(timezone.utc)
+        task.status = "succeeded" if exit_code == 0 else "failed"
+        self.save_task(task)
+        self.record_audit(
+            event_type="task",
+            subject_type="task",
+            subject_id=task.task_id,
+            action="task_result",
+            outcome=task.status,
+            details={"node_id": task.node_id, "exit_code": exit_code},
+        )
+        return task
 
     def save_token(self, token: JoinToken) -> None:
         with self.connect() as conn:

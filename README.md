@@ -87,11 +87,15 @@ Docs / Backup / Monitor
 ## CLI
 
 - `hmn wake`：交互式输入机器信息，生成一次性 token 和安全接入命令
-- `hmn token create`：创建一次性 join token
-- `hmn token join-command`：生成节点接入命令
-- `hmn node list`：查看节点
+- `hmn node confirm`：自动确认唯一 pending 节点
+- `hmn node status`：查看节点详情
+- `hmn node doctor`：检查节点登记和权限状态
+- `hmn node install-heartbeat`：生成复制到节点执行的一键安装命令，安装心跳/worker 定时器
+- `hmn task run 'uptime'`：向唯一 managed 节点下发低风险任务
+- `hmn task list`：查看任务队列和结果状态
 - `hmn audit list`：查看审计日志
-- `hmn playbook run`：本地演练 playbook
+- `hmn update`：输出主控更新命令
+- `hmn uninstall`：输出或执行安全卸载命令
 
 ## 设计原则
 

@@ -59,31 +59,37 @@ hmn node list
 5. 确认节点并授予权限包：
 
 ```bash
-hmn node confirm <NODE_ID> --bundle observe --bundle backup --bundle service-restart
+hmn node confirm
 ```
 
-6. 查看审计：
+如果只有一个 pending 节点，HMN 会自动选择，不需要手填 node_id。
+
+6. 安装节点心跳/worker：
 
 ```bash
+hmn node install-heartbeat
+```
+
+把输出的一条命令复制到目标节点执行。它会安装 systemd timer，节点会定时向主控上报心跳并拉取任务。
+
+7. 查看节点状态和审计：
+
+```bash
+hmn node status
+hmn node doctor
 hmn audit list
 ```
 
-## d2 / s22900 推荐接入填写
+## 下发低风险任务
 
-如果目标节点是 d2，可以在 `hmn wake` 中填写：
+节点安装心跳/worker 后，可在主控下发低风险命令：
 
-```text
-hostname: s22900.dartnode.com
-机器地址: 23.165.105.105
-信任级别: B
-标签: d2,worker,s22900
-节点系统用户: hermes
-token 有效期: 30
+```bash
+hmn task run 'uptime'
+hmn task list
 ```
 
-主控 URL 如自动识别正确，直接回车即可。
-
-注意：d2 当前承载现有服务，首次接入只做 HMN 注册，不应顺手修改 SSH、Docker、1Panel 或防火墙。
+默认 worker 只轮询和上报心跳。真正执行任务需要在节点侧显式开启 `HMN_ENABLE_EXEC=1`，避免误执行。
 
 ## 更新已安装主控
 

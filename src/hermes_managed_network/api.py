@@ -38,6 +38,32 @@ class HeartbeatResponse(BaseModel):
     status: str
 
 
+class NodeAuthRequest(BaseModel):
+    fingerprint: str
+
+
+class TaskResponse(BaseModel):
+    task_id: str
+    command: str
+    risk: str
+
+
+class NoTaskResponse(BaseModel):
+    task: None
+
+
+class TaskResultRequest(BaseModel):
+    fingerprint: str
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+class TaskResultResponse(BaseModel):
+    task_id: str
+    status: str
+
+
 def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     app = FastAPI(title="Hermes Managed Network", version="0.2.0")
     store = SQLiteStore(db_path)
@@ -46,12 +72,19 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
+    def _asset_script(name: str) -> Response:
+        script_path = Path(hermes_managed_network.__file__).resolve().parent / "assets" / name
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail=f"{name} not found")
+        return Response(script_path.read_text(), media_type="text/x-shellscript")
+
     @app.get("/scripts/join.sh", include_in_schema=False)
     def join_script() -> Response:
-        script_path = Path(hermes_managed_network.__file__).resolve().parent / "assets" / "join.sh"
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="join script not found")
-        return Response(script_path.read_text(), media_type="text/x-shellscript")
+        return _asset_script("join.sh")
+
+    @app.get("/scripts/worker.sh", include_in_schema=False)
+    def worker_script() -> Response:
+        return _asset_script("worker.sh")
 
     @app.post("/api/v1/join", response_model=JoinResponse)
     def join(request: JoinRequest) -> JoinResponse:
@@ -110,6 +143,31 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             details={"status": request.status, "facts": request.facts},
         )
         return HeartbeatResponse(node_id=node.node_id, status=request.status)
+
+    @app.post("/api/v1/nodes/{node_id}/tasks/next", response_model=TaskResponse | NoTaskResponse)
+    def next_task(node_id: str, request: NodeAuthRequest) -> TaskResponse | NoTaskResponse:
+        node = store.load_node(node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail="node not found")
+        if node.fingerprint != request.fingerprint:
+            raise HTTPException(status_code=403, detail="node fingerprint mismatch")
+        task = store.next_pending_task(node_id)
+        if task is None:
+            return NoTaskResponse(task=None)
+        return TaskResponse(task_id=task.task_id, command=task.command, risk=task.risk)
+
+    @app.post("/api/v1/tasks/{task_id}/result", response_model=TaskResultResponse)
+    def task_result(task_id: str, request: TaskResultRequest) -> TaskResultResponse:
+        task = store.load_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        node = store.load_node(task.node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail="node not found")
+        if node.fingerprint != request.fingerprint:
+            raise HTTPException(status_code=403, detail="node fingerprint mismatch")
+        updated = store.complete_task(task_id, exit_code=request.exit_code, stdout=request.stdout, stderr=request.stderr)
+        return TaskResultResponse(task_id=updated.task_id, status=updated.status)
 
     return app
 

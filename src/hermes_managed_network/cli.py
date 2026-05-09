@@ -34,6 +34,9 @@ app = typer.Typer(
         "  hmn node status           查看节点详情\n"
         "  hmn node doctor           检查节点登记状态\n"
         "  hmn node heartbeat-command 生成节点心跳命令\n"
+        "  hmn node install-heartbeat 安装节点心跳/worker\n"
+        "  hmn task run              下发低风险任务\n"
+        "  hmn task list             查看任务队列\n"
         "  hmn audit list            查看审计\n"
         "  hmn token create          创建 token\n"
         "  hmn version               查看版本\n"
@@ -46,10 +49,12 @@ token_app = typer.Typer(help="管理一次性节点接入令牌")
 node_app = typer.Typer(help="管理已登记节点")
 playbook_app = typer.Typer(help="运行本地 playbook")
 audit_app = typer.Typer(help="查看审计事件")
+task_app = typer.Typer(help="下发和查看节点任务")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
 app.add_typer(audit_app, name="audit")
+app.add_typer(task_app, name="task")
 
 
 def _default_db() -> Path:
@@ -146,11 +151,14 @@ def _show_menu() -> None:
     typer.echo("4. hmn node status                  查看节点详情")
     typer.echo("5. hmn node doctor                  检查节点")
     typer.echo("6. hmn node heartbeat-command       生成心跳命令")
-    typer.echo("7. hmn audit list                   查看审计")
-    typer.echo("8. hmn token create                 创建 token")
-    typer.echo("9. hmn version                      查看版本")
-    typer.echo("10. hmn update                      更新主控")
-    typer.echo("11. hmn uninstall                   卸载主控")
+    typer.echo("7. hmn node install-heartbeat       安装心跳/worker")
+    typer.echo("8. hmn task run                     下发低风险任务")
+    typer.echo("9. hmn task list                    查看任务")
+    typer.echo("10. hmn audit list                  查看审计")
+    typer.echo("11. hmn token create                创建 token")
+    typer.echo("12. hmn version                     查看版本")
+    typer.echo("13. hmn update                      更新主控")
+    typer.echo("14. hmn uninstall                   卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
@@ -158,6 +166,9 @@ def _show_menu() -> None:
     typer.echo("  hmn node status")
     typer.echo("  hmn node doctor")
     typer.echo("  hmn node heartbeat-command")
+    typer.echo("  hmn node install-heartbeat")
+    typer.echo("  hmn task run 'uptime'")
+    typer.echo("  hmn task list")
     typer.echo("  hmn audit list")
     typer.echo("  hmn version")
     typer.echo("帮助：hmn <command> --help")
@@ -174,11 +185,14 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("4) hmn node status   节点详情")
         typer.echo("5) hmn node doctor   检查节点")
         typer.echo("6) hmn node heartbeat-command  心跳命令")
-        typer.echo("7) hmn audit list    查看审计")
-        typer.echo("8) hmn token create  创建 token")
-        typer.echo("9) hmn version       查看版本")
-        typer.echo("10) hmn update       更新主控")
-        typer.echo("11) hmn uninstall    卸载主控")
+        typer.echo("7) hmn node install-heartbeat  安装心跳/worker")
+        typer.echo("8) hmn task run      下发任务")
+        typer.echo("9) hmn task list     查看任务")
+        typer.echo("10) hmn audit list   查看审计")
+        typer.echo("11) hmn token create 创建 token")
+        typer.echo("12) hmn version      查看版本")
+        typer.echo("13) hmn update       更新主控")
+        typer.echo("14) hmn uninstall    卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -200,19 +214,29 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"6", "heartbeat", "heartbeat-command", "node heartbeat-command", "hmn node heartbeat-command"}:
             heartbeat_command(node_id=None, master_url=None, db=db)
             return
-        if normalized in {"7", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"install-heartbeat", "node install-heartbeat", "hmn node install-heartbeat"}:
+            install_heartbeat(node_id=None, master_url=None, db=db)
+            return
+        if normalized in {"task run", "hmn task run"}:
+            command = typer.prompt("任务命令", default="uptime")
+            create_task_command(command=command, node_id=None, risk="low", db=db)
+            return
+        if normalized in {"9", "task", "task list", "hmn task list"}:
+            list_task_commands(db=db)
+            return
+        if normalized in {"7", "10", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"8", "token", "token create", "hmn token create"}:
+        if normalized in {"8", "11", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
-        if normalized in {"9", "version", "hmn version"}:
+        if normalized in {"12", "version", "hmn version"}:
             version()
             return
-        if normalized in {"10", "update", "hmn update"}:
+        if normalized in {"13", "update", "hmn update"}:
             update()
             return
-        if normalized in {"11", "uninstall", "hmn uninstall"}:
+        if normalized in {"14", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -540,6 +564,60 @@ def heartbeat_command(
     )
 
 
+def _render_worker_installer(node, master_url: str) -> str:
+    url = master_url.rstrip("/")
+    script = f"""set -euo pipefail
+install -d -m 0700 /etc/hermes-managed-network
+cat >/etc/hermes-managed-network/node.env <<'EOF'
+HERMES_MASTER_URL={url}
+HERMES_NODE_ID={node.node_id}
+HERMES_NODE_FINGERPRINT={node.fingerprint}
+EOF
+chmod 0600 /etc/hermes-managed-network/node.env
+curl -fsSL {url}/scripts/worker.sh -o /usr/local/bin/hmn-worker
+chmod 0755 /usr/local/bin/hmn-worker
+cat >/etc/systemd/system/hermes-managed-network-heartbeat.service <<'EOF'
+[Unit]
+Description=Hermes Managed Network heartbeat and worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HMN_ENABLE_EXEC=0
+ExecStart=/usr/local/bin/hmn-worker
+EOF
+cat >/etc/systemd/system/hermes-managed-network-heartbeat.timer <<'EOF'
+[Unit]
+Description=Run Hermes Managed Network heartbeat and worker every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=hermes-managed-network-heartbeat.service
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now hermes-managed-network-heartbeat.timer
+"""
+    return "sudo bash -lc " + _shell_quote(script)
+
+
+@node_app.command("install-heartbeat")
+def install_heartbeat(
+    node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
+    master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    node = _select_managed_node(store, node_id)
+    url = (master_url or _default_master_url()).rstrip("/")
+    typer.echo("请复制下面命令到目标节点执行，它会安装心跳/worker 定时器：")
+    typer.echo(_render_worker_installer(node, url))
+
+
 @node_app.command("revoke")
 def revoke_node(
     node_id: str = typer.Argument(...),
@@ -573,6 +651,30 @@ def run_playbook(
     run = PlaybookExecutor(dry_run=dry_run).run(playbook, values={"message": message})
     for result in run.results:
         typer.echo(f"{result.phase}: {result.command}")
+
+
+@task_app.command("run")
+def create_task_command(
+    command: str = typer.Argument(..., help="要在节点上执行的低风险 shell 命令"),
+    node_id: str | None = typer.Option(None, "--node", help="节点 ID；省略时自动选择唯一 managed 节点"),
+    risk: str = typer.Option("low", "--risk", help="风险级别；当前只允许 low/medium"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    if risk not in {"low", "medium"}:
+        typer.echo("当前只允许下发 low/medium 风险任务。")
+        raise typer.Exit(1)
+    store = _store(db)
+    node = _select_managed_node(store, node_id)
+    task = store.create_task(node_id=node.node_id, command=command, risk=risk, created_by="hmn")
+    typer.echo(f"已创建任务: {task.task_id}")
+    typer.echo(f"节点: {node.node_id}")
+    typer.echo(f"命令: {command}")
+
+
+@task_app.command("list")
+def list_task_commands(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    for task in _store(db).list_tasks():
+        typer.echo(f"{task.task_id}	{task.node_id}	{task.status}	risk={task.risk}	{task.command}")
 
 
 @audit_app.command("list")
