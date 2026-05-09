@@ -6,6 +6,7 @@ from uuid import uuid4
 import hermes_managed_network
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
+from typing import Any
 
 from .storage import SQLiteStore
 
@@ -24,6 +25,17 @@ class JoinResponse(BaseModel):
     status: str
     trust_level: str
     labels: list[str]
+
+
+class HeartbeatRequest(BaseModel):
+    fingerprint: str
+    status: str = "ok"
+    facts: dict[str, Any] = Field(default_factory=dict)
+
+
+class HeartbeatResponse(BaseModel):
+    node_id: str
+    status: str
 
 
 def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
@@ -80,6 +92,24 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             trust_level=node.trust_level,
             labels=node.labels,
         )
+
+    @app.post("/api/v1/nodes/{node_id}/heartbeat", response_model=HeartbeatResponse)
+    def heartbeat(node_id: str, request: HeartbeatRequest) -> HeartbeatResponse:
+        node = store.load_node(node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail="node not found")
+        if node.fingerprint != request.fingerprint:
+            raise HTTPException(status_code=403, detail="node fingerprint mismatch")
+        outcome = "ok" if request.status == "ok" else "warn"
+        store.record_audit(
+            event_type="node",
+            subject_type="node",
+            subject_id=node.node_id,
+            action="heartbeat",
+            outcome=outcome,
+            details={"status": request.status, "facts": request.facts},
+        )
+        return HeartbeatResponse(node_id=node.node_id, status=request.status)
 
     return app
 

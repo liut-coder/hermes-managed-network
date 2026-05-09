@@ -33,6 +33,7 @@ app = typer.Typer(
         "  hmn node confirm          自动确认 pending 节点\n"
         "  hmn node status           查看节点详情\n"
         "  hmn node doctor           检查节点登记状态\n"
+        "  hmn node heartbeat-command 生成节点心跳命令\n"
         "  hmn audit list            查看审计\n"
         "  hmn token create          创建 token\n"
         "  hmn version               查看版本\n"
@@ -144,17 +145,19 @@ def _show_menu() -> None:
     typer.echo("3. hmn node confirm                 确认 pending 节点")
     typer.echo("4. hmn node status                  查看节点详情")
     typer.echo("5. hmn node doctor                  检查节点")
-    typer.echo("6. hmn audit list                   查看审计")
-    typer.echo("7. hmn token create                 创建 token")
-    typer.echo("8. hmn version                      查看版本")
-    typer.echo("9. hmn update                       更新主控")
-    typer.echo("10. hmn uninstall                   卸载主控")
+    typer.echo("6. hmn node heartbeat-command       生成心跳命令")
+    typer.echo("7. hmn audit list                   查看审计")
+    typer.echo("8. hmn token create                 创建 token")
+    typer.echo("9. hmn version                      查看版本")
+    typer.echo("10. hmn update                      更新主控")
+    typer.echo("11. hmn uninstall                   卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
     typer.echo("  hmn node confirm")
     typer.echo("  hmn node status")
     typer.echo("  hmn node doctor")
+    typer.echo("  hmn node heartbeat-command")
     typer.echo("  hmn audit list")
     typer.echo("  hmn version")
     typer.echo("帮助：hmn <command> --help")
@@ -170,11 +173,12 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("3) hmn node confirm  确认节点")
         typer.echo("4) hmn node status   节点详情")
         typer.echo("5) hmn node doctor   检查节点")
-        typer.echo("6) hmn audit list    查看审计")
-        typer.echo("7) hmn token create  创建 token")
-        typer.echo("8) hmn version       查看版本")
-        typer.echo("9) hmn update        更新主控")
-        typer.echo("10) hmn uninstall    卸载主控")
+        typer.echo("6) hmn node heartbeat-command  心跳命令")
+        typer.echo("7) hmn audit list    查看审计")
+        typer.echo("8) hmn token create  创建 token")
+        typer.echo("9) hmn version       查看版本")
+        typer.echo("10) hmn update       更新主控")
+        typer.echo("11) hmn uninstall    卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -193,19 +197,22 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"5", "doctor", "node doctor", "hmn node doctor"}:
             doctor_node(node_id=None, db=db)
             return
-        if normalized in {"6", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"6", "heartbeat", "heartbeat-command", "node heartbeat-command", "hmn node heartbeat-command"}:
+            heartbeat_command(node_id=None, master_url=None, db=db)
+            return
+        if normalized in {"7", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"7", "token", "token create", "hmn token create"}:
+        if normalized in {"8", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
-        if normalized in {"8", "version", "hmn version"}:
+        if normalized in {"9", "version", "hmn version"}:
             version()
             return
-        if normalized in {"9", "update", "hmn update"}:
+        if normalized in {"10", "update", "hmn update"}:
             update()
             return
-        if normalized in {"10", "uninstall", "hmn uninstall"}:
+        if normalized in {"11", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -512,6 +519,25 @@ def doctor_node(
     )
     if outcome != "ok":
         raise typer.Exit(1)
+
+
+@node_app.command("heartbeat-command")
+def heartbeat_command(
+    node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
+    master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    node = _select_managed_node(store, node_id)
+    url = (master_url or _default_master_url()).rstrip("/")
+    payload = json.dumps({"fingerprint": node.fingerprint, "status": "ok", "facts": {}}, ensure_ascii=False)
+    typer.echo("请把下面命令放到节点定时任务里执行：")
+    typer.echo(
+        "curl -fsS -X POST "
+        + _shell_quote(f"{url}/api/v1/nodes/{node.node_id}/heartbeat")
+        + " -H 'Content-Type: application/json' --data "
+        + _shell_quote(payload)
+    )
 
 
 @node_app.command("revoke")

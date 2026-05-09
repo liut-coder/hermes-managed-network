@@ -84,6 +84,66 @@ def test_join_script_endpoint_serves_node_bootstrap_script(tmp_path):
     assert "/api/v1/join" in response.text
 
 
+def test_node_heartbeat_endpoint_updates_status_and_records_audit(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_hb",
+            fingerprint="sha256:hb",
+            hostname="heartbeat-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_hb/heartbeat",
+        json={"fingerprint": "sha256:hb", "status": "ok", "facts": {"uptime": "1 day"}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    events = store.list_audit_events()
+    assert events[-1].action == "heartbeat"
+    assert events[-1].subject_id == "node_hb"
+    assert events[-1].outcome == "ok"
+    assert events[-1].details["facts"] == {"uptime": "1 day"}
+
+
+def test_node_heartbeat_rejects_wrong_fingerprint(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_hb",
+            fingerprint="sha256:right",
+            hostname="heartbeat-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_hb/heartbeat",
+        json={"fingerprint": "sha256:wrong", "status": "ok", "facts": {}},
+    )
+
+    assert response.status_code == 403
+
+
 def test_join_endpoint_rejects_reused_token(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)

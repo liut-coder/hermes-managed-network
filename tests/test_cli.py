@@ -94,6 +94,7 @@ def test_menu_shows_quick_actions():
     assert "hmn node confirm" in result.stdout
     assert "hmn node status" in result.stdout
     assert "hmn node doctor" in result.stdout
+    assert "hmn node heartbeat-command" in result.stdout
     assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
@@ -126,6 +127,7 @@ def test_menu_plain_prints_quick_actions():
     assert "hmn node confirm" in result.stdout
     assert "hmn node status" in result.stdout
     assert "hmn node doctor" in result.stdout
+    assert "hmn node heartbeat-command" in result.stdout
     assert "hmn version" in result.stdout
     assert "示例" in result.stdout
 
@@ -187,7 +189,7 @@ def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
     monkeypatch.setenv("HMN_DB", str(db))
     token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
 
-    result = runner.invoke(app, [], input="6\n")
+    result = runner.invoke(app, [], input="7\n")
 
     assert result.exit_code == 0
     assert token_value in result.stdout
@@ -199,7 +201,7 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
 
-    result = runner.invoke(app, [], input="7\n")
+    result = runner.invoke(app, [], input="8\n")
 
     assert result.exit_code == 0
     token_value = result.stdout.strip().splitlines()[-1]
@@ -466,6 +468,63 @@ def test_version_command_prints_package_version():
     assert result.exit_code == 0
     assert "hmn" in result.stdout
     assert "version" in result.stdout
+
+
+
+def test_node_heartbeat_command_prints_copy_paste_command(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_hb_cmd",
+            fingerprint="sha256:hb",
+            hostname="hb-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["node", "heartbeat-command", "--db", str(db), "--master-url", "https://master.example"],
+    )
+
+    assert result.exit_code == 0
+    assert "自动选择 managed 节点: node_hb_cmd (hb-node)" in result.stdout
+    assert "curl -fsS -X POST" in result.stdout
+    assert "https://master.example/api/v1/nodes/node_hb_cmd/heartbeat" in result.stdout
+    assert "sha256:hb" in result.stdout
+
+
+def test_root_menu_can_show_heartbeat_command(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+    monkeypatch.setenv("HMN_PUBLIC_URL", "https://master.example")
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_menu_hb",
+            fingerprint="sha256:hb",
+            hostname="menu-hb-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(app, [], input="6\n")
+
+    assert result.exit_code == 0
+    assert "node_menu_hb/heartbeat" in result.stdout
 
 
 def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
