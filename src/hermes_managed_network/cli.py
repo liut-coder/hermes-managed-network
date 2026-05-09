@@ -35,17 +35,88 @@ def _shell_quote(value: str) -> str:
     return shlex.quote(value)
 
 
+def _render_join_command(token_value: str, master_url: str, user: str, safe: bool) -> str:
+    base_url = master_url.rstrip("/")
+    if safe:
+        return (
+            "tmp=$(mktemp) && curl -fsSL {url}/scripts/join.sh -o \"$tmp\" && "
+            "sha256sum \"$tmp\" && sudo HERMES_JOIN_TOKEN={token} HERMES_MASTER_URL={url} HERMES_USER={user} bash \"$tmp\""
+        ).format(
+            token=_shell_quote(token_value),
+            url=_shell_quote(base_url),
+            user=_shell_quote(user),
+        )
+    return (
+        "sudo HERMES_JOIN_TOKEN={token} HERMES_MASTER_URL={url} HERMES_USER={user} "
+        "bash -s < <(curl -fsSL {url}/scripts/join.sh)"
+    ).format(
+        token=_shell_quote(token_value),
+        url=_shell_quote(base_url),
+        user=_shell_quote(user),
+    )
+
+
+def _parse_labels(labels_csv: str) -> list[str]:
+    return [label.strip() for label in labels_csv.split(",") if label.strip()]
+
+
 @app.command("menu")
 def menu() -> None:
     typer.echo("HMN 快速菜单")
-    typer.echo("1. token create")
-    typer.echo("2. token join-command")
-    typer.echo("3. token list")
-    typer.echo("4. node list")
-    typer.echo("5. audit list")
-    typer.echo("6. playbook run")
+    typer.echo("1. wake")
+    typer.echo("2. token create")
+    typer.echo("3. token join-command")
+    typer.echo("4. token list")
+    typer.echo("5. node list")
+    typer.echo("6. audit list")
+    typer.echo("7. playbook run")
     typer.echo("")
     typer.echo("直接用子命令也可以，更适合自动化。")
+
+
+@app.command("wake")
+def wake(
+    db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite database path"),
+) -> None:
+    """Interactively create a one-time join token and node bootstrap command."""
+    hostname = typer.prompt("要接入的机器 hostname", default="s22900.dartnode.com")
+    address = typer.prompt("机器 IP/地址", default="23.165.105.105")
+    master_url = typer.prompt("主控 URL，例如 http://100.64.0.10:8765")
+    trust_level = typer.prompt("信任级别 A/B/C", default="B").upper()
+    labels_csv = typer.prompt("标签，逗号分隔", default="d2,worker,s22900")
+    user = typer.prompt("节点系统用户", default="hermes")
+    ttl_minutes = typer.prompt("token 有效期分钟", default=30, type=int)
+    labels = _parse_labels(labels_csv)
+
+    token_store = JoinTokenStore()
+    token = token_store.create(
+        trust_level=trust_level,
+        labels=labels,
+        ttl=timedelta(minutes=ttl_minutes),
+    )
+    store = _store(db)
+    store.save_token(token)
+    store.record_audit(
+        event_type="token",
+        subject_type="join_token",
+        subject_id=token.value,
+        action="create_for_wake",
+        outcome="ok",
+        details={
+            "hostname": hostname,
+            "address": address,
+            "trust_level": token.trust_level,
+            "labels": token.labels,
+            "ttl_minutes": ttl_minutes,
+        },
+    )
+    typer.echo("")
+    typer.echo("唤醒脚本已生成")
+    typer.echo(f"机器: {hostname}")
+    typer.echo(f"地址: {address}")
+    typer.echo(f"信任级别: {trust_level}")
+    typer.echo("请复制下面这条命令到目标机器执行：")
+    typer.echo(_render_join_command(token.value, master_url, user, safe=True))
 
 
 @token_app.command("create")
@@ -109,24 +180,7 @@ def join_command(
     user: str = typer.Option("hermes", "--user", help="System user to create"),
     safe: bool = typer.Option(False, "--safe/--unsafe", help="Emit a safer download-and-run command"),
 ) -> None:
-    base_url = master_url.rstrip("/")
-    if safe:
-        typer.echo(
-            "tmp=$(mktemp) && curl -fsSL {url}/scripts/join.sh -o \"$tmp\" && "
-            "sha256sum \"$tmp\" && sudo HERMES_JOIN_TOKEN={token} HERMES_MASTER_URL={url} HERMES_USER={user} bash \"$tmp\"".format(
-                token=_shell_quote(token_value),
-                url=_shell_quote(base_url),
-                user=_shell_quote(user),
-            )
-        )
-        return
-    typer.echo(
-        "sudo HERMES_JOIN_TOKEN={token} HERMES_MASTER_URL={url} HERMES_USER={user} bash -s < <(curl -fsSL {url}/scripts/join.sh)".format(
-            token=_shell_quote(token_value),
-            url=_shell_quote(base_url),
-            user=_shell_quote(user),
-        )
-    )
+    typer.echo(_render_join_command(token_value, master_url, user, safe=safe))
 
 
 @node_app.command("list")

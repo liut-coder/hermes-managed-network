@@ -85,9 +85,11 @@ Docs / Backup / Monitor
 
 ## CLI
 
+- `hmn wake`：交互式输入机器信息，生成一次性 token 和安全接入命令
 - `hmn token create`：创建一次性 join token
 - `hmn token join-command`：生成节点接入命令
 - `hmn node list`：查看节点
+- `hmn audit list`：查看审计日志
 - `hmn playbook run`：本地演练 playbook
 
 ## 设计原则
@@ -106,6 +108,16 @@ Docs / Backup / Monitor
 ```bash
 sudo bash scripts/install-master.sh
 ```
+
+### 唤醒一台新节点
+
+主控安装完成后，推荐用交互式唤醒向导生成接入命令：
+
+```bash
+hmn wake
+```
+
+向导会询问 hostname、机器地址、主控 URL、信任级别、标签和 token 有效期，随后输出一条可复制到目标机器执行的安全接入命令。
 
 ### 创建 join token
 

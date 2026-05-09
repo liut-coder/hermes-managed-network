@@ -92,3 +92,27 @@ def test_menu_shows_quick_actions():
     assert result.exit_code == 0
     assert "HMN 快速菜单" in result.stdout
     assert "audit list" in result.stdout
+
+
+def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+
+    result = runner.invoke(
+        app,
+        ["wake", "--db", str(db)],
+        input="s22900.dartnode.com\n23.165.105.105\nhttp://master.internal:8765\nB\nd2,worker,s22900\nhermes\n30\n",
+    )
+
+    assert result.exit_code == 0
+    assert "唤醒脚本已生成" in result.stdout
+    assert "机器: s22900.dartnode.com" in result.stdout
+    assert "地址: 23.165.105.105" in result.stdout
+    assert "HERMES_JOIN_TOKEN=" in result.stdout
+    assert "HERMES_MASTER_URL=http://master.internal:8765" in result.stdout
+    assert "mktemp" in result.stdout
+    assert "sha256sum" in result.stdout
+    tokens = SQLiteStore(db).list_tokens()
+    assert len(tokens) == 1
+    assert tokens[0].trust_level == "B"
+    assert tokens[0].labels == ["d2", "worker", "s22900"]
