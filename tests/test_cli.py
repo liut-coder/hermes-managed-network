@@ -87,23 +87,33 @@ def test_cli_can_list_audit_events_as_json_lines(tmp_path):
 def test_menu_shows_quick_actions():
     runner = CliRunner()
 
-    result = runner.invoke(app, ["menu"])
+    result = runner.invoke(app, ["menu"], input="q\n")
 
     assert result.exit_code == 0
-    assert "HMN 快速菜单" in result.stdout
-    assert "audit list" in result.stdout
+    assert "HMN 交互菜单" in result.stdout
+    assert "查看审计" in result.stdout
 
 
 def test_root_command_shows_menu_instead_of_missing_command():
     runner = CliRunner()
 
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, [], input="q\n")
+
+    assert result.exit_code == 0
+    assert "HMN 交互菜单" in result.stdout
+    assert "接入新机器" in result.stdout
+    assert "更新主控" in result.stdout
+    assert "卸载主控" in result.stdout
+
+
+def test_menu_plain_prints_quick_actions():
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["menu", "--plain"])
 
     assert result.exit_code == 0
     assert "HMN 快速菜单" in result.stdout
     assert "hmn wake" in result.stdout
-    assert "hmn update" in result.stdout
-    assert "hmn uninstall" in result.stdout
 
 
 def test_update_command_prints_raw_github_update_command():

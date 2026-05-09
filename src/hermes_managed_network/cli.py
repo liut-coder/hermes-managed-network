@@ -124,16 +124,56 @@ def _show_menu() -> None:
     typer.echo("帮助：hmn --help")
 
 
+def _show_interactive_menu() -> None:
+    while True:
+        typer.echo("")
+        typer.echo("HMN 交互菜单")
+        typer.echo("1. 接入新机器")
+        typer.echo("2. 查看节点")
+        typer.echo("3. 查看审计")
+        typer.echo("4. 创建 token")
+        typer.echo("5. 更新主控")
+        typer.echo("6. 卸载主控")
+        typer.echo("q. 退出")
+        choice = typer.prompt("请选择", default="1")
+        normalized = choice.strip().lower()
+        if normalized in {"1", "wake"}:
+            wake()
+            return
+        if normalized in {"2", "node", "nodes"}:
+            list_nodes()
+            return
+        if normalized in {"3", "audit"}:
+            list_audit_events()
+            return
+        if normalized in {"4", "token"}:
+            create_token()
+            return
+        if normalized in {"5", "update"}:
+            update()
+            return
+        if normalized in {"6", "uninstall"}:
+            uninstall()
+            return
+        if normalized in {"q", "quit", "exit"}:
+            typer.echo("再见~")
+            return
+        typer.echo("未知选项，请重试。")
+
+
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
     """Hermes 托管组网主控命令行。"""
     if ctx.invoked_subcommand is None:
-        _show_menu()
+        _show_interactive_menu()
 
 
 @app.command("menu")
-def menu() -> None:
-    _show_menu()
+def menu(plain: bool = typer.Option(False, "--plain", help="只打印快捷命令，不进入交互。")) -> None:
+    if plain:
+        _show_menu()
+    else:
+        _show_interactive_menu()
 
 
 @app.command("update")
