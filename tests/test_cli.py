@@ -6,6 +6,21 @@ from hermes_managed_network.cli import app
 from hermes_managed_network.storage import SQLiteStore
 
 
+def _managed_node(node_id="node_worker", hostname="worker-node", fingerprint="sha256:worker"):
+    from hermes_managed_network.inventory import Node
+
+    return Node(
+        node_id=node_id,
+        fingerprint=fingerprint,
+        hostname=hostname,
+        addresses=[],
+        trust_level="B",
+        labels=[],
+        status="managed",
+        permission_bundles=["observe"],
+    )
+
+
 def test_cli_can_create_and_revoke_token(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -95,6 +110,8 @@ def test_menu_shows_quick_actions():
     assert "hmn node status" in result.stdout
     assert "hmn node doctor" in result.stdout
     assert "hmn node heartbeat-command" in result.stdout
+    assert "hmn node install-heartbeat" in result.stdout
+    assert "hmn node worker-status" in result.stdout
     assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
@@ -128,6 +145,8 @@ def test_menu_plain_prints_quick_actions():
     assert "hmn node status" in result.stdout
     assert "hmn node doctor" in result.stdout
     assert "hmn node heartbeat-command" in result.stdout
+    assert "hmn node install-heartbeat" in result.stdout
+    assert "hmn node worker-status" in result.stdout
     assert "hmn version" in result.stdout
     assert "示例" in result.stdout
 
@@ -189,7 +208,7 @@ def test_root_menu_can_show_audit_without_optioninfo(tmp_path, monkeypatch):
     monkeypatch.setenv("HMN_DB", str(db))
     token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--trust", "B"]).stdout.strip()
 
-    result = runner.invoke(app, [], input="10\n")
+    result = runner.invoke(app, [], input="11\n")
 
     assert result.exit_code == 0
     assert token_value in result.stdout
@@ -201,7 +220,7 @@ def test_root_menu_can_create_token_without_optioninfo(tmp_path, monkeypatch):
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
 
-    result = runner.invoke(app, [], input="11\n")
+    result = runner.invoke(app, [], input="12\n")
 
     assert result.exit_code == 0
     token_value = result.stdout.strip().splitlines()[-1]
@@ -630,6 +649,102 @@ def test_node_install_heartbeat_records_audit_event(tmp_path):
         "service_manager": "systemd",
         "enable_exec": False,
     }
+
+
+def test_node_worker_status_reports_missing_heartbeat(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(_managed_node(node_id="node_no_hb", hostname="no-hb-node"))
+
+    result = runner.invoke(app, ["node", "worker-status", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "自动选择 managed 节点: node_no_hb (no-hb-node)" in result.stdout
+    assert "worker: node_no_hb" in result.stdout
+    assert "心跳: WARN 未收到" in result.stdout
+    assert "worker: WARN 未安装或未上报" in result.stdout
+    assert "执行: SAFE HMN_ENABLE_EXEC=0" in result.stdout
+
+
+def test_node_worker_status_reports_ok_from_heartbeat_audit(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_hb_ok", hostname="hb-ok-node"))
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_hb_ok",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_protocol_version": "0.1",
+                "worker_version": "0.1.0",
+                "exec_enabled": False,
+            },
+            "worker_compatible": True,
+        },
+    )
+
+    result = runner.invoke(app, ["node", "worker-status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "worker: node_hb_ok" in result.stdout
+    assert "心跳: OK" in result.stdout
+    assert "worker: OK installed/reported" in result.stdout
+    assert "协议: OK 0.1" in result.stdout
+    assert "版本: 0.1.0" in result.stdout
+    assert "执行: SAFE HMN_ENABLE_EXEC=0" in result.stdout
+
+
+def test_node_worker_status_warns_for_incompatible_worker(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_hb_bad", hostname="hb-bad-node"))
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_hb_bad",
+        action="heartbeat",
+        outcome="warn",
+        details={
+            "status": "ok",
+            "facts": {"worker_protocol_version": "9.9", "exec_enabled": True},
+            "worker_compatible": False,
+        },
+    )
+
+    result = runner.invoke(app, ["node", "worker-status", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "心跳: WARN" in result.stdout
+    assert "协议: WARN 9.9 incompatible" in result.stdout
+    assert "执行: ENABLED HMN_ENABLE_EXEC=1" in result.stdout
+
+
+def test_root_menu_can_show_worker_status(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_DB", str(db))
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_menu_worker", hostname="menu-worker-node"))
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_menu_worker",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
+    )
+
+    result = runner.invoke(app, [], input="8\n")
+
+    assert result.exit_code == 0
+    assert "worker: node_menu_worker" in result.stdout
+    assert "心跳: OK" in result.stdout
 
 
 def test_task_run_creates_task_for_auto_selected_node(tmp_path):

@@ -36,6 +36,7 @@ app = typer.Typer(
         "  hmn node doctor           检查节点登记状态\n"
         "  hmn node heartbeat-command 生成节点心跳命令\n"
         "  hmn node install-heartbeat 安装节点心跳/worker\n"
+        "  hmn node worker-status     查看节点 worker 安装状态\n"
         "  hmn task run              下发低风险任务\n"
         "  hmn task list             查看任务队列\n"
         "  hmn audit list            查看审计\n"
@@ -153,13 +154,14 @@ def _show_menu() -> None:
     typer.echo("5. hmn node doctor                  检查节点")
     typer.echo("6. hmn node heartbeat-command       生成心跳命令")
     typer.echo("7. hmn node install-heartbeat       安装心跳/worker")
-    typer.echo("8. hmn task run                     下发低风险任务")
-    typer.echo("9. hmn task list                    查看任务")
-    typer.echo("10. hmn audit list                  查看审计")
-    typer.echo("11. hmn token create                创建 token")
-    typer.echo("12. hmn version                     查看版本")
-    typer.echo("13. hmn update                      更新主控")
-    typer.echo("14. hmn uninstall                   卸载主控")
+    typer.echo("8. hmn node worker-status           查看 worker 状态")
+    typer.echo("9. hmn task run                     下发低风险任务")
+    typer.echo("10. hmn task list                   查看任务")
+    typer.echo("11. hmn audit list                  查看审计")
+    typer.echo("12. hmn token create                创建 token")
+    typer.echo("13. hmn version                     查看版本")
+    typer.echo("14. hmn update                      更新主控")
+    typer.echo("15. hmn uninstall                   卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
@@ -168,6 +170,7 @@ def _show_menu() -> None:
     typer.echo("  hmn node doctor")
     typer.echo("  hmn node heartbeat-command")
     typer.echo("  hmn node install-heartbeat")
+    typer.echo("  hmn node worker-status")
     typer.echo("  hmn task run 'uptime'")
     typer.echo("  hmn task list")
     typer.echo("  hmn audit list")
@@ -187,13 +190,14 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("5) hmn node doctor   检查节点")
         typer.echo("6) hmn node heartbeat-command  心跳命令")
         typer.echo("7) hmn node install-heartbeat  安装心跳/worker")
-        typer.echo("8) hmn task run      下发任务")
-        typer.echo("9) hmn task list     查看任务")
-        typer.echo("10) hmn audit list   查看审计")
-        typer.echo("11) hmn token create 创建 token")
-        typer.echo("12) hmn version      查看版本")
-        typer.echo("13) hmn update       更新主控")
-        typer.echo("14) hmn uninstall    卸载主控")
+        typer.echo("8) hmn node worker-status     worker 状态")
+        typer.echo("9) hmn task run      下发任务")
+        typer.echo("10) hmn task list    查看任务")
+        typer.echo("11) hmn audit list   查看审计")
+        typer.echo("12) hmn token create 创建 token")
+        typer.echo("13) hmn version      查看版本")
+        typer.echo("14) hmn update       更新主控")
+        typer.echo("15) hmn uninstall    卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -218,26 +222,29 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"7", "install-heartbeat", "node install-heartbeat", "hmn node install-heartbeat"}:
             install_heartbeat(node_id=None, master_url=None, db=db)
             return
-        if normalized in {"task run", "hmn task run"}:
+        if normalized in {"8", "worker", "worker status", "node worker-status", "hmn node worker-status"}:
+            worker_status(node_id=None, db=db)
+            return
+        if normalized in {"9", "task run", "hmn task run"}:
             command = typer.prompt("任务命令", default="uptime")
             create_task_command(command=command, node_id=None, risk="low", db=db)
             return
-        if normalized in {"9", "task", "task list", "hmn task list"}:
+        if normalized in {"10", "task", "task list", "hmn task list"}:
             list_task_commands(db=db)
             return
-        if normalized in {"7", "10", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"11", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"8", "11", "token", "token create", "hmn token create"}:
+        if normalized in {"12", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
-        if normalized in {"12", "version", "hmn version"}:
+        if normalized in {"13", "version", "hmn version"}:
             version()
             return
-        if normalized in {"13", "update", "hmn update"}:
+        if normalized in {"14", "update", "hmn update"}:
             update()
             return
-        if normalized in {"14", "uninstall", "hmn uninstall"}:
+        if normalized in {"15", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -562,6 +569,61 @@ def heartbeat_command(
         + " -H 'Content-Type: application/json' --data "
         + _shell_quote(payload)
     )
+
+
+def _latest_heartbeat_event(store: SQLiteStore, node_id: str):
+    for event in reversed(store.list_audit_events()):
+        if event.event_type == "node" and event.subject_id == node_id and event.action == "heartbeat":
+            return event
+    return None
+
+
+@node_app.command("worker-status")
+def worker_status(
+    node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    node = _select_managed_node(store, node_id)
+    event = _latest_heartbeat_event(store, node.node_id)
+    facts = event.details.get("facts", {}) if event else {}
+    compatible = bool(event.details.get("worker_compatible", True)) if event else False
+    protocol = facts.get("worker_protocol_version") or "unknown"
+    version_value = facts.get("worker_version") or "unknown"
+    exec_enabled = bool(facts.get("exec_enabled", False))
+
+    typer.echo(f"worker: {node.node_id}")
+    typer.echo(f"host: {node.hostname}")
+    if event is None:
+        typer.echo("心跳: WARN 未收到")
+        typer.echo("worker: WARN 未安装或未上报")
+    else:
+        typer.echo(f"心跳: {'OK' if event.outcome == 'ok' else 'WARN'} {event.created_at.isoformat()}")
+        typer.echo("worker: OK installed/reported")
+    if compatible:
+        typer.echo(f"协议: OK {protocol}")
+    else:
+        typer.echo(f"协议: WARN {protocol} incompatible")
+    typer.echo(f"版本: {version_value}")
+    if exec_enabled:
+        typer.echo("执行: ENABLED HMN_ENABLE_EXEC=1")
+    else:
+        typer.echo("执行: SAFE HMN_ENABLE_EXEC=0")
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id=node.node_id,
+        action="worker-status",
+        outcome="ok" if event is not None and event.outcome == "ok" and compatible else "warn",
+        details={
+            "heartbeat_seen": event is not None,
+            "worker_protocol_version": protocol,
+            "worker_compatible": compatible,
+            "exec_enabled": exec_enabled,
+        },
+    )
+    if event is None or event.outcome != "ok" or not compatible:
+        raise typer.Exit(1)
 
 
 def _render_worker_installer(node, master_url: str) -> str:
