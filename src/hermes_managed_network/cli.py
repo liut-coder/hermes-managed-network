@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import shlex
 import socket
 import subprocess
@@ -18,6 +19,8 @@ from .tokens import JoinTokenStore
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_PLAYBOOK_DIR = Path("playbooks")
+INSTALL_URL = "https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh"
+SERVICE_NAME = "hermes-managed-network.service"
 
 app = typer.Typer(help="Hermes 托管组网主控命令行", invoke_without_command=True)
 token_app = typer.Typer(help="管理一次性节点接入令牌")
@@ -114,6 +117,8 @@ def _show_menu() -> None:
     typer.echo("4. hmn token create                 创建一次性 token")
     typer.echo("5. hmn token join-command <TOKEN>   生成节点接入命令")
     typer.echo("6. hmn playbook run <FILE>          演练 playbook")
+    typer.echo("7. hmn update                       更新主控")
+    typer.echo("8. hmn uninstall                    查看卸载命令")
     typer.echo("")
     typer.echo("提示：直接运行 `hmn wake` 开始接入新机器。")
     typer.echo("帮助：hmn --help")
@@ -129,6 +134,43 @@ def main(ctx: typer.Context) -> None:
 @app.command("menu")
 def menu() -> None:
     _show_menu()
+
+
+@app.command("update")
+def update() -> None:
+    """输出主控更新命令。"""
+    typer.echo("更新命令：")
+    typer.echo(f"curl -fsSL {INSTALL_URL} | sudo bash")
+
+
+@app.command("uninstall")
+def uninstall(
+    yes: bool = typer.Option(False, "--yes", help="确认执行卸载。默认只显示卸载命令。"),
+    keep_data: bool = typer.Option(True, "--keep-data/--purge-data", help="保留数据库和配置。"),
+) -> None:
+    """显示或执行主控卸载。"""
+    commands = [
+        f"systemctl disable --now {SERVICE_NAME} || true",
+        f"rm -f /etc/systemd/system/{SERVICE_NAME}",
+        "systemctl daemon-reload || true",
+        "rm -f /usr/local/bin/hmn /usr/local/bin/hmn-server",
+        "rm -rf /opt/hermes-managed-network",
+    ]
+    if not keep_data:
+        commands.extend(["rm -rf /etc/hermes-managed-network", "rm -rf /var/lib/hermes-managed-network"])
+    if not yes:
+        typer.echo("卸载命令：")
+        typer.echo("sudo bash -lc " + _shell_quote(" && ".join(commands)))
+        typer.echo("")
+        typer.echo("确认要由 hmn 直接执行时，使用：hmn uninstall --yes")
+        typer.echo("如需同时删除数据库和配置：hmn uninstall --yes --purge-data")
+        return
+    if os.geteuid() != 0:
+        raise typer.BadParameter("执行卸载需要 root，请使用 sudo hmn uninstall --yes")
+    for command in commands:
+        typer.echo(f"执行: {command}")
+        subprocess.run(command, shell=True, check=False)
+    typer.echo("卸载完成")
 
 
 @app.command("wake")

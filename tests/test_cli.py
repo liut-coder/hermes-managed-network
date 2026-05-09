@@ -102,6 +102,30 @@ def test_root_command_shows_menu_instead_of_missing_command():
     assert result.exit_code == 0
     assert "HMN 快速菜单" in result.stdout
     assert "hmn wake" in result.stdout
+    assert "hmn update" in result.stdout
+    assert "hmn uninstall" in result.stdout
+
+
+def test_update_command_prints_raw_github_update_command():
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["update"])
+
+    assert result.exit_code == 0
+    assert "更新命令" in result.stdout
+    assert "raw.githubusercontent.com/liut-coder/hermes-managed-network" in result.stdout
+    assert "install.sh | sudo bash" in result.stdout
+
+
+def test_uninstall_without_yes_prints_safe_command_only():
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["uninstall"])
+
+    assert result.exit_code == 0
+    assert "卸载命令" in result.stdout
+    assert "hmn uninstall --yes" in result.stdout
+    assert "systemctl disable --now hermes-managed-network.service" in result.stdout
 
 
 def test_wake_interactively_creates_token_and_safe_join_command(tmp_path):
