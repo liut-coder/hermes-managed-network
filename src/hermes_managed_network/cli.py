@@ -1188,6 +1188,37 @@ def apply_component(
     component, _node = _load_component_for_node(store, component_id, node_id)
     config = _parse_key_values(set_values)
     plan = _component_plan(component, node_id=node_id, config=config, action="apply", mutating=False)
+    if component.risk == "high":
+        run = store.record_component_run(
+            component_id=component.id,
+            node_id=node_id,
+            action="apply",
+            risk=component.risk,
+            status="pending_approval",
+            plan=plan,
+            result={"machine_changed": False, "approval_required": True},
+        )
+        approval = store.create_approval_request(
+            subject_type="component_run",
+            subject_id=run.run_id,
+            action="component.apply",
+            risk=component.risk,
+            requested_by="hmn",
+            details={
+                "run_id": run.run_id,
+                "component_id": component.id,
+                "node_id": node_id,
+                "config": config,
+                "version": component.version,
+                "driver": str(component.drivers.get("default", "")),
+            },
+        )
+        typer.echo(f"需要审批: {approval.approval_id}")
+        typer.echo(f"apply: {component.id}")
+        typer.echo(f"run: {run.run_id}")
+        typer.echo(f"node: {node_id}")
+        typer.echo("state: pending_approval")
+        raise typer.Exit(1)
     result = {"machine_changed": False, "state_closed_loop": True, "remote_execution": "not_enabled"}
     run = store.record_component_run(
         component_id=component.id,

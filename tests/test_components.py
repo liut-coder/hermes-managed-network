@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from dataclasses import replace
 
 from typer.testing import CliRunner
 
@@ -305,6 +307,134 @@ def test_component_apply_updates_state_without_touching_machine_and_records_audi
     events = store.list_audit_events()
     assert events[-1].action == "apply"
     assert events[-1].outcome == "state_recorded"
+
+
+def test_high_risk_component_apply_requires_approval_and_dispatches_after_approve(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _save_managed_node(store, "node_high_apply")
+    high_component = replace(load_builtin_components()["reverse-proxy"], id="danger-proxy", risk="high")
+    store.save_component(high_component)
+
+    result = runner.invoke(
+        app,
+        [
+            "component",
+            "apply",
+            "danger-proxy",
+            "--node",
+            "node_high_apply",
+            "--set",
+            "domain=example.com",
+            "--db",
+            str(db),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "需要审批:" in result.stdout
+    assert store.list_node_components("node_high_apply") == []
+    runs = store.list_component_runs()
+    assert len(runs) == 1
+    assert runs[0].action == "apply"
+    assert runs[0].status == "pending_approval"
+    approvals = store.list_approval_requests(status="pending")
+    assert len(approvals) == 1
+    assert approvals[0].subject_type == "component_run"
+    assert approvals[0].subject_id == runs[0].run_id
+    assert approvals[0].action == "component.apply"
+
+    approved = runner.invoke(app, ["approval", "approve", approvals[0].approval_id, "--db", str(db)])
+
+    assert approved.exit_code == 0
+    item = store.list_node_components("node_high_apply")[0]
+    assert item.component_id == "danger-proxy"
+    assert item.desired_state == "enabled"
+    assert item.current_state == "planned"
+    assert item.last_run_id == runs[0].run_id
+    dispatched_run = store.list_component_runs()[0]
+    assert dispatched_run.run_id == runs[0].run_id
+    assert dispatched_run.status == "state_recorded"
+    assert dispatched_run.result["approval_id"] == approvals[0].approval_id
+
+
+def test_dispatch_approved_component_apply_is_idempotent_under_repeated_calls(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    run = store.record_component_run(
+        component_id="danger-proxy",
+        node_id="node_repeat_component",
+        action="apply",
+        risk="high",
+        status="pending_approval",
+        plan={"config": {"domain": "example.com"}},
+    )
+    approval = store.create_approval_request(
+        subject_type="component_run",
+        subject_id=run.run_id,
+        action="component.apply",
+        risk="high",
+        requested_by="hmn",
+        details={
+            "component_id": "danger-proxy",
+            "node_id": "node_repeat_component",
+            "config": {"domain": "example.com"},
+            "version": "1.2.3",
+            "driver": "caddy",
+        },
+    )
+    store.resolve_approval_request(approval.approval_id, status="approved", decided_by="Misk")
+
+    def dispatch_again():
+        return SQLiteStore(db).dispatch_approved_component_apply(approval.approval_id)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        dispatched = list(executor.map(lambda _: dispatch_again(), range(16)))
+
+    runs = SQLiteStore(db).list_component_runs()
+    assert len(runs) == 1
+    assert runs[0].status == "state_recorded"
+    assert {run.run_id for run in dispatched if run is not None} == {runs[0].run_id}
+    items = SQLiteStore(db).list_node_components("node_repeat_component")
+    assert len(items) == 1
+    assert items[0].component_id == "danger-proxy"
+    assert items[0].last_run_id == run.run_id
+    events = SQLiteStore(db).list_audit_events()
+    assert [event.action for event in events].count("apply") == 2  # original pending run + one approved dispatch
+    assert [event.outcome for event in events].count("state_recorded") == 1
+
+
+def test_dispatch_approved_component_apply_returns_existing_state_recorded_run_without_side_effects(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    run = store.record_component_run(
+        component_id="danger-proxy",
+        node_id="node_recorded_component",
+        action="apply",
+        risk="high",
+        status="state_recorded",
+        result={"already": True},
+    )
+    approval = store.create_approval_request(
+        subject_type="component_run",
+        subject_id=run.run_id,
+        action="component.apply",
+        risk="high",
+        requested_by="hmn",
+        details={"component_id": "danger-proxy", "node_id": "node_recorded_component"},
+    )
+    store.resolve_approval_request(approval.approval_id, status="approved", decided_by="Misk")
+    before_events = SQLiteStore(db).list_audit_events()
+
+    dispatched = SQLiteStore(db).dispatch_approved_component_apply(approval.approval_id)
+
+    assert dispatched is not None
+    assert dispatched.run_id == run.run_id
+    assert dispatched.status == "state_recorded"
+    assert dispatched.result == {"already": True}
+    assert SQLiteStore(db).list_node_components("node_recorded_component") == []
+    assert SQLiteStore(db).list_audit_events() == before_events
 
 
 def test_component_verify_is_independent_from_apply_and_records_audit(tmp_path):

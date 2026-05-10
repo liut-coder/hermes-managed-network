@@ -396,7 +396,115 @@ class SQLiteStore:
         )
         if status == "approved" and approval.subject_type == "task" and approval.action == "task.run":
             self.dispatch_approved_task_request(approval.approval_id)
+        if status == "approved" and approval.subject_type == "component_run" and approval.action == "component.apply":
+            self.dispatch_approved_component_apply(approval.approval_id)
         return approval
+
+    def dispatch_approved_component_apply(self, approval_id: str) -> ComponentRun | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            approval_row = conn.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
+            if approval_row is None:
+                return None
+            approval = self._approval_from_row(approval_row)
+            if approval.status != "approved":
+                return None
+            if approval.subject_type != "component_run" or approval.action != "component.apply":
+                return None
+            run_row = conn.execute("SELECT * FROM component_runs WHERE run_id = ?", (approval.subject_id,)).fetchone()
+            if run_row is None:
+                return None
+            run = self._component_run_from_row(run_row)
+            if run.status == "state_recorded":
+                return run
+
+            details = approval.details
+            component_id = str(details.get("component_id") or run.component_id)
+            node_id = str(details.get("node_id") or run.node_id)
+            config = details.get("config") if isinstance(details.get("config"), dict) else {}
+            conn.execute(
+                """
+                INSERT INTO node_components (
+                    node_id, component_id, desired_state, current_state, config_json,
+                    installed_version, driver, last_plan_id, last_run_id, last_verified_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id, component_id) DO UPDATE SET
+                    desired_state=excluded.desired_state,
+                    current_state=excluded.current_state,
+                    config_json=excluded.config_json,
+                    installed_version=excluded.installed_version,
+                    driver=excluded.driver,
+                    last_plan_id=excluded.last_plan_id,
+                    last_run_id=excluded.last_run_id,
+                    last_verified_at=excluded.last_verified_at
+                """,
+                (
+                    node_id,
+                    component_id,
+                    "enabled",
+                    "planned",
+                    json.dumps(config, sort_keys=True),
+                    str(details.get("version") or ""),
+                    str(details.get("driver") or ""),
+                    "",
+                    run.run_id,
+                    None,
+                ),
+            )
+            run.status = "state_recorded"
+            run.result = {
+                **run.result,
+                "machine_changed": False,
+                "state_closed_loop": True,
+                "remote_execution": "not_enabled",
+                "approval_id": approval.approval_id,
+                "approved_by": approval.decided_by,
+            }
+            run.completed_at = datetime.now(timezone.utc)
+            updated = conn.execute(
+                """
+                UPDATE component_runs
+                SET status = ?, plan_json = ?, result_json = ?, completed_at = ?
+                WHERE run_id = ? AND status != 'state_recorded'
+                """,
+                (
+                    run.status,
+                    json.dumps(run.plan, sort_keys=True),
+                    json.dumps(run.result, sort_keys=True),
+                    _dt(run.completed_at),
+                    run.run_id,
+                ),
+            )
+            if updated.rowcount == 0:
+                refreshed = conn.execute("SELECT * FROM component_runs WHERE run_id = ?", (run.run_id,)).fetchone()
+                return self._component_run_from_row(refreshed) if refreshed else None
+            event = AuditEvent(
+                event_type="component",
+                subject_type="component",
+                subject_id=component_id,
+                action="apply",
+                outcome="state_recorded",
+                details={"node_id": node_id, "run_id": run.run_id, "risk": run.risk, "approval_id": approval.approval_id},
+                created_at=datetime.now(timezone.utc),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_events (
+                    event_type, subject_type, subject_id, action, outcome,
+                    details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_type,
+                    event.subject_type,
+                    event.subject_id,
+                    event.action,
+                    event.outcome,
+                    json.dumps(event.details, sort_keys=True),
+                    _dt(event.created_at),
+                ),
+            )
+            return run
 
     def dispatch_approved_task_request(self, approval_id: str) -> Task | None:
         with self.connect() as conn:
@@ -848,6 +956,28 @@ class SQLiteStore:
             created_at=_parse_dt(row["created_at"]),
             completed_at=_parse_dt(row["completed_at"]),
         )
+
+    def save_component_run(self, run: ComponentRun) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE component_runs
+                SET status = ?, plan_json = ?, result_json = ?, completed_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    run.status,
+                    json.dumps(run.plan, sort_keys=True),
+                    json.dumps(run.result, sort_keys=True),
+                    _dt(run.completed_at),
+                    run.run_id,
+                ),
+            )
+
+    def load_component_run(self, run_id: str) -> ComponentRun | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM component_runs WHERE run_id = ?", (run_id,)).fetchone()
+        return self._component_run_from_row(row) if row else None
 
     def list_component_runs(self) -> list[ComponentRun]:
         with self.connect() as conn:
