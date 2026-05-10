@@ -219,6 +219,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         node = store.load_node(node_id)
         if node is None:
             raise HTTPException(status_code=404, detail="node not found")
+        if node.status == "revoked":
+            raise HTTPException(status_code=403, detail="node is revoked")
         if node.fingerprint != request.fingerprint:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         outcome = "ok" if request.status == "ok" else "warn"
@@ -260,11 +262,13 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         node = store.load_node(node_id)
         if node is None:
             raise HTTPException(status_code=404, detail="node not found")
+        if node.status != "managed":
+            raise HTTPException(status_code=403, detail="node is not managed")
         if node.fingerprint != request.fingerprint:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         if not is_worker_compatible(current_version_info().worker_protocol_version, request.worker_protocol_version):
             raise HTTPException(status_code=426, detail="worker protocol version mismatch; update node worker")
-        task = store.next_pending_task(node_id)
+        task = store.next_pending_task(node_id, executor="worker")
         if task is None:
             return NoTaskResponse(task=None)
         return TaskResponse(
@@ -287,6 +291,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         node = store.load_node(task.node_id)
         if node is None:
             raise HTTPException(status_code=404, detail="node not found")
+        if node.status != "managed":
+            raise HTTPException(status_code=403, detail="node is not managed")
         if node.fingerprint != request.fingerprint:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         updated = store.complete_task(task_id, exit_code=request.exit_code, stdout=request.stdout, stderr=request.stderr)

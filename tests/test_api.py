@@ -251,6 +251,35 @@ def test_task_next_returns_no_task_when_queue_empty(tmp_path):
     assert response.json() == {"task": None}
 
 
+def test_task_next_ignores_pending_ssh_tasks(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_ssh_only",
+            fingerprint="sha256:ssh-only",
+            hostname="ssh-only-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    store.create_task(node_id="node_ssh_only", command="uptime", risk="low", created_by="test", executor="ssh")
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_ssh_only/tasks/next",
+        json={"fingerprint": "sha256:ssh-only", "worker_protocol_version": current_version_info().worker_protocol_version},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"task": None}
+
+
 def test_join_endpoint_rejects_reused_token(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)

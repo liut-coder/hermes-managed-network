@@ -57,6 +57,32 @@ def test_sqlite_persists_nodes(tmp_path):
     assert store.list_nodes() == [node]
 
 
+def test_sqlite_persists_node_ssh_fields(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    node = Node(
+        node_id="node-ssh",
+        fingerprint="sha256:ssh",
+        hostname="ssh-node",
+        addresses=["10.0.0.10"],
+        trust_level="B",
+        labels=["role=edge"],
+        status="managed",
+        permission_bundles=["observe"],
+        ssh_host="100.64.0.10",
+        ssh_user="ops",
+        ssh_port=2222,
+    )
+
+    store.save_node(node)
+    loaded = store.load_node("node-ssh")
+
+    assert loaded is not None
+    assert loaded.ssh_host == "100.64.0.10"
+    assert loaded.ssh_user == "ops"
+    assert loaded.ssh_port == 2222
+
+
 def test_sqlite_records_audit_events(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
@@ -80,6 +106,11 @@ def test_sqlite_records_audit_events(tmp_path):
 def test_sqlite_persists_approval_requests(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
+
+    store.save_node(
+        Node(node_id="node_1", fingerprint="sha256:node1", hostname="node1", addresses=[],
+             trust_level="B", labels=[], status="managed", permission_bundles=[])
+    )
 
     approval = store.create_approval_request(
         subject_type="task",
@@ -147,6 +178,10 @@ def test_high_risk_task_cli_creates_pending_approval_instead_of_task(tmp_path):
 def test_approving_task_request_dispatches_real_task_and_audits(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
+    store.save_node(
+        Node(node_id="node_approve", fingerprint="sha256:naprv", hostname="naprv",
+             addresses=[], trust_level="B", labels=[], status="managed", permission_bundles=[])
+    )
     approval = store.create_approval_request(
         subject_type="task",
         subject_id="pending-task",
@@ -181,6 +216,10 @@ def test_approving_task_request_dispatches_real_task_and_audits(tmp_path):
 def test_dispatch_approved_task_request_is_idempotent_under_repeated_calls(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
+    store.save_node(
+        Node(node_id="node_repeat", fingerprint="sha256:nrep", hostname="nrep",
+             addresses=[], trust_level="B", labels=[], status="managed", permission_bundles=[])
+    )
     approval = store.create_approval_request(
         subject_type="task",
         subject_id="pending-task",
@@ -207,6 +246,10 @@ def test_dispatch_approved_task_request_is_idempotent_under_repeated_calls(tmp_p
 def test_dispatch_uses_approval_risk_even_when_details_risk_disagrees(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
+    store.save_node(
+        Node(node_id="node_risk", fingerprint="sha256:nrisk", hostname="nrisk",
+             addresses=[], trust_level="B", labels=[], status="managed", permission_bundles=[])
+    )
     approval = store.create_approval_request(
         subject_type="task",
         subject_id="pending-task",

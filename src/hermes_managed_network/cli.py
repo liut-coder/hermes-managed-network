@@ -16,7 +16,7 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
-from .executor import PlaybookExecutor
+from .executor import PlaybookExecutor, SSHExecutionError, run_ssh_task
 from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
@@ -44,8 +44,9 @@ app = typer.Typer(
         "  hmn node rotate-fingerprint 轮换节点指纹\n"
         "  hmn node install-heartbeat 安装节点心跳/worker\n"
         "  hmn node worker-status     查看节点 worker 安装状态\n"
-        "  hmn task run              下发低风险任务\n"
+        "  hmn task run              下发任务（worker/ssh）\n"
         "  hmn task list             查看任务队列\n"
+        "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
         "  hmn approval list         查看待审批操作\n"
         "  hmn telegram-gateway poll-once 发送一次 Telegram 审批通知\n"
         "  hmn component list        查看可用组件\n"
@@ -225,8 +226,9 @@ def _show_menu() -> None:
     typer.echo("6. hmn node heartbeat-command       生成心跳命令")
     typer.echo("7. hmn node install-heartbeat       安装心跳/worker")
     typer.echo("8. hmn node worker-status           查看 worker 状态")
-    typer.echo("9. hmn task run                     下发低风险任务")
+    typer.echo("9. hmn task run                     下发任务（worker/ssh）")
     typer.echo("10. hmn task list                   查看任务")
+    typer.echo("    hmn task ssh-run-next           执行下一个 SSH 任务")
     typer.echo("11. hmn approval list               查看审批")
     typer.echo("12. hmn telegram-gateway poll-once  发送审批通知")
     typer.echo("13. hmn component list              查看组件")
@@ -250,7 +252,9 @@ def _show_menu() -> None:
     typer.echo("  hmn node install-heartbeat")
     typer.echo("  hmn node worker-status")
     typer.echo("  hmn task run 'uptime'")
+    typer.echo("  hmn task run 'uptime' --executor ssh --wait")
     typer.echo("  hmn task list")
+    typer.echo("  hmn task ssh-run-next")
     typer.echo("  hmn telegram-gateway poll-once")
     typer.echo("  hmn component list")
     typer.echo("  hmn component plan reverse-proxy --node node1 --set domain=example.com --set upstream=http://127.0.0.1:3000")
@@ -281,6 +285,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("8) hmn node worker-status     worker 状态")
         typer.echo("9) hmn task run      下发任务")
         typer.echo("10) hmn task list    查看任务")
+        typer.echo("    hmn task ssh-run-next  执行 SSH 任务")
         typer.echo("11) hmn component list   查看组件")
         typer.echo("12) hmn component status 组件状态")
         typer.echo("13) hmn component apply  记录组件状态")
@@ -1037,13 +1042,21 @@ def run_playbook(
 
 @task_app.command("run")
 def create_task_command(
-    command: str = typer.Argument(..., help="要在节点上执行的低风险 shell 命令"),
+    command: str = typer.Argument(..., help="要在节点上执行的 low/medium shell 命令"),
     node_id: str | None = typer.Option(None, "--node", help="节点 ID；省略时自动选择唯一 managed 节点"),
-    risk: str = typer.Option("low", "--risk", help="风险级别；当前只允许 low/medium"),
+    risk: str = typer.Option("low", "--risk", help="风险级别；允许 low/medium/high/critical"),
+    executor: str = typer.Option("worker", "--executor", help="执行器：worker 或 ssh"),
+    wait: bool = typer.Option(False, "--wait", help="仅对 SSH 任务：创建后立即执行并等待结果"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
     node = _select_managed_node(store, node_id)
+    if executor not in {"worker", "ssh"}:
+        typer.echo("执行器只允许 worker 或 ssh。")
+        raise typer.Exit(1)
+    if wait and executor != "ssh":
+        typer.echo("--wait 目前只支持 --executor ssh。")
+        raise typer.Exit(1)
     if risk in {"high", "critical"}:
         approval = store.create_approval_request(
             subject_type="task",
@@ -1051,7 +1064,7 @@ def create_task_command(
             action="task.run",
             risk=risk,
             requested_by="hmn",
-            details={"node_id": node.node_id, "command": command, "risk": risk, "created_by": "hmn"},
+            details={"node_id": node.node_id, "command": command, "risk": risk, "executor": executor, "created_by": "hmn"},
         )
         typer.echo(f"需要审批: {approval.approval_id}")
         typer.echo(f"节点: {node.node_id}")
@@ -1060,7 +1073,18 @@ def create_task_command(
     if risk not in {"low", "medium"}:
         typer.echo("风险级别只允许 low/medium/high/critical。")
         raise typer.Exit(1)
-    task = store.create_task(node_id=node.node_id, command=command, risk=risk, created_by="hmn")
+    task = store.create_task(node_id=node.node_id, command=command, risk=risk, created_by="hmn", executor=executor)
+    if wait:
+        try:
+            task = run_ssh_task(store, task.task_id)
+        except SSHExecutionError as exc:
+            typer.echo(f"SSH 执行失败: {exc}")
+            raise typer.Exit(1)
+        typer.echo(f"已通过 SSH 执行: {task.task_id}")
+        typer.echo(f"节点: {node.node_id}")
+        typer.echo(f"命令: {command}")
+        typer.echo(f"退出码: {task.exit_code}")
+        return
     typer.echo(f"已创建任务: {task.task_id}")
     typer.echo(f"节点: {node.node_id}")
     typer.echo(f"命令: {command}")
@@ -1069,7 +1093,25 @@ def create_task_command(
 @task_app.command("list")
 def list_task_commands(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
     for task in _store(db).list_tasks():
-        typer.echo(f"{task.task_id}	{task.node_id}	{task.status}	risk={task.risk}	{task.command}")
+        typer.echo(f"{task.task_id}\t{task.node_id}\t{task.status}\texecutor={task.executor}\trisk={task.risk}\t{task.command}")
+
+
+@task_app.command("ssh-run-next")
+def ssh_run_next(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    store = _store(db)
+    candidates = [task for task in store.list_tasks() if task.executor == "ssh" and task.status == "pending"]
+    if not candidates:
+        typer.echo("没有待执行的 SSH 任务。")
+        raise typer.Exit(1)
+    task = sorted(candidates, key=lambda item: item.created_at)[0]
+    try:
+        completed = run_ssh_task(store, task.task_id, allow_risk={"low", "medium", "high", "critical"})
+    except SSHExecutionError as exc:
+        typer.echo(f"SSH 执行失败: {exc}")
+        raise typer.Exit(1)
+    typer.echo(f"已执行任务: {completed.task_id}")
+    typer.echo(f"节点: {completed.node_id}")
+    typer.echo(f"退出码: {completed.exit_code}")
 
 
 @approval_app.command("list")

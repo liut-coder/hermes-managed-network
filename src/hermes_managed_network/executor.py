@@ -5,9 +5,80 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .playbook import Playbook
+from .storage import SQLiteStore, Task
 
 SAFE_PHASES = {"precheck", "backup", "action", "verify", "rollback_hint"}
 SAFE_RISKS = {"low", "medium"}
+
+
+@dataclass
+class SSHExecutionError(RuntimeError):
+    task_id: str
+    exit_code: int
+    stderr: str
+
+    def __str__(self) -> str:
+        return f"task {self.task_id} failed with exit code {self.exit_code}: {self.stderr.strip() or 'ssh command failed'}"
+
+
+def _ssh_label_value(labels: list[str], key: str) -> str:
+    prefix = f"{key}="
+    for label in labels:
+        if label.startswith(prefix):
+            return label[len(prefix):]
+    return ""
+
+
+def _ssh_target(task: Task, node) -> tuple[str, str, str]:
+    host = node.ssh_host or _ssh_label_value(node.labels, "ssh-host") or (node.addresses[0] if node.addresses else "")
+    user = node.ssh_user or _ssh_label_value(node.labels, "ssh-user") or "root"
+    port = str(node.ssh_port or 22)
+    label_port = _ssh_label_value(node.labels, "ssh-port")
+    if node.ssh_port == 22 and label_port:
+        port = label_port
+    if not host:
+        raise ValueError(f"node {node.node_id} missing ssh host for task {task.task_id}")
+    return host, user, port
+
+
+def run_ssh_task(store: SQLiteStore, task_id: str, *, allow_risk: set[str] | None = None, timeout_seconds: int = 120) -> Task:
+    task = store.load_task(task_id)
+    if task is None:
+        raise ValueError(f"task not found: {task_id}")
+    if task.executor != "ssh":
+        raise ValueError(f"task {task.task_id} is not an ssh task")
+    allowed = allow_risk or SAFE_RISKS
+    if task.risk not in allowed:
+        raise PermissionError(f"task risk '{task.risk}' is not allowed for ssh executor")
+    node = store.load_node(task.node_id)
+    if node is None or node.status != "managed":
+        raise ValueError(f"node {task.node_id} is not managed")
+    host, user, port = _ssh_target(task, node)
+    running = task
+    running.status = "running"
+    running.started_at = datetime.now(timezone.utc)
+    store.save_task(running)
+    command = ["ssh", "-p", port, f"{user}@{host}", task.command]
+    completed = subprocess.run(command, check=False, text=True, capture_output=True, timeout=timeout_seconds)
+    store.record_audit(
+        event_type="task",
+        subject_type="task",
+        subject_id=task.task_id,
+        action="ssh_execute",
+        outcome="ok" if completed.returncode == 0 else "failed",
+        details={"node_id": task.node_id, "command": task.command, "host": host, "user": user, "port": int(port)},
+    )
+    finished = store.complete_task(
+        task.task_id,
+        exit_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+    )
+    assert finished is not None
+    if completed.returncode != 0:
+        raise SSHExecutionError(task_id=task.task_id, exit_code=completed.returncode, stderr=completed.stderr)
+    return finished
+
 
 
 @dataclass

@@ -140,6 +140,7 @@ def test_menu_shows_quick_actions():
     assert "hmn node heartbeat-command" in result.stdout
     assert "hmn node install-heartbeat" in result.stdout
     assert "hmn node worker-status" in result.stdout
+    assert "hmn task ssh-run-next" in result.stdout
     assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
@@ -156,6 +157,7 @@ def test_root_command_shows_menu_instead_of_missing_command():
     assert "hmn node confirm" in result.stdout
     assert "hmn node status" in result.stdout
     assert "hmn node doctor" in result.stdout
+    assert "hmn task ssh-run-next" in result.stdout
     assert "hmn version" in result.stdout
     assert "hmn update" in result.stdout
     assert "hmn uninstall" in result.stdout
@@ -175,6 +177,7 @@ def test_menu_plain_prints_quick_actions():
     assert "hmn node heartbeat-command" in result.stdout
     assert "hmn node install-heartbeat" in result.stdout
     assert "hmn node worker-status" in result.stdout
+    assert "hmn task ssh-run-next" in result.stdout
     assert "hmn version" in result.stdout
     assert "示例" in result.stdout
 
@@ -187,6 +190,7 @@ def test_command_help_includes_examples():
     assert result.exit_code == 0
     assert "示例" in result.stdout
     assert "hmn node confirm" in result.stdout
+    assert "hmn task ssh-run-next" in result.stdout
 
 
 def test_root_menu_can_start_wake_flow(tmp_path, monkeypatch):

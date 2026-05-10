@@ -52,6 +52,7 @@ class Task:
     status: str
     created_by: str
     created_at: datetime
+    executor: str = "worker"
     started_at: datetime | None = None
     completed_at: datetime | None = None
     exit_code: int | None = None
@@ -147,7 +148,10 @@ class SQLiteStore:
                     trust_level TEXT NOT NULL,
                     labels_json TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    permission_bundles_json TEXT NOT NULL
+                    permission_bundles_json TEXT NOT NULL,
+                    ssh_host TEXT NOT NULL DEFAULT '',
+                    ssh_user TEXT NOT NULL DEFAULT '',
+                    ssh_port INTEGER NOT NULL DEFAULT 22
                 );
 
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -169,6 +173,7 @@ class SQLiteStore:
                     status TEXT NOT NULL,
                     created_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    executor TEXT NOT NULL DEFAULT 'worker',
                     started_at TEXT,
                     completed_at TEXT,
                     exit_code INTEGER,
@@ -241,6 +246,17 @@ class SQLiteStore:
                 );
                 """
             )
+            for statement in (
+                "ALTER TABLE nodes ADD COLUMN ssh_host TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE nodes ADD COLUMN ssh_user TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE nodes ADD COLUMN ssh_port INTEGER NOT NULL DEFAULT 22",
+                "ALTER TABLE tasks ADD COLUMN executor TEXT NOT NULL DEFAULT 'worker'",
+            ):
+                try:
+                    conn.execute(statement)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc):
+                        raise
 
     def record_audit(
         self,
@@ -658,13 +674,27 @@ class SQLiteStore:
                 status="pending",
                 created_by=str(approval.details.get("created_by") or approval.requested_by),
                 created_at=datetime.now(timezone.utc),
+                executor=str(approval.details.get("executor") or "worker"),
             )
+            # Verify node is managed before creating task
+            node_row = conn.execute(
+                "SELECT status FROM nodes WHERE node_id = ?", (task.node_id,)
+            ).fetchone()
+            if node_row is None or node_row["status"] != "managed":
+                conn.execute(
+                    "INSERT INTO audit_events (event_type, subject_type, subject_id, action, outcome, details_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("approval", "task", approval.approval_id, "approval/dispatch", "failed",
+                     json.dumps({"reason": "node not managed", "node_id": task.node_id}, sort_keys=True),
+                     _dt(datetime.now(timezone.utc))),
+                )
+                return None
             conn.execute(
                 """
                 INSERT INTO tasks (
                     task_id, node_id, command, risk, status, created_by, created_at,
-                    started_at, completed_at, exit_code, stdout, stderr
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    executor, started_at, completed_at, exit_code, stdout, stderr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.task_id,
@@ -674,6 +704,7 @@ class SQLiteStore:
                     task.status,
                     task.created_by,
                     _dt(task.created_at),
+                    task.executor,
                     _dt(task.started_at),
                     _dt(task.completed_at),
                     task.exit_code,
@@ -692,7 +723,7 @@ class SQLiteStore:
                 subject_id=task.task_id,
                 action="create",
                 outcome="ok",
-                details={"node_id": task.node_id, "command": task.command, "risk": task.risk},
+                details={"node_id": task.node_id, "command": task.command, "risk": task.risk, "executor": task.executor},
                 created_at=datetime.now(timezone.utc),
             )
             dispatch_event = AuditEvent(
@@ -707,6 +738,7 @@ class SQLiteStore:
                     "node_id": task.node_id,
                     "command": task.command,
                     "risk": task.risk,
+                    "executor": task.executor,
                     "created_by": task.created_by,
                 },
                 created_at=datetime.now(timezone.utc),
@@ -731,7 +763,15 @@ class SQLiteStore:
                 )
             return task
 
-    def create_task(self, *, node_id: str, command: str, risk: str = "low", created_by: str = "hmn") -> Task:
+    def create_task(
+        self,
+        *,
+        node_id: str,
+        command: str,
+        risk: str = "low",
+        created_by: str = "hmn",
+        executor: str = "worker",
+    ) -> Task:
         task = Task(
             task_id="task_" + uuid4().hex[:12],
             node_id=node_id,
@@ -740,6 +780,7 @@ class SQLiteStore:
             status="pending",
             created_by=created_by,
             created_at=datetime.now(timezone.utc),
+            executor=executor,
         )
         self.save_task(task)
         self.record_audit(
@@ -748,7 +789,7 @@ class SQLiteStore:
             subject_id=task.task_id,
             action="create",
             outcome="ok",
-            details={"node_id": node_id, "command": command, "risk": risk},
+            details={"node_id": node_id, "command": command, "risk": risk, "executor": executor},
         )
         return task
 
@@ -758,8 +799,8 @@ class SQLiteStore:
                 """
                 INSERT INTO tasks (
                     task_id, node_id, command, risk, status, created_by, created_at,
-                    started_at, completed_at, exit_code, stdout, stderr
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    executor, started_at, completed_at, exit_code, stdout, stderr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     node_id=excluded.node_id,
                     command=excluded.command,
@@ -767,6 +808,7 @@ class SQLiteStore:
                     status=excluded.status,
                     created_by=excluded.created_by,
                     created_at=excluded.created_at,
+                    executor=excluded.executor,
                     started_at=excluded.started_at,
                     completed_at=excluded.completed_at,
                     exit_code=excluded.exit_code,
@@ -781,6 +823,7 @@ class SQLiteStore:
                     task.status,
                     task.created_by,
                     _dt(task.created_at),
+                    task.executor,
                     _dt(task.started_at),
                     _dt(task.completed_at),
                     task.exit_code,
@@ -798,6 +841,7 @@ class SQLiteStore:
             status=row["status"],
             created_by=row["created_by"],
             created_at=_parse_dt(row["created_at"]),
+            executor=row["executor"] if "executor" in row.keys() else "worker",
             started_at=_parse_dt(row["started_at"]),
             completed_at=_parse_dt(row["completed_at"]),
             exit_code=row["exit_code"],
@@ -815,11 +859,14 @@ class SQLiteStore:
             rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
         return [self._task_from_row(row) for row in rows]
 
-    def next_pending_task(self, node_id: str) -> Task | None:
+    def next_pending_task(self, node_id: str, *, executor: str = "worker") -> Task | None:
         with self.connect() as conn:
+            node_row = conn.execute("SELECT status FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+            if node_row is None or node_row["status"] != "managed":
+                return None
             row = conn.execute(
-                "SELECT * FROM tasks WHERE node_id = ? AND status = 'pending' ORDER BY created_at LIMIT 1",
-                (node_id,),
+                "SELECT * FROM tasks WHERE node_id = ? AND executor = ? AND status = 'pending' ORDER BY created_at LIMIT 1",
+                (node_id, executor),
             ).fetchone()
         if row is None:
             return None
@@ -1192,8 +1239,8 @@ class SQLiteStore:
                 """
                 INSERT INTO nodes (
                     node_id, fingerprint, hostname, addresses_json, trust_level,
-                    labels_json, status, permission_bundles_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    labels_json, status, permission_bundles_json, ssh_host, ssh_user, ssh_port
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_id) DO UPDATE SET
                     fingerprint=excluded.fingerprint,
                     hostname=excluded.hostname,
@@ -1201,7 +1248,10 @@ class SQLiteStore:
                     trust_level=excluded.trust_level,
                     labels_json=excluded.labels_json,
                     status=excluded.status,
-                    permission_bundles_json=excluded.permission_bundles_json
+                    permission_bundles_json=excluded.permission_bundles_json,
+                    ssh_host=excluded.ssh_host,
+                    ssh_user=excluded.ssh_user,
+                    ssh_port=excluded.ssh_port
                 """,
                 (
                     node.node_id,
@@ -1212,6 +1262,9 @@ class SQLiteStore:
                     json.dumps(node.labels),
                     node.status,
                     json.dumps(node.permission_bundles),
+                    node.ssh_host,
+                    node.ssh_user,
+                    node.ssh_port,
                 ),
             )
 
@@ -1250,6 +1303,9 @@ class SQLiteStore:
             labels=json.loads(row["labels_json"]),
             status=row["status"],
             permission_bundles=json.loads(row["permission_bundles_json"]),
+            ssh_host=row["ssh_host"] if "ssh_host" in row.keys() else "",
+            ssh_user=row["ssh_user"] if "ssh_user" in row.keys() else "",
+            ssh_port=row["ssh_port"] if "ssh_port" in row.keys() else 22,
         )
 
     def list_nodes(self) -> list[Node]:

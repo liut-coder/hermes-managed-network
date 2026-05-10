@@ -13,6 +13,9 @@ class Node:
     labels: list[str]
     status: str = "pending"
     permission_bundles: list[str] = field(default_factory=list)
+    ssh_host: str = ""
+    ssh_user: str = ""
+    ssh_port: int = 22
 
 
 class NodeRegistry:
