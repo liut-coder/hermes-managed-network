@@ -380,6 +380,8 @@ class SQLiteStore:
         approval = self.load_approval_request(approval_id)
         if approval is None:
             return None
+        if approval.status != "pending":
+            return approval
         approval.status = status
         approval.decided_by = decided_by
         approval.decided_at = datetime.now(timezone.utc)
@@ -392,7 +394,137 @@ class SQLiteStore:
             outcome=status,
             details={"subject_id": approval.subject_id, "risk": approval.risk, "decided_by": decided_by},
         )
+        if status == "approved" and approval.subject_type == "task" and approval.action == "task.run":
+            self.dispatch_approved_task_request(approval.approval_id)
         return approval
+
+    def dispatch_approved_task_request(self, approval_id: str) -> Task | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
+            if row is None:
+                return None
+            approval = self._approval_from_row(row)
+            if approval.status != "approved":
+                return None
+            if approval.subject_type != "task" or approval.action != "task.run":
+                return None
+            if approval.details.get("dispatched_task_id"):
+                task_row = conn.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?", (str(approval.details["dispatched_task_id"]),)
+                ).fetchone()
+                return self._task_from_row(task_row) if task_row else None
+
+            missing = [key for key in ("node_id", "command") if not approval.details.get(key)]
+            if missing:
+                event = AuditEvent(
+                    event_type="approval",
+                    subject_type="task",
+                    subject_id=approval.approval_id,
+                    action="approval/dispatch",
+                    outcome="failed",
+                    details={"missing": missing, "subject_id": approval.subject_id},
+                    created_at=datetime.now(timezone.utc),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_events (
+                        event_type, subject_type, subject_id, action, outcome,
+                        details_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.event_type,
+                        event.subject_type,
+                        event.subject_id,
+                        event.action,
+                        event.outcome,
+                        json.dumps(event.details, sort_keys=True),
+                        _dt(event.created_at),
+                    ),
+                )
+                return None
+
+            task = Task(
+                task_id="task_" + uuid4().hex[:12],
+                node_id=str(approval.details["node_id"]),
+                command=str(approval.details["command"]),
+                risk=approval.risk,
+                status="pending",
+                created_by=str(approval.details.get("created_by") or approval.requested_by),
+                created_at=datetime.now(timezone.utc),
+            )
+            conn.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, node_id, command, risk, status, created_by, created_at,
+                    started_at, completed_at, exit_code, stdout, stderr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task.task_id,
+                    task.node_id,
+                    task.command,
+                    task.risk,
+                    task.status,
+                    task.created_by,
+                    _dt(task.created_at),
+                    _dt(task.started_at),
+                    _dt(task.completed_at),
+                    task.exit_code,
+                    task.stdout,
+                    task.stderr,
+                ),
+            )
+            approval.details = {**approval.details, "dispatched_task_id": task.task_id}
+            conn.execute(
+                "UPDATE approval_requests SET details_json = ? WHERE approval_id = ?",
+                (json.dumps(approval.details, sort_keys=True), approval.approval_id),
+            )
+            task_event = AuditEvent(
+                event_type="task",
+                subject_type="task",
+                subject_id=task.task_id,
+                action="create",
+                outcome="ok",
+                details={"node_id": task.node_id, "command": task.command, "risk": task.risk},
+                created_at=datetime.now(timezone.utc),
+            )
+            dispatch_event = AuditEvent(
+                event_type="approval",
+                subject_type="task",
+                subject_id=approval.approval_id,
+                action="approval/dispatch",
+                outcome="ok",
+                details={
+                    "subject_id": approval.subject_id,
+                    "task_id": task.task_id,
+                    "node_id": task.node_id,
+                    "command": task.command,
+                    "risk": task.risk,
+                    "created_by": task.created_by,
+                },
+                created_at=datetime.now(timezone.utc),
+            )
+            for event in (task_event, dispatch_event):
+                conn.execute(
+                    """
+                    INSERT INTO audit_events (
+                        event_type, subject_type, subject_id, action, outcome,
+                        details_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.event_type,
+                        event.subject_type,
+                        event.subject_id,
+                        event.action,
+                        event.outcome,
+                        json.dumps(event.details, sort_keys=True),
+                        _dt(event.created_at),
+                    ),
+                )
+            return task
 
     def create_task(self, *, node_id: str, command: str, risk: str = "low", created_by: str = "hmn") -> Task:
         task = Task(

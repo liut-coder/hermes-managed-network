@@ -1036,7 +1036,7 @@ def create_task_command(
             action="task.run",
             risk=risk,
             requested_by="hmn",
-            details={"node_id": node.node_id, "command": command},
+            details={"node_id": node.node_id, "command": command, "risk": risk, "created_by": "hmn"},
         )
         typer.echo(f"需要审批: {approval.approval_id}")
         typer.echo(f"节点: {node.node_id}")
