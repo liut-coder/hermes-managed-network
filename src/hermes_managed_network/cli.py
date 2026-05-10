@@ -16,7 +16,7 @@ from .components import ComponentManifest, load_builtin_components
 from .executor import PlaybookExecutor
 from .inventory import NodeRegistry
 from .playbook import Playbook
-from .platforms import classify_capabilities, probe_from_facts
+from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .storage import SQLiteStore
 from .tokens import JoinTokenStore
 from .version import current_version_info
@@ -300,7 +300,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             heartbeat_command(node_id=None, master_url=None, db=db)
             return
         if normalized in {"7", "install-heartbeat", "node install-heartbeat", "hmn node install-heartbeat"}:
-            install_heartbeat(node_id=None, master_url=None, db=db)
+            install_heartbeat(node_id=None, master_url=None, service_manager=ServiceManager.SYSTEMD, db=db)
             return
         if normalized in {"8", "worker", "worker status", "node worker-status", "hmn node worker-status"}:
             worker_status(node_id=None, db=db)
@@ -915,8 +915,9 @@ def worker_status(
         raise typer.Exit(1)
 
 
-def _render_worker_installer(node, master_url: str) -> str:
+def _render_worker_installer(node, master_url: str, service_manager: ServiceManager = ServiceManager.SYSTEMD) -> str:
     url = master_url.rstrip("/")
+    service_wiring = render_service_manager_installer(service_manager)
     script = f"""set -euo pipefail
 install -d -m 0700 /etc/hermes-managed-network
 cat >/etc/hermes-managed-network/node.env <<'EOF'
@@ -928,33 +929,7 @@ EOF
 chmod 0600 /etc/hermes-managed-network/node.env
 curl -fsSL {url}/scripts/worker.sh -o /usr/local/bin/hmn-worker
 chmod 0755 /usr/local/bin/hmn-worker
-cat >/etc/systemd/system/hermes-managed-network-heartbeat.service <<'EOF'
-[Unit]
-Description=Hermes Managed Network heartbeat and worker
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-EnvironmentFile=/etc/hermes-managed-network/node.env
-Environment=HMN_ENABLE_EXEC=0
-ExecStart=/usr/local/bin/hmn-worker
-EOF
-cat >/etc/systemd/system/hermes-managed-network-heartbeat.timer <<'EOF'
-[Unit]
-Description=Run Hermes Managed Network heartbeat and worker every minute
-
-[Timer]
-OnBootSec=30s
-OnUnitActiveSec=60s
-Unit=hermes-managed-network-heartbeat.service
-
-[Install]
-WantedBy=timers.target
-EOF
-systemctl daemon-reload
-systemctl enable --now hermes-managed-network-heartbeat.timer
-"""
+{service_wiring}"""
     return "sudo bash -lc " + _shell_quote(script)
 
 
@@ -962,6 +937,7 @@ systemctl enable --now hermes-managed-network-heartbeat.timer
 def install_heartbeat(
     node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
     master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
+    service_manager: ServiceManager = typer.Option(ServiceManager.SYSTEMD, "--service-manager", help="服务管理器适配器"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
@@ -973,11 +949,12 @@ def install_heartbeat(
         subject_id=node.node_id,
         action="install-heartbeat",
         outcome="rendered",
-        details={"master_url": url, "service_manager": "systemd", "enable_exec": False},
+        details={"master_url": url, "service_manager": str(service_manager), "enable_exec": False},
     )
     typer.echo("请复制下面命令到目标节点执行，它会安装心跳/worker 定时器：")
     typer.echo("默认安全模式：HMN_ENABLE_EXEC=0，不会执行下发 shell 命令。")
-    typer.echo(_render_worker_installer(node, url))
+    typer.echo(f"service_manager={service_manager}")
+    typer.echo(_render_worker_installer(node, url, service_manager))
 
 
 @node_app.command("revoke")

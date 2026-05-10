@@ -8,6 +8,7 @@ from hermes_managed_network.platforms import (
     detect_service_manager,
     probe_from_facts,
     render_capability_probe,
+    render_service_manager_installer,
 )
 
 
@@ -101,3 +102,18 @@ def test_probe_from_heartbeat_facts_classifies_runtime_profile():
     assert probe.has_http_client is True
     assert profile.runtime == NodeRuntimeProfile.FULL_WORKER
     assert profile.service_manager == ServiceManager.SYSTEMD
+
+
+def test_service_manager_installer_renders_cron_adapter_without_systemctl():
+    script = render_service_manager_installer(ServiceManager.CRON, worker_path="/usr/local/bin/hmn-worker")
+
+    assert "crontab" in script
+    assert "* * * * * /usr/local/bin/hmn-worker" in script
+    assert "systemctl" not in script
+
+
+def test_service_manager_installer_refuses_none_adapter():
+    script = render_service_manager_installer(ServiceManager.NONE, worker_path="/usr/local/bin/hmn-worker")
+
+    assert "不支持在该节点安装常驻 worker" in script
+    assert "exit 1" in script

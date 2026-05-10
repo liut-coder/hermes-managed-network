@@ -202,6 +202,94 @@ def classify_capabilities(probe: CapabilityProbe) -> RuntimeCapabilities:
     )
 
 
+def render_service_manager_installer(service_manager: ServiceManager | str, worker_path: str = "/usr/local/bin/hmn-worker") -> str:
+    """Render the service-manager specific wiring for an installed worker.
+
+    This adapter stays deliberately small: common download/env setup belongs to
+    the caller, while this function only owns how the node keeps the worker
+    running periodically.
+    """
+
+    manager = ServiceManager(service_manager)
+    if manager == ServiceManager.SYSTEMD:
+        return f"""cat >/etc/systemd/system/hermes-managed-network-heartbeat.service <<'EOF'
+[Unit]
+Description=Hermes Managed Network heartbeat and worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hermes-managed-network/node.env
+Environment=HMN_ENABLE_EXEC=0
+ExecStart={worker_path}
+EOF
+cat >/etc/systemd/system/hermes-managed-network-heartbeat.timer <<'EOF'
+[Unit]
+Description=Run Hermes Managed Network heartbeat and worker every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=hermes-managed-network-heartbeat.service
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now hermes-managed-network-heartbeat.timer
+"""
+    if manager == ServiceManager.CRON:
+        return f"""tmp_cron=$(mktemp)
+crontab -l 2>/dev/null | grep -v 'hermes-managed-network heartbeat' >"$tmp_cron" || true
+printf '%s\n' '* * * * * {worker_path} # hermes-managed-network heartbeat' >>"$tmp_cron"
+crontab "$tmp_cron"
+rm -f "$tmp_cron"
+"""
+    if manager == ServiceManager.PROCD:
+        return f"""cat >/etc/init.d/hermes-managed-network <<'EOF'
+#!/bin/sh /etc/rc.common
+START=95
+USE_PROCD=1
+start_service() {{
+  procd_open_instance
+  procd_set_param command /bin/sh -c 'while true; do {worker_path}; sleep 60; done'
+  procd_set_param respawn
+  procd_close_instance
+}}
+EOF
+chmod 0755 /etc/init.d/hermes-managed-network
+/etc/init.d/hermes-managed-network enable
+/etc/init.d/hermes-managed-network restart
+"""
+    if manager == ServiceManager.OPENRC:
+        return f"""cat >/etc/init.d/hermes-managed-network <<'EOF'
+#!/sbin/openrc-run
+command="/bin/sh"
+command_args="-c 'while true; do {worker_path}; sleep 60; done'"
+command_background=true
+pidfile="/run/hermes-managed-network.pid"
+EOF
+chmod 0755 /etc/init.d/hermes-managed-network
+rc-update add hermes-managed-network default
+rc-service hermes-managed-network restart
+"""
+    if manager == ServiceManager.LOOP:
+        return f"""cat >/usr/local/bin/hmn-worker-loop <<'EOF'
+#!/bin/sh
+while true; do
+  {worker_path}
+  sleep 60
+done
+EOF
+chmod 0755 /usr/local/bin/hmn-worker-loop
+nohup /usr/local/bin/hmn-worker-loop >/var/log/hmn-worker.log 2>&1 &
+"""
+    return """echo '不支持在该节点安装常驻 worker：service manager 为 none/unsupported。请改用 proxy-managed 或手动外部调度。' >&2
+exit 1
+"""
+
+
 def render_capability_probe() -> str:
     """Return a minimal POSIX-sh probe suitable for old routers.
 

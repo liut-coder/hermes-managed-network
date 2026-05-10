@@ -642,6 +642,45 @@ def test_root_menu_can_show_install_heartbeat_command(tmp_path, monkeypatch):
     assert "HMN_ENABLE_EXEC=0" in result.stdout
 
 
+def test_node_install_heartbeat_can_render_cron_adapter(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_cron",
+            fingerprint="sha256:cron",
+            hostname="cron-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "node",
+            "install-heartbeat",
+            "--db",
+            str(db),
+            "--master-url",
+            "https://master.example",
+            "--service-manager",
+            "cron",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "service_manager=cron" in result.stdout
+    assert "crontab" in result.stdout
+    assert "* * * * * /usr/local/bin/hmn-worker" in result.stdout
+    assert "systemctl enable" not in result.stdout
+
+
 def test_node_install_heartbeat_records_audit_event(tmp_path):
     from hermes_managed_network.inventory import Node
 
