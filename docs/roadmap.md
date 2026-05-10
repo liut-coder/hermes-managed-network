@@ -35,6 +35,7 @@
 - [x] Approval 数据模型和 CLI 骨架
 - [x] Approval -> Task dispatch 闭环
 - [x] Approval API approve/reject 入口（Telegram bridge 可复用）
+- [x] Telegram approval 消息卡片和回调 payload
 - [ ] Telegram approval flow
 
 ## v0.4：Worker 模式
