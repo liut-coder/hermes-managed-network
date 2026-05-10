@@ -718,6 +718,9 @@ def _render_node_status(
     typer.echo(f"labels: {', '.join(node.labels) if node.labels else '-'}")
     typer.echo(f"addresses: {', '.join(node.addresses) if node.addresses else '-'}")
     typer.echo(f"bundles: {', '.join(node.permission_bundles) if node.permission_bundles else '-'}")
+    typer.echo(f"ssh_host: {node.ssh_host or '-'}")
+    typer.echo(f"ssh_user: {node.ssh_user or '-'}")
+    typer.echo(f"ssh_port: {node.ssh_port}")
     if liveness is not None:
         typer.echo(f"liveness: {liveness['state']}")
         typer.echo(f"last_heartbeat: {liveness['last_heartbeat'] or '-'}")
@@ -758,6 +761,9 @@ def doctor_node(
     outcome = "ok" if all(checks.values()) else "warn"
     typer.echo(f"doctor: {node.node_id}")
     typer.echo(f"host: {node.hostname}")
+    typer.echo(f"ssh_host: {node.ssh_host or '-'}")
+    typer.echo(f"ssh_user: {node.ssh_user or '-'}")
+    typer.echo(f"ssh_port: {node.ssh_port}")
     for name, ok in checks.items():
         typer.echo(f"{name}: {'OK' if ok else 'WARN'}")
     typer.echo("远程执行: 未启用（下一步接 SSH/worker 通道）")

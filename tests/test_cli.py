@@ -364,6 +364,9 @@ def test_node_status_without_id_auto_selects_single_managed_node(tmp_path):
         labels=["backup", "worker"],
         status="managed",
         permission_bundles=["observe"],
+        ssh_host="100.64.0.3",
+        ssh_user="ops",
+        ssh_port=2222,
     )
     SQLiteStore(db).save_node(node)
 
@@ -377,6 +380,9 @@ def test_node_status_without_id_auto_selects_single_managed_node(tmp_path):
     assert "labels: backup, worker" in result.stdout
     assert "addresses: 10.0.0.3" in result.stdout
     assert "bundles: observe" in result.stdout
+    assert "ssh_host: 100.64.0.3" in result.stdout
+    assert "ssh_user: ops" in result.stdout
+    assert "ssh_port: 2222" in result.stdout
 
 
 def test_node_status_without_id_prompts_when_multiple_managed_nodes(tmp_path):
@@ -420,6 +426,9 @@ def test_root_menu_can_show_node_status(tmp_path, monkeypatch):
             trust_level="B",
             labels=[],
             status="managed",
+            ssh_host="100.64.0.20",
+            ssh_user="ops",
+            ssh_port=2205,
         )
     )
 
@@ -428,6 +437,9 @@ def test_root_menu_can_show_node_status(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "node: node_menu_status" in result.stdout
     assert "host: menu-status-node" in result.stdout
+    assert "ssh_host: 100.64.0.20" in result.stdout
+    assert "ssh_user: ops" in result.stdout
+    assert "ssh_port: 2205" in result.stdout
 
 
 
@@ -446,6 +458,9 @@ def test_node_doctor_auto_selects_and_records_audit(tmp_path):
             labels=["worker"],
             status="managed",
             permission_bundles=["observe"],
+            ssh_host="100.64.0.9",
+            ssh_user="deploy",
+            ssh_port=2202,
         )
     )
 
@@ -454,6 +469,9 @@ def test_node_doctor_auto_selects_and_records_audit(tmp_path):
     assert result.exit_code == 0
     assert "自动选择 managed 节点: node_doctor (doctor-node)" in result.stdout
     assert "doctor: node_doctor" in result.stdout
+    assert "ssh_host: 100.64.0.9" in result.stdout
+    assert "ssh_user: deploy" in result.stdout
+    assert "ssh_port: 2202" in result.stdout
     assert "登记状态: OK" in result.stdout
     assert "权限包: OK" in result.stdout
     events = SQLiteStore(db).list_audit_events()
@@ -502,6 +520,9 @@ def test_root_menu_can_run_node_doctor(tmp_path, monkeypatch):
             labels=[],
             status="managed",
             permission_bundles=["observe"],
+            ssh_host="100.64.0.21",
+            ssh_user="deploy",
+            ssh_port=2206,
         )
     )
 
@@ -509,6 +530,9 @@ def test_root_menu_can_run_node_doctor(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "doctor: node_menu_doctor" in result.stdout
+    assert "ssh_host: 100.64.0.21" in result.stdout
+    assert "ssh_user: deploy" in result.stdout
+    assert "ssh_port: 2206" in result.stdout
 
 
 def test_version_command_prints_package_version():
