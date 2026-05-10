@@ -75,6 +75,18 @@ class ApprovalRequest:
 
 
 @dataclass
+class Notification:
+    notification_id: str
+    channel: str
+    subject_type: str
+    subject_id: str
+    status: str
+    payload: dict[str, Any]
+    created_at: datetime
+    delivered_at: datetime | None = None
+
+
+@dataclass
 class AuditEvent:
     event_type: str
     subject_type: str
@@ -178,6 +190,17 @@ class SQLiteStore:
                     decided_at TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS notifications (
+                    notification_id TEXT PRIMARY KEY,
+                    channel TEXT NOT NULL,
+                    subject_type TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS components (
                     component_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -275,6 +298,67 @@ class SQLiteStore:
             )
             for row in rows
         ]
+
+    def enqueue_notification(
+        self,
+        *,
+        channel: str,
+        subject_type: str,
+        subject_id: str,
+        payload: dict[str, Any],
+    ) -> Notification:
+        notification = Notification(
+            notification_id="notif_" + uuid4().hex[:12],
+            channel=channel,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            status="pending",
+            payload=payload,
+            created_at=datetime.now(timezone.utc),
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO notifications (
+                    notification_id, channel, subject_type, subject_id, status,
+                    payload_json, created_at, delivered_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    notification.notification_id,
+                    notification.channel,
+                    notification.subject_type,
+                    notification.subject_id,
+                    notification.status,
+                    json.dumps(notification.payload, sort_keys=True),
+                    _dt(notification.created_at),
+                    _dt(notification.delivered_at),
+                ),
+            )
+        return notification
+
+    def _notification_from_row(self, row) -> Notification:
+        return Notification(
+            notification_id=row["notification_id"],
+            channel=row["channel"],
+            subject_type=row["subject_type"],
+            subject_id=row["subject_id"],
+            status=row["status"],
+            payload=json.loads(row["payload_json"]),
+            created_at=_parse_dt(row["created_at"]),
+            delivered_at=_parse_dt(row["delivered_at"]),
+        )
+
+    def list_notifications(self, status: str | None = None) -> list[Notification]:
+        with self.connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM notifications WHERE status = ? ORDER BY created_at DESC",
+                    (status,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM notifications ORDER BY created_at DESC").fetchall()
+        return [self._notification_from_row(row) for row in rows]
 
     def create_approval_request(
         self,
