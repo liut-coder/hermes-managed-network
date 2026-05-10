@@ -86,6 +86,16 @@ class TaskResultResponse(BaseModel):
     status: str
 
 
+class ApprovalDecisionRequest(BaseModel):
+    decided_by: str = "telegram"
+
+
+class ApprovalDecisionResponse(BaseModel):
+    approval_id: str
+    status: str
+    dispatched_task_id: str | None = None
+
+
 def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     app = FastAPI(title="Hermes Managed Network", version="0.2.0")
     store = SQLiteStore(db_path)
@@ -238,6 +248,40 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         updated = store.complete_task(task_id, exit_code=request.exit_code, stdout=request.stdout, stderr=request.stderr)
         return TaskResultResponse(task_id=updated.task_id, status=updated.status)
+
+    def _resolve_approval(
+        approval_id: str,
+        *,
+        status: str,
+        request: ApprovalDecisionRequest,
+    ) -> ApprovalDecisionResponse:
+        existing = store.load_approval_request(approval_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        if existing.status != "pending":
+            raise HTTPException(status_code=409, detail=f"approval is {existing.status}")
+        approval = store.resolve_approval_request(approval_id, status=status, decided_by=request.decided_by)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        dispatched_task_id = None
+        if status == "approved" and approval.subject_type == "task" and approval.action == "task.run":
+            task = store.dispatch_approved_task_request(approval.approval_id)
+            if task is None:
+                raise HTTPException(status_code=422, detail="approval cannot be dispatched")
+            dispatched_task_id = task.task_id
+        return ApprovalDecisionResponse(
+            approval_id=approval.approval_id,
+            status=approval.status,
+            dispatched_task_id=dispatched_task_id,
+        )
+
+    @app.post("/api/v1/approvals/{approval_id}/approve", response_model=ApprovalDecisionResponse)
+    def approve_approval(approval_id: str, request: ApprovalDecisionRequest) -> ApprovalDecisionResponse:
+        return _resolve_approval(approval_id, status="approved", request=request)
+
+    @app.post("/api/v1/approvals/{approval_id}/reject", response_model=ApprovalDecisionResponse)
+    def reject_approval(approval_id: str, request: ApprovalDecisionRequest) -> ApprovalDecisionResponse:
+        return _resolve_approval(approval_id, status="rejected", request=request)
 
     return app
 
