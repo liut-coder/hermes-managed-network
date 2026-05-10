@@ -37,7 +37,8 @@
 - [x] Approval API approve/reject 入口（Telegram bridge 可复用）
 - [x] Telegram approval 消息卡片和回调 payload
 - [x] Telegram approval flow 核心处理器
-- [ ] Telegram gateway 发送/回调接入
+- [x] Telegram gateway 发送/回调接入 API
+- [ ] Telegram gateway 实际 Bot 进程/轮询发送器
 
 ## v0.4：Worker 模式
 

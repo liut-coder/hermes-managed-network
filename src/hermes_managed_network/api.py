@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 from typing import Any
 
 from .signing import sign_task_payload
-from .storage import SQLiteStore
+from .storage import Notification, SQLiteStore
+from .approval_telegram_flow import handle_telegram_approval_callback
 from .version import current_version_info, is_worker_compatible
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
@@ -94,6 +95,48 @@ class ApprovalDecisionResponse(BaseModel):
     approval_id: str
     status: str
     dispatched_task_id: str | None = None
+
+
+class NotificationResponse(BaseModel):
+    notification_id: str
+    channel: str
+    subject_type: str
+    subject_id: str
+    status: str
+    payload: dict[str, Any]
+
+
+class NotificationListResponse(BaseModel):
+    notifications: list[NotificationResponse]
+
+
+class NotificationStatusResponse(BaseModel):
+    notification_id: str
+    status: str
+
+
+class TelegramCallbackRequest(BaseModel):
+    callback_data: str
+    decided_by: str = "telegram"
+
+
+class TelegramCallbackResponse(BaseModel):
+    ok: bool
+    message: str
+    approval_id: str | None = None
+    status: str | None = None
+    dispatched_task_id: str | None = None
+
+
+def _notification_response(notification: Notification) -> NotificationResponse:
+    return NotificationResponse(
+        notification_id=notification.notification_id,
+        channel=notification.channel,
+        subject_type=notification.subject_type,
+        subject_id=notification.subject_id,
+        status=notification.status,
+        payload=notification.payload,
+    )
 
 
 def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
@@ -282,6 +325,48 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     @app.post("/api/v1/approvals/{approval_id}/reject", response_model=ApprovalDecisionResponse)
     def reject_approval(approval_id: str, request: ApprovalDecisionRequest) -> ApprovalDecisionResponse:
         return _resolve_approval(approval_id, status="rejected", request=request)
+
+    @app.get("/api/v1/gateway/telegram/notifications", response_model=NotificationListResponse)
+    def telegram_notifications() -> NotificationListResponse:
+        notifications = [
+            _notification_response(notification)
+            for notification in store.list_notifications(status="pending")
+            if notification.channel == "telegram"
+        ]
+        return NotificationListResponse(notifications=notifications)
+
+    @app.post(
+        "/api/v1/gateway/telegram/notifications/{notification_id}/delivered",
+        response_model=NotificationStatusResponse,
+    )
+    def telegram_notification_delivered(notification_id: str) -> NotificationStatusResponse:
+        notification = store.mark_notification_delivered(notification_id)
+        if notification is None:
+            raise HTTPException(status_code=404, detail="notification not found")
+        return NotificationStatusResponse(notification_id=notification.notification_id, status=notification.status)
+
+    @app.post("/api/v1/gateway/telegram/callback", response_model=TelegramCallbackResponse)
+    def telegram_callback(request: TelegramCallbackRequest) -> TelegramCallbackResponse:
+        result = handle_telegram_approval_callback(store, request.callback_data, decided_by=request.decided_by)
+        if not result.ok:
+            status_code = 409 if result.status in {"approved", "rejected"} else 400
+            raise HTTPException(
+                status_code=status_code,
+                detail={
+                    "ok": result.ok,
+                    "message": result.message,
+                    "approval_id": result.approval_id,
+                    "status": result.status,
+                    "dispatched_task_id": result.dispatched_task_id,
+                },
+            )
+        return TelegramCallbackResponse(
+            ok=result.ok,
+            message=result.message,
+            approval_id=result.approval_id,
+            status=result.status,
+            dispatched_task_id=result.dispatched_task_id,
+        )
 
     return app
 

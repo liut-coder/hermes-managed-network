@@ -360,6 +360,19 @@ class SQLiteStore:
                 rows = conn.execute("SELECT * FROM notifications ORDER BY created_at DESC").fetchall()
         return [self._notification_from_row(row) for row in rows]
 
+    def mark_notification_delivered(self, notification_id: str) -> Notification | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM notifications WHERE notification_id = ?", (notification_id,)).fetchone()
+            if row is None:
+                return None
+            now = datetime.now(timezone.utc)
+            conn.execute(
+                "UPDATE notifications SET status = ?, delivered_at = ? WHERE notification_id = ?",
+                ("delivered", _dt(now), notification_id),
+            )
+            updated = conn.execute("SELECT * FROM notifications WHERE notification_id = ?", (notification_id,)).fetchone()
+        return self._notification_from_row(updated)
+
     def create_approval_request(
         self,
         *,
