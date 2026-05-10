@@ -79,6 +79,32 @@ def test_task_ssh_run_next_records_no_task_audit(tmp_path):
 
 
 
+def test_task_ssh_run_next_records_failure_summary(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node())
+    task = store.create_task(node_id="node_cli_ssh", command="systemctl restart app", risk="medium", created_by="hmn", executor="ssh")
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=17, stdout="partial output\nline2\n", stderr="Permission denied: key")
+
+    monkeypatch.setattr("hermes_managed_network.executor.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["task", "ssh-run-next", "--db", str(db)])
+
+    assert result.exit_code == 1
+    event = SQLiteStore(db).list_audit_events()[-1]
+    assert event.action == "ssh-run-next"
+    assert event.outcome == "failed"
+    assert event.details["task_id"] == task.task_id
+    assert event.details["duration_ms"] >= 0
+    assert event.details["stdout_preview"] == "partial output\nline2"
+    assert event.details["stderr_preview"] == "Permission denied: key"
+    assert event.details["failure_reason"] == "ssh_auth"
+
+
+
 def test_task_ssh_run_next_executes_approved_pending_ssh_task(tmp_path, monkeypatch):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -111,3 +137,7 @@ def test_task_ssh_run_next_executes_approved_pending_ssh_task(tmp_path, monkeypa
     assert event.outcome == "ok"
     assert event.details["task_id"] == task.task_id
     assert event.details["status"] == "succeeded"
+    assert event.details["duration_ms"] >= 0
+    assert event.details["stdout_preview"] == "done"
+    assert event.details["stderr_preview"] == ""
+    assert event.details["failure_reason"] == "none"

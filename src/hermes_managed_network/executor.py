@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import monotonic
 
 from .playbook import Playbook
 from .storage import SQLiteStore, Task
@@ -16,9 +17,32 @@ class SSHExecutionError(RuntimeError):
     task_id: str
     exit_code: int
     stderr: str
+    stdout: str = ""
+    duration_ms: int = 0
+    failure_reason: str = "unknown"
 
     def __str__(self) -> str:
         return f"task {self.task_id} failed with exit code {self.exit_code}: {self.stderr.strip() or 'ssh command failed'}"
+
+
+def _preview_output(text: str, *, limit: int = 240) -> str:
+    normalized = (text or "").strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def classify_ssh_failure(exit_code: int, stderr: str) -> str:
+    message = (stderr or "").lower()
+    if "permission denied" in message or "publickey" in message or "authentication failed" in message:
+        return "ssh_auth"
+    if "timed out" in message or "no route to host" in message or "connection refused" in message or "could not resolve hostname" in message:
+        return "ssh_connectivity"
+    if exit_code == 124:
+        return "timeout"
+    if exit_code != 0:
+        return "remote_command"
+    return "none"
 
 
 def _ssh_label_value(labels: list[str], key: str) -> str:
@@ -66,14 +90,29 @@ def run_ssh_task(store: SQLiteStore, task_id: str, *, allow_risk: set[str] | Non
     running.started_at = datetime.now(timezone.utc)
     store.save_task(running)
     command = ["ssh", "-p", port, f"{user}@{host}", task.command]
+    started = monotonic()
     completed = subprocess.run(command, check=False, text=True, capture_output=True, timeout=timeout_seconds)
+    duration_ms = max(0, int((monotonic() - started) * 1000))
+    failure_reason = classify_ssh_failure(completed.returncode, completed.stderr)
+    stdout_preview = _preview_output(completed.stdout)
+    stderr_preview = _preview_output(completed.stderr)
     store.record_audit(
         event_type="task",
         subject_type="task",
         subject_id=task.task_id,
         action="ssh_execute",
         outcome="ok" if completed.returncode == 0 else "failed",
-        details={"node_id": task.node_id, "command": task.command, "host": host, "user": user, "port": int(port)},
+        details={
+            "node_id": task.node_id,
+            "command": task.command,
+            "host": host,
+            "user": user,
+            "port": int(port),
+            "duration_ms": duration_ms,
+            "stdout_preview": stdout_preview,
+            "stderr_preview": stderr_preview,
+            "failure_reason": failure_reason,
+        },
     )
     finished = store.complete_task(
         task.task_id,
@@ -83,7 +122,14 @@ def run_ssh_task(store: SQLiteStore, task_id: str, *, allow_risk: set[str] | Non
     )
     assert finished is not None
     if completed.returncode != 0:
-        raise SSHExecutionError(task_id=task.task_id, exit_code=completed.returncode, stderr=completed.stderr)
+        raise SSHExecutionError(
+            task_id=task.task_id,
+            exit_code=completed.returncode,
+            stderr=completed.stderr,
+            stdout=completed.stdout,
+            duration_ms=duration_ms,
+            failure_reason=failure_reason,
+        )
     return finished
 
 

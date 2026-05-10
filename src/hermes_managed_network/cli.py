@@ -12,6 +12,7 @@ import socket
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 
 import typer
 
@@ -313,7 +314,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             status_node(node_id=None, db=db, now=None)
             return
         if normalized in {"5", "doctor", "node doctor", "hmn node doctor"}:
-            doctor_node(node_id=None, db=db)
+            doctor_node(node_id=None, db=db, no_ssh_check=False)
             return
         if normalized in {"6", "heartbeat", "heartbeat-command", "node heartbeat-command", "hmn node heartbeat-command"}:
             heartbeat_command(node_id=None, master_url=None, db=db)
@@ -706,10 +707,35 @@ def _select_managed_node(store: SQLiteStore, node_id: str | None):
     return managed_nodes[choice - 1]
 
 
+def _latest_doctor_ssh_connectivity(store: SQLiteStore, node_id: str) -> dict[str, object] | None:
+    for event in reversed(store.list_audit_events()):
+        if event.event_type == "node" and event.subject_id == node_id and event.action == "doctor":
+            details = event.details.get("ssh_connectivity")
+            if isinstance(details, dict):
+                return details
+    return None
+
+
+def _format_last_ssh_check(ssh_connectivity: dict[str, object] | None) -> str:
+    if not ssh_connectivity:
+        return "-"
+    if ssh_connectivity.get("skipped"):
+        return "skipped"
+    if not ssh_connectivity.get("configured"):
+        detail = str(ssh_connectivity.get("stderr") or "未配置")
+        return f"warn {detail}"
+    summary = f"{ssh_connectivity.get('user') or '-'}@{ssh_connectivity.get('host') or '-'}:{ssh_connectivity.get('port') or '-'}"
+    if ssh_connectivity.get("reachable"):
+        return f"ok {summary}"
+    detail = str(ssh_connectivity.get("stderr") or f"exit_code={ssh_connectivity.get('exit_code')}")
+    return f"warn {summary} {detail}".strip()
+
+
 def _render_node_status(
     node,
     liveness: dict[str, object] | None = None,
     runtime: dict[str, object] | None = None,
+    ssh_connectivity: dict[str, object] | None = None,
 ) -> None:
     typer.echo(f"node: {node.node_id}")
     typer.echo(f"status: {node.status}")
@@ -721,6 +747,7 @@ def _render_node_status(
     typer.echo(f"ssh_host: {node.ssh_host or '-'}")
     typer.echo(f"ssh_user: {node.ssh_user or '-'}")
     typer.echo(f"ssh_port: {node.ssh_port}")
+    typer.echo(f"last_ssh_check: {_format_last_ssh_check(ssh_connectivity)}")
     if liveness is not None:
         typer.echo(f"liveness: {liveness['state']}")
         typer.echo(f"last_heartbeat: {liveness['last_heartbeat'] or '-'}")
@@ -741,7 +768,8 @@ def status_node(
     event = _latest_heartbeat_event(store, node.node_id)
     facts = event.details.get("facts", {}) if event else {}
     runtime = _runtime_summary_from_facts(facts if isinstance(facts, dict) else {})
-    _render_node_status(node, liveness, runtime)
+    ssh_connectivity = _latest_doctor_ssh_connectivity(store, node.node_id)
+    _render_node_status(node, liveness, runtime, ssh_connectivity)
     _record_liveness_audit(store, node.node_id, liveness)
 
 
@@ -749,6 +777,7 @@ def status_node(
 def doctor_node(
     node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    no_ssh_check: bool = typer.Option(False, "--no-ssh-check", help="跳过 SSH 连通探测"),
 ) -> None:
     store = _store(db)
     node = _select_managed_node(store, node_id)
@@ -758,8 +787,20 @@ def doctor_node(
         "信任级别": node.trust_level in {"A", "B", "C"},
         "权限包": bool(node.permission_bundles),
     }
-    ssh_connectivity = {"configured": False, "reachable": False, "host": "", "user": "", "port": node.ssh_port, "exit_code": None, "stderr": ""}
-    if node.status == "managed":
+    ssh_connectivity = {
+        "configured": False,
+        "reachable": False,
+        "host": "",
+        "user": "",
+        "port": node.ssh_port,
+        "exit_code": None,
+        "stderr": "",
+        "skipped": no_ssh_check,
+    }
+    ssh_check_ok = False
+    if no_ssh_check:
+        ssh_check_ok = True
+    elif node.status == "managed":
         try:
             host, user, port = ssh_target_for_node(node)
             ssh_connectivity.update({"configured": True, "host": host, "user": user, "port": int(port)})
@@ -781,7 +822,8 @@ def doctor_node(
             ssh_connectivity["stderr"] = str(exc)
         except subprocess.TimeoutExpired:
             ssh_connectivity.update({"configured": True, "exit_code": 124, "stderr": "ssh connectivity check timed out"})
-    checks["SSH 连通"] = ssh_connectivity["configured"] and ssh_connectivity["reachable"]
+        ssh_check_ok = ssh_connectivity["configured"] and ssh_connectivity["reachable"]
+    checks["SSH 连通"] = ssh_check_ok
     outcome = "ok" if all(checks.values()) else "warn"
     typer.echo(f"doctor: {node.node_id}")
     typer.echo(f"host: {node.hostname}")
@@ -790,7 +832,9 @@ def doctor_node(
     typer.echo(f"ssh_port: {node.ssh_port}")
     for name, ok in checks.items():
         typer.echo(f"{name}: {'OK' if ok else 'WARN'}")
-    if ssh_connectivity["configured"]:
+    if no_ssh_check:
+        typer.echo("SSH 连通: SKIPPED --no-ssh-check")
+    elif ssh_connectivity["configured"]:
         summary = f"{ssh_connectivity['user']}@{ssh_connectivity['host']}:{ssh_connectivity['port']}"
         if ssh_connectivity["reachable"]:
             typer.echo(f"SSH 连通: OK {summary}")
@@ -1159,7 +1203,16 @@ def ssh_run_next(db: Path = typer.Option(None, "--db", help="SQLite 数据库路
             subject_id=task.task_id,
             action="ssh-run-next",
             outcome="failed",
-            details={"task_id": task.task_id, "node_id": task.node_id, "status": "failed", "exit_code": exc.exit_code},
+            details={
+                "task_id": task.task_id,
+                "node_id": task.node_id,
+                "status": "failed",
+                "exit_code": exc.exit_code,
+                "duration_ms": exc.duration_ms,
+                "stdout_preview": (exc.stdout or "").strip()[:240].rstrip("\n"),
+                "stderr_preview": (exc.stderr or "").strip()[:240].rstrip("\n"),
+                "failure_reason": exc.failure_reason,
+            },
         )
         typer.echo(f"SSH 执行失败: {exc}")
         raise typer.Exit(1)
@@ -1169,7 +1222,16 @@ def ssh_run_next(db: Path = typer.Option(None, "--db", help="SQLite 数据库路
         subject_id=completed.task_id,
         action="ssh-run-next",
         outcome="ok",
-        details={"task_id": completed.task_id, "node_id": completed.node_id, "status": completed.status, "exit_code": completed.exit_code},
+        details={
+            "task_id": completed.task_id,
+            "node_id": completed.node_id,
+            "status": completed.status,
+            "exit_code": completed.exit_code,
+            "duration_ms": max(0, int(((completed.completed_at or completed.created_at) - (completed.started_at or completed.created_at)).total_seconds() * 1000)),
+            "stdout_preview": (completed.stdout or "").strip()[:240].rstrip("\n"),
+            "stderr_preview": (completed.stderr or "").strip()[:240].rstrip("\n"),
+            "failure_reason": "none",
+        },
     )
     typer.echo(f"已执行任务: {completed.task_id}")
     typer.echo(f"节点: {completed.node_id}")

@@ -384,6 +384,41 @@ def test_node_status_without_id_auto_selects_single_managed_node(tmp_path):
     assert "ssh_host: 100.64.0.3" in result.stdout
     assert "ssh_user: ops" in result.stdout
     assert "ssh_port: 2222" in result.stdout
+    assert "last_ssh_check: -" in result.stdout
+
+
+def test_node_status_shows_last_ssh_check_from_doctor_audit(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_status_ssh",
+            fingerprint="fp-status-ssh",
+            hostname="status-ssh-node",
+            addresses=["10.0.0.4"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe"],
+            ssh_host="100.64.0.4",
+            ssh_user="ops",
+            ssh_port=2227,
+        )
+    )
+    monkeypatch.setattr(
+        "hermes_managed_network.cli.subprocess.run",
+        lambda command, **kwargs: SimpleNamespace(returncode=0, stdout="pong\n", stderr=""),
+    )
+    runner.invoke(app, ["node", "doctor", "--db", str(db)])
+
+    result = runner.invoke(app, ["node", "status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "last_ssh_check: ok ops@100.64.0.4:2227" in result.stdout
+
 
 
 def test_node_status_without_id_prompts_when_multiple_managed_nodes(tmp_path):
@@ -484,6 +519,42 @@ def test_node_doctor_auto_selects_and_records_audit(tmp_path, monkeypatch):
     assert events[-1].action == "doctor"
     assert events[-1].subject_id == "node_doctor"
     assert events[-1].outcome == "ok"
+
+
+def test_node_doctor_can_skip_ssh_check(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_doctor_skip_ssh",
+            fingerprint="fp",
+            hostname="doctor-skip-ssh",
+            addresses=["10.0.0.12"],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+            ssh_host="100.64.0.12",
+            ssh_user="root",
+            ssh_port=2224,
+        )
+    )
+
+    def fail_if_called(command, **kwargs):
+        raise AssertionError("ssh check should be skipped")
+
+    monkeypatch.setattr("hermes_managed_network.cli.subprocess.run", fail_if_called)
+
+    result = runner.invoke(app, ["node", "doctor", "--no-ssh-check", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "SSH 连通: SKIPPED" in result.stdout
+    event = SQLiteStore(db).list_audit_events()[-1]
+    assert event.details["ssh_connectivity"]["skipped"] is True
+    assert event.details["checks"]["SSH 连通"] is True
+
 
 
 def test_node_doctor_reports_ssh_connectivity_ok(tmp_path, monkeypatch):
