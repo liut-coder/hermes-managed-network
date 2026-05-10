@@ -459,6 +459,42 @@ def test_component_verify_is_independent_from_apply_and_records_audit(tmp_path):
     assert events[-1].outcome == "checked"
 
 
+def test_component_verify_uses_network_ip_as_overlay_probe_target(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_verify_overlay",
+            fingerprint="sha256:node_verify_overlay",
+            hostname="node-verify-overlay-host",
+            addresses=["192.0.2.50"],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+            network_provider="headscale",
+            network_node_id="50",
+            network_ip="100.64.0.50",
+            network_online=True,
+        )
+    )
+
+    result = runner.invoke(app, ["component", "verify", "reverse-proxy", "--node", "node_verify_overlay", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "remote_check: overlay_network" in result.stdout
+    assert "probe_target: 100.64.0.50" in result.stdout
+    assert "target_source: network_ip" in result.stdout
+    runs = SQLiteStore(db).list_component_runs()
+    assert runs[0].result["probe_target"] == "100.64.0.50"
+    assert runs[0].result["target_source"] == "network_ip"
+    assert runs[0].result["network_provider"] == "headscale"
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].details["probe_target"] == "100.64.0.50"
+    assert events[-1].details["target_source"] == "network_ip"
+
+
 def test_component_uninstall_is_first_class_and_records_state_and_audit(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"

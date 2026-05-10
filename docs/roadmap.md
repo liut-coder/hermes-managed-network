@@ -66,6 +66,7 @@
 - [x] network sync / preauth-key audit
 - [ ] Headscale tag/ACL 写操作审批化
 - [x] SSH executor 使用 Tailscale IP
+- [x] component verify 使用 Tailscale/Headscale `network_ip` 作为只读探测目标
 
 ## v0.6：资产文档自动化
 

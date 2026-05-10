@@ -1749,7 +1749,7 @@ def verify_component(
 ) -> None:
     """独立检查组件状态；不依赖 apply 记录。"""
     store = _store(db)
-    component, _node = _load_component_for_node(store, component_id, node_id)
+    component, node = _load_component_for_node(store, component_id, node_id)
     plan = _component_plan(component, node_id=node_id, config={}, action="verify", mutating=False)
     if component.id == "monitor":
         result = _monitor_summary(store, node_id)
@@ -1784,11 +1784,24 @@ def verify_component(
         if status != "ok":
             raise typer.Exit(1)
         return
-    result = {
-        "independent_from_apply": True,
-        "remote_check": "not_enabled",
-        "message": "remote component verification is not enabled in MVP",
-    }
+    try:
+        target = ssh_target_details_for_node(node)
+        result = {
+            "independent_from_apply": True,
+            "remote_check": "overlay_network" if target.source == "network_ip" else "target_resolved",
+            "probe_target": target.host,
+            "target_source": target.source,
+            "network_provider": node.network_provider,
+            "network_online": node.network_online,
+            "message": "component verification target resolved through node networking metadata",
+        }
+    except ValueError:
+        target = None
+        result = {
+            "independent_from_apply": True,
+            "remote_check": "not_enabled",
+            "message": "remote component verification target is not configured",
+        }
     run = store.record_component_run(
         component_id=component.id,
         node_id=node_id,
@@ -1798,11 +1811,22 @@ def verify_component(
         plan=plan,
         result=result,
     )
+    store.record_audit(
+        event_type=component.audit.get("category", "component"),
+        subject_type="component",
+        subject_id=component.id,
+        action="verify",
+        outcome="checked",
+        details={"node_id": node_id, "run_id": run.run_id, **result},
+    )
     typer.echo(f"verify: {component.id}")
     typer.echo(f"run: {run.run_id}")
     typer.echo(f"node: {node_id}")
     typer.echo("independent: yes")
-    typer.echo("remote_check: not_enabled")
+    typer.echo(f"remote_check: {result['remote_check']}")
+    if target is not None:
+        typer.echo(f"probe_target: {target.host}")
+        typer.echo(f"target_source: {target.source}")
 
 
 @component_app.command("uninstall")

@@ -320,7 +320,7 @@ network:
 - [x] SSH executor 使用 Tailscale/Headscale `network_ip`，优先级为 `ssh_host` > `ssh-host` label > `network_ip` > addresses。
 - [x] `hmn node status` 展示 HMN 状态 + Headscale 状态。
 - [x] `hmn node doctor` 的 SSH 探测可使用 `network_ip` 并记录 `target_source`。
-- [ ] component verify 可以通过 Tailscale IP 做只读探测。
+- [x] component verify 可以通过 Tailscale IP 做只读探测。
 - [ ] 高风险 SSH/playbook action 进入 approval。
 - [ ] Headscale tag/ACL 更新走 approval。
 
