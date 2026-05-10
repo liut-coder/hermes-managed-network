@@ -996,3 +996,44 @@ def test_wake_uses_next_node_number_from_inventory(tmp_path):
 
     assert result.exit_code == 0
     assert "机器: node-server2" in result.stdout
+
+
+def test_node_rotate_fingerprint_command_updates_node_and_prints_env_update(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_cli_rotate",
+            fingerprint="sha256:old-cli",
+            hostname="cli-rotate-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "node",
+            "rotate-fingerprint",
+            "node_cli_rotate",
+            "--db",
+            str(db),
+            "--new-fingerprint",
+            "sha256:new-cli",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert store.load_node("node_cli_rotate").fingerprint == "sha256:new-cli"
+    assert "fingerprint rotated: node_cli_rotate" in result.stdout
+    assert "HERMES_NODE_FINGERPRINT=sha256:new-cli" in result.stdout
+    event = store.list_audit_events()[-1]
+    assert event.action == "rotate_fingerprint"
+    assert event.outcome == "ok"

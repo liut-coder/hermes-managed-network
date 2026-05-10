@@ -709,6 +709,27 @@ class SQLiteStore:
                 ),
             )
 
+    def rotate_node_fingerprint(self, node_id: str, *, current_fingerprint: str | None, new_fingerprint: str) -> Node | None:
+        node = self.load_node(node_id)
+        if node is None:
+            return None
+        if current_fingerprint is not None and node.fingerprint != current_fingerprint:
+            return None
+        node.fingerprint = new_fingerprint
+        self.save_node(node)
+        self.record_audit(
+            event_type="node",
+            subject_type="node",
+            subject_id=node.node_id,
+            action="rotate_fingerprint",
+            outcome="ok",
+            details={
+                "old_fingerprint_sha256": current_fingerprint or "operator-forced",
+                "new_fingerprint_sha256": new_fingerprint,
+            },
+        )
+        return node
+
     def load_node(self, node_id: str) -> Node | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM nodes WHERE node_id = ?", (node_id,)).fetchone()

@@ -38,7 +38,7 @@
 - [x] worker pull task
 - [ ] task signing
 - [x] heartbeat
-- [ ] node token rotation
+- [x] node token rotation
 - [x] offline node handling
 - [x] runtime profile 自动选择
 - [x] service manager adapter 安装器

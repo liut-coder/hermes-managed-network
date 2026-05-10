@@ -277,3 +277,71 @@ def test_task_next_rejects_incompatible_worker_protocol(tmp_path):
     )
 
     assert response.status_code == 426
+
+
+def test_node_rotate_fingerprint_endpoint_updates_auth_and_records_audit(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_rotate",
+            fingerprint="sha256:old",
+            hostname="rotate-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_rotate/rotate-fingerprint",
+        json={"fingerprint": "sha256:old", "new_fingerprint": "sha256:new"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"node_id": "node_rotate", "status": "rotated"}
+    assert store.load_node("node_rotate").fingerprint == "sha256:new"
+    assert client.post(
+        "/api/v1/nodes/node_rotate/heartbeat",
+        json={"fingerprint": "sha256:old", "status": "ok", "facts": {}},
+    ).status_code == 403
+    assert client.post(
+        "/api/v1/nodes/node_rotate/heartbeat",
+        json={"fingerprint": "sha256:new", "status": "ok", "facts": {}},
+    ).status_code == 200
+    rotate_event = [event for event in store.list_audit_events() if event.action == "rotate_fingerprint"][-1]
+    assert rotate_event.outcome == "ok"
+    assert rotate_event.details == {"old_fingerprint_sha256": "sha256:old", "new_fingerprint_sha256": "sha256:new"}
+
+
+def test_node_rotate_fingerprint_rejects_wrong_current_fingerprint(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_rotate_reject",
+            fingerprint="sha256:right",
+            hostname="rotate-reject-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_rotate_reject/rotate-fingerprint",
+        json={"fingerprint": "sha256:wrong", "new_fingerprint": "sha256:new"},
+    )
+
+    assert response.status_code == 403
+    assert store.load_node("node_rotate_reject").fingerprint == "sha256:right"

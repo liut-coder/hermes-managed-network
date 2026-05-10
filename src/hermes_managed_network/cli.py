@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import secrets
 from importlib.metadata import PackageNotFoundError, version as package_version
 import shutil
 import shlex
@@ -37,6 +39,7 @@ app = typer.Typer(
         "  hmn node status           查看节点详情\n"
         "  hmn node doctor           检查节点登记状态\n"
         "  hmn node heartbeat-command 生成节点心跳命令\n"
+        "  hmn node rotate-fingerprint 轮换节点指纹\n"
         "  hmn node install-heartbeat 安装节点心跳/worker\n"
         "  hmn node worker-status     查看节点 worker 安装状态\n"
         "  hmn task run              下发低风险任务\n"
@@ -931,6 +934,27 @@ curl -fsSL {url}/scripts/worker.sh -o /usr/local/bin/hmn-worker
 chmod 0755 /usr/local/bin/hmn-worker
 {service_wiring}"""
     return "sudo bash -lc " + _shell_quote(script)
+
+
+@node_app.command("rotate-fingerprint")
+def rotate_fingerprint_command(
+    node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
+    new_fingerprint: str | None = typer.Option(None, "--new-fingerprint", help="新节点指纹；省略时自动生成 sha256 指纹"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    node = _select_managed_node(store, node_id)
+    generated = new_fingerprint or "sha256:" + hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+    updated = store.rotate_node_fingerprint(
+        node.node_id,
+        current_fingerprint=None,
+        new_fingerprint=generated,
+    )
+    if updated is None:
+        raise typer.Exit(1)
+    typer.echo(f"fingerprint rotated: {updated.node_id}")
+    typer.echo("请在目标节点 /etc/hermes-managed-network/node.env 同步更新：")
+    typer.echo(f"HERMES_NODE_FINGERPRINT={updated.fingerprint}")
 
 
 @node_app.command("install-heartbeat")

@@ -41,6 +41,16 @@ class HeartbeatResponse(BaseModel):
     worker_compatible: bool = True
 
 
+class RotateFingerprintRequest(BaseModel):
+    fingerprint: str
+    new_fingerprint: str
+
+
+class RotateFingerprintResponse(BaseModel):
+    node_id: str
+    status: str
+
+
 class VersionResponse(BaseModel):
     package_version: str
     api_version: str
@@ -169,6 +179,22 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             master_version=current_version_info().worker_protocol_version,
             worker_compatible=worker_compatible,
         )
+
+    @app.post("/api/v1/nodes/{node_id}/rotate-fingerprint", response_model=RotateFingerprintResponse)
+    def rotate_fingerprint(node_id: str, request: RotateFingerprintRequest) -> RotateFingerprintResponse:
+        node = store.load_node(node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail="node not found")
+        if node.fingerprint != request.fingerprint:
+            raise HTTPException(status_code=403, detail="node fingerprint mismatch")
+        updated = store.rotate_node_fingerprint(
+            node_id,
+            current_fingerprint=request.fingerprint,
+            new_fingerprint=request.new_fingerprint,
+        )
+        if updated is None:
+            raise HTTPException(status_code=403, detail="node fingerprint mismatch")
+        return RotateFingerprintResponse(node_id=updated.node_id, status="rotated")
 
     @app.post("/api/v1/nodes/{node_id}/tasks/next", response_model=TaskResponse | NoTaskResponse)
     def next_task(node_id: str, request: NodeAuthRequest) -> TaskResponse | NoTaskResponse:
