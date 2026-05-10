@@ -46,6 +46,10 @@ HMN 的执行面分成两层：
 
 详见：[平台与运行时扩展架构](platform-architecture.md)
 
+## 架构契约
+
+HMN 后续扩展必须遵守 [架构契约](architecture-contract.md)：Core 不硬编码具体服务细节，网络、运行时、服务管理器、组件和执行器都通过明确 seam 接入。
+
 ## 插件化组件
 
 HMN 的扩展能力采用 **核心控制面 + Component Bundle** 模型。
