@@ -10,7 +10,7 @@ HMN 不重复造底层组网轮子。
 - **HMN Core** 负责节点登记、授权、审批、审计、任务、组件生命周期和资产文档。
 - **Worker Pull** 负责无公网节点/NAS 主动出站接入，不要求节点开放入站端口。
 
-当前 PR 已经具备控制面 MVP 基础：
+当前 PR 已经具备控制面 MVP 基础，并已补齐 Headscale Network Provider MVP：
 
 - FastAPI controller
 - SQLite persistence
@@ -22,8 +22,11 @@ HMN 不重复造底层组网轮子。
 - audit log
 - component registry / lifecycle MVP
 - reverse-proxy / forwarder / monitor manifest MVP
+- network provider 抽象与 Headscale adapter
+- network status / sync / preauth-key CLI
+- wake --network headscale 接入命令
 
-但要变成稳定组网平台，还需要按优先级补齐安全边界和网络层适配。
+但要变成稳定组网平台，还需要继续补齐 SSH executor、Headscale 写操作审批和真实组件执行。
 
 ---
 
@@ -176,9 +179,11 @@ git diff --check
 - incompatible worker protocol 不能拿任务。
 - revoked/offline node 不应被分配新任务。
 
-### 预计时间
+### 下一步
 
-2～4 天。
+- Headscale node expire / tag update 这类写操作进入 approval。
+- SSH executor 使用 `network_ip`。
+- `hmn node status` 融合 Headscale 状态。
 
 ---
 
@@ -231,15 +236,16 @@ git diff --check
 
 **目标：** 接入成熟组网层，不重复造轮子。HMN 只做管理、审计和策略。
 
-**优先级：P1，Phase 1 后立即做。**
+**状态：已完成 MVP；后续进入 Headscale + Executor 联动。**
 
 ### 放置位置
 
+当前以轻量模块落地：
+
 ```text
-src/hermes_managed_network/network/
-  __init__.py
-  base.py
-  headscale.py
+src/hermes_managed_network/network_base.py
+src/hermes_managed_network/headscale.py
+src/hermes_managed_network/network.py
 ```
 
 ### Core 抽象
@@ -271,11 +277,11 @@ network:
 
 ### MVP 功能
 
-- `hmn network status`
-- `hmn network sync`
-- `hmn network preauth-key create --node <node_id> --tags tag:hmn-managed`
-- `hmn wake --network headscale` 可生成 Tailscale/Headscale 接入命令。
-- node record 关联：
+- [x] `hmn network status`
+- [x] `hmn network sync`
+- [x] `hmn network preauth-key create --node <node_id> --tag tag:hmn-managed`
+- [x] `hmn wake --network headscale` 可生成 Tailscale/Headscale 接入命令。
+- [x] node record 关联：
   - headscale node id
   - tailnet ip
   - tags
@@ -283,11 +289,11 @@ network:
 
 ### 审计事件
 
-- network/preauth-key/create
-- network/node/link
-- network/node/expire
-- network/tags/update
-- network/sync
+- [x] network preauth_key/create
+- [x] network preauth_key/create_for_wake
+- [x] network sync
+- [ ] network/node/expire
+- [ ] network/tags/update
 
 ### 不在 MVP 做
 
@@ -423,7 +429,7 @@ HMN Master / Headscale
 3. `feat: enforce revoked node access boundaries`
 4. `feat: add offline node status`
 5. `feat: add approval state machine MVP`
-6. `feat: add headscale network provider MVP`
+6. `feat: add headscale network provider MVP`（已完成 MVP）
 7. `feat: use headscale identity for SSH executor`
 8. `feat: improve NAS IPv6/lite-worker onboarding`
 9. `feat: add monitor facts dashboard`
@@ -435,7 +441,7 @@ HMN Master / Headscale
 
 - 核心安全闭环：2～4 天。
 - 审批状态机雏形：2～4 天。
-- Headscale MVP：2～4 天。
+- Headscale MVP：已完成基础闭环；后续写操作审批 + executor 联动。
 - Headscale + SSH executor：3～7 天。
 - NAS/IPv6 优化：1～4 天，视 NAS 环境而定。
 - backup/docs-sync/真实组件：1～3 周。

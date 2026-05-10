@@ -148,10 +148,15 @@ class SQLiteStore:
                     trust_level TEXT NOT NULL,
                     labels_json TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    permission_bundles_json TEXT NOT NULL,
+                    permission_bundles_json TEXT NOT NULL DEFAULT '[]',
                     ssh_host TEXT NOT NULL DEFAULT '',
                     ssh_user TEXT NOT NULL DEFAULT '',
-                    ssh_port INTEGER NOT NULL DEFAULT 22
+                    ssh_port INTEGER NOT NULL DEFAULT 22,
+                    network_provider TEXT NOT NULL DEFAULT '',
+                    network_node_id TEXT NOT NULL DEFAULT '',
+                    network_ip TEXT NOT NULL DEFAULT '',
+                    network_tags_json TEXT NOT NULL DEFAULT '[]',
+                    network_online INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -250,6 +255,11 @@ class SQLiteStore:
                 "ALTER TABLE nodes ADD COLUMN ssh_host TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE nodes ADD COLUMN ssh_user TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE nodes ADD COLUMN ssh_port INTEGER NOT NULL DEFAULT 22",
+                "ALTER TABLE nodes ADD COLUMN network_provider TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE nodes ADD COLUMN network_node_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE nodes ADD COLUMN network_ip TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE nodes ADD COLUMN network_tags_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE nodes ADD COLUMN network_online INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE tasks ADD COLUMN executor TEXT NOT NULL DEFAULT 'worker'",
             ):
                 try:
@@ -1239,8 +1249,9 @@ class SQLiteStore:
                 """
                 INSERT INTO nodes (
                     node_id, fingerprint, hostname, addresses_json, trust_level,
-                    labels_json, status, permission_bundles_json, ssh_host, ssh_user, ssh_port
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    labels_json, status, permission_bundles_json, ssh_host, ssh_user, ssh_port,
+                    network_provider, network_node_id, network_ip, network_tags_json, network_online
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_id) DO UPDATE SET
                     fingerprint=excluded.fingerprint,
                     hostname=excluded.hostname,
@@ -1251,7 +1262,12 @@ class SQLiteStore:
                     permission_bundles_json=excluded.permission_bundles_json,
                     ssh_host=excluded.ssh_host,
                     ssh_user=excluded.ssh_user,
-                    ssh_port=excluded.ssh_port
+                    ssh_port=excluded.ssh_port,
+                    network_provider=excluded.network_provider,
+                    network_node_id=excluded.network_node_id,
+                    network_ip=excluded.network_ip,
+                    network_tags_json=excluded.network_tags_json,
+                    network_online=excluded.network_online
                 """,
                 (
                     node.node_id,
@@ -1265,6 +1281,11 @@ class SQLiteStore:
                     node.ssh_host,
                     node.ssh_user,
                     node.ssh_port,
+                    node.network_provider,
+                    node.network_node_id,
+                    node.network_ip,
+                    json.dumps(node.network_tags),
+                    1 if node.network_online else 0,
                 ),
             )
 
@@ -1306,6 +1327,11 @@ class SQLiteStore:
             ssh_host=row["ssh_host"] if "ssh_host" in row.keys() else "",
             ssh_user=row["ssh_user"] if "ssh_user" in row.keys() else "",
             ssh_port=row["ssh_port"] if "ssh_port" in row.keys() else 22,
+            network_provider=row["network_provider"] if "network_provider" in row.keys() else "",
+            network_node_id=row["network_node_id"] if "network_node_id" in row.keys() else "",
+            network_ip=row["network_ip"] if "network_ip" in row.keys() else "",
+            network_tags=json.loads(row["network_tags_json"]) if "network_tags_json" in row.keys() else [],
+            network_online=bool(row["network_online"]) if "network_online" in row.keys() else False,
         )
 
     def list_nodes(self) -> list[Node]:

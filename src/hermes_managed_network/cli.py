@@ -20,6 +20,7 @@ from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure,
 from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
+from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .storage import SQLiteStore
 from .telegram_gateway import HttpGatewayApiClient, TelegramBotApiClient, poll_once
 from .tokens import JoinTokenStore
@@ -44,6 +45,9 @@ app = typer.Typer(
         "  hmn node rotate-fingerprint 轮换节点指纹\n"
         "  hmn node install-heartbeat 安装节点心跳/worker\n"
         "  hmn node worker-status     查看节点 worker 安装状态\n"
+        "  hmn network status         查看网络 provider 状态\n"
+        "  hmn network sync           同步 Headscale 节点映射\n"
+        "  hmn network preauth-key create 生成 Headscale 接入 key\n"
         "  hmn task run              下发任务（worker/ssh）\n"
         "  hmn task list             查看任务队列\n"
         "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
@@ -69,9 +73,11 @@ audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
+network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
+app.add_typer(network_app, name="network")
 app.add_typer(playbook_app, name="playbook")
 app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
@@ -226,8 +232,11 @@ def _show_menu() -> None:
     typer.echo("6. hmn node heartbeat-command       生成心跳命令")
     typer.echo("7. hmn node install-heartbeat       安装心跳/worker")
     typer.echo("8. hmn node worker-status           查看 worker 状态")
-    typer.echo("9. hmn task run                     下发任务（worker/ssh）")
-    typer.echo("10. hmn task list                   查看任务")
+    typer.echo("9. hmn network status                查看网络状态")
+    typer.echo("10. hmn network sync                 同步 Headscale 映射")
+    typer.echo("11. hmn network preauth-key create   生成接入 key")
+    typer.echo("12. hmn task run                     下发任务（worker/ssh）")
+    typer.echo("13. hmn task list                   查看任务")
     typer.echo("    hmn task ssh-run-next           执行下一个 SSH 任务")
     typer.echo("11. hmn approval list               查看审批")
     typer.echo("12. hmn telegram-gateway poll-once  发送审批通知")
@@ -283,20 +292,23 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("6) hmn node heartbeat-command  心跳命令")
         typer.echo("7) hmn node install-heartbeat  安装心跳/worker")
         typer.echo("8) hmn node worker-status     worker 状态")
-        typer.echo("9) hmn task run      下发任务")
-        typer.echo("10) hmn task list    查看任务")
+        typer.echo("9) hmn network status 查看网络状态")
+        typer.echo("10) hmn network sync  同步 Headscale 映射")
+        typer.echo("11) hmn network preauth-key create 生成接入 key")
+        typer.echo("12) hmn task run      下发任务")
+        typer.echo("13) hmn task list    查看任务")
         typer.echo("    hmn task ssh-run-next  执行 SSH 任务")
-        typer.echo("11) hmn component list   查看组件")
-        typer.echo("12) hmn component status 组件状态")
-        typer.echo("13) hmn component apply  记录组件状态")
-        typer.echo("14) hmn component verify 独立验证组件")
-        typer.echo("15) hmn component uninstall 卸载组件")
-        typer.echo("16) hmn audit list   查看审计")
-        typer.echo("17) hmn token create 创建 token")
+        typer.echo("14) hmn component list   查看组件")
+        typer.echo("15) hmn component status 组件状态")
+        typer.echo("16) hmn component apply  记录组件状态")
+        typer.echo("17) hmn component verify 独立验证组件")
+        typer.echo("18) hmn component uninstall 卸载组件")
+        typer.echo("19) hmn audit list   查看审计")
+        typer.echo("20) hmn token create 创建 token")
         typer.echo("    hmn token list / expire / revoke 管理 token")
-        typer.echo("18) hmn version      查看版本")
-        typer.echo("19) hmn update       更新主控")
-        typer.echo("20) hmn uninstall    卸载主控")
+        typer.echo("21) hmn version      查看版本")
+        typer.echo("22) hmn update       更新主控")
+        typer.echo("23) hmn uninstall    卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -324,38 +336,48 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"8", "worker", "worker status", "node worker-status", "hmn node worker-status"}:
             worker_status(node_id=None, db=db)
             return
-        if normalized in {"9", "task run", "hmn task run"}:
+        if normalized in {"9", "network", "network status", "hmn network status"}:
+            network_status(json_output=False)
+            return
+        if normalized in {"10", "network sync", "hmn network sync"}:
+            network_sync(db=db)
+            return
+        if normalized in {"11", "network preauth-key", "network preauth-key create", "hmn network preauth-key create"}:
+            node_id = typer.prompt("节点 ID/hostname", default="node1")
+            network_preauth_key_create(node_id=node_id, tag=[], reusable=False, ephemeral=False, expiration=None, db=db)
+            return
+        if normalized in {"12", "task run", "hmn task run"}:
             command = typer.prompt("任务命令", default="uptime")
             create_task_command(command=command, node_id=None, risk="low", db=db)
             return
-        if normalized in {"10", "task", "task list", "hmn task list"}:
+        if normalized in {"13", "task", "task list", "hmn task list"}:
             list_task_commands(db=db)
             return
-        if normalized in {"11", "component", "component list", "hmn component list"}:
+        if normalized in {"14", "component", "component list", "hmn component list"}:
             list_components(db=db)
             return
-        if normalized in {"12", "component status", "hmn component status"}:
+        if normalized in {"15", "component status", "hmn component status"}:
             component_status(node_id=None, db=db)
             return
-        if normalized in {"13", "apply", "component apply", "hmn component apply"}:
+        if normalized in {"apply", "component apply", "hmn component apply"}:
             component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             apply_component(component_id=component, node_id=node_id, set_values=[], db=db)
             return
-        if normalized in {"14", "verify", "component verify", "hmn component verify"}:
+        if normalized in {"verify", "component verify", "hmn component verify"}:
             component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             verify_component(component_id=component, node_id=node_id, db=db)
             return
-        if normalized in {"15", "uninstall component", "component uninstall", "hmn component uninstall"}:
+        if normalized in {"uninstall component", "component uninstall", "hmn component uninstall"}:
             component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             uninstall_component(component_id=component, node_id=node_id, db=db)
             return
-        if normalized in {"16", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"16", "19", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"17", "token", "token create", "hmn token create"}:
+        if normalized in {"17", "20", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
         if normalized in {"token list", "hmn token list"}:
@@ -364,13 +386,13 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"token expire", "hmn token expire"}:
             expire_tokens(db=db)
             return
-        if normalized in {"18", "version", "hmn version"}:
+        if normalized in {"18", "21", "version", "hmn version"}:
             version()
             return
-        if normalized in {"19", "update", "hmn update"}:
+        if normalized in {"19", "22", "update", "hmn update"}:
             update()
             return
-        if normalized in {"20", "uninstall", "hmn uninstall"}:
+        if normalized in {"20", "23", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -444,6 +466,7 @@ def uninstall(
 def wake(
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
     master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
+    network: str | None = typer.Option(None, "--network", help="同时生成网络 provider 接入信息；当前支持 headscale"),
 ) -> None:
     """交互式生成节点一次性接入脚本。"""
     store = _store(db)
@@ -457,6 +480,11 @@ def wake(
     user = typer.prompt("节点系统用户", default="hermes")
     ttl_minutes = typer.prompt("token 有效期分钟", default=30, type=int)
     labels = _parse_labels(labels_csv)
+    network_tags: list[str] = []
+    if isinstance(network, str) and network:
+        if network.lower() != "headscale":
+            raise typer.BadParameter("--network 当前仅支持 headscale")
+        network_tags = _parse_labels(typer.prompt("Headscale ACL tags，逗号分隔", default="tag:worker"))
 
     token_store = JoinTokenStore()
     token = token_store.create(
@@ -485,7 +513,178 @@ def wake(
     typer.echo(f"地址: {address}")
     typer.echo(f"信任级别: {trust_level}")
     typer.echo("请复制下面这条命令到目标机器执行：")
+    if isinstance(network, str) and network:
+        try:
+            provider = _require_network_provider()
+            preauth = provider.create_preauth_key(
+                node_id=hostname,
+                tags=network_tags,
+                reusable=False,
+                ephemeral=False,
+                expiration=None,
+            )
+        except NetworkProviderError as exc:
+            typer.echo(f"Headscale 接入 key 生成失败: {exc}")
+            raise typer.Exit(1) from exc
+        store.record_audit(
+            event_type="network",
+            subject_type="headscale_preauth_key",
+            subject_id=hostname,
+            action="preauth_key/create_for_wake",
+            outcome="ok",
+            details={"provider": provider.provider_name, "hostname": hostname, "tags": preauth.tags},
+        )
+        typer.echo("Headscale 接入 key 已生成")
+        typer.echo(preauth.key)
+        endpoint = getattr(provider, "endpoint", "")
+        typer.echo("先执行网络接入：")
+        typer.echo(f"sudo tailscale up --login-server={endpoint} --authkey={preauth.key}")
+        typer.echo("再执行 HMN 接入：")
     typer.echo(_render_join_command(token.value, selected_master_url, user, safe=True))
+
+
+def _require_network_provider():
+    provider = get_network_provider()
+    if provider is None:
+        typer.echo("未配置 network provider。请配置 HMN_CONFIG 或 /etc/hermes-managed-network/config.yaml。")
+        raise typer.Exit(1)
+    return provider
+
+
+def _network_node_matches_hmn(network_node: NetworkNodeRecord, hmn_node) -> bool:
+    names = {network_node.hostname, network_node.provider_node_id}
+    return hmn_node.hostname in names or hmn_node.node_id in names
+
+
+def _sync_network_nodes(store: SQLiteStore) -> NetworkSyncResult:
+    provider = _require_network_provider()
+    network_nodes = provider.list_nodes()
+    hmn_nodes = store.list_nodes()
+    linked = 0
+    updated = 0
+    unmatched: list[str] = []
+    matched_hmn_ids: set[str] = set()
+    for network_node in network_nodes:
+        target = next(
+            (node for node in hmn_nodes if node.node_id not in matched_hmn_ids and _network_node_matches_hmn(network_node, node)),
+            None,
+        )
+        if target is None:
+            unmatched.append(network_node.hostname or network_node.provider_node_id)
+            continue
+        matched_hmn_ids.add(target.node_id)
+        linked += 1
+        before = (
+            target.network_provider,
+            target.network_node_id,
+            target.network_ip,
+            tuple(target.network_tags),
+            target.network_online,
+        )
+        target.network_provider = provider.provider_name
+        target.network_node_id = network_node.provider_node_id
+        target.network_ip = network_node.ip
+        target.network_tags = list(network_node.tags)
+        target.network_online = bool(network_node.online)
+        after = (
+            target.network_provider,
+            target.network_node_id,
+            target.network_ip,
+            tuple(target.network_tags),
+            target.network_online,
+        )
+        if before != after:
+            updated += 1
+            store.save_node(target)
+    result = NetworkSyncResult(provider=provider.provider_name, linked=linked, updated=updated, unmatched=unmatched)
+    store.record_audit(
+        event_type="network",
+        subject_type="provider",
+        subject_id=provider.provider_name,
+        action="sync",
+        outcome="ok",
+        details={"linked": linked, "updated": updated, "unmatched": unmatched},
+    )
+    return result
+
+
+@network_app.command("status")
+def network_status(json_output: bool = typer.Option(False, "--json", help="输出 JSON")) -> None:
+    try:
+        provider = _require_network_provider()
+        status = provider.status()
+    except NetworkProviderError as exc:
+        typer.echo(f"network status failed: {exc}")
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps({
+            "provider": status.provider,
+            "configured": status.configured,
+            "endpoint": status.endpoint,
+            "node_count": status.node_count,
+            "online_count": status.online_count,
+            "nodes": [node.__dict__ for node in status.nodes],
+        }, ensure_ascii=False))
+        return
+    typer.echo(f"provider: {status.provider}")
+    typer.echo(f"endpoint: {status.endpoint}")
+    typer.echo(f"nodes: {status.node_count}")
+    typer.echo(f"online: {status.online_count}")
+    for node in status.nodes:
+        tags = ",".join(node.tags) if node.tags else "-"
+        typer.echo(f"{node.provider_node_id}	{node.hostname}	{node.ip or '-'}	online={node.online}	tags={tags}")
+
+
+@network_app.command("sync")
+def network_sync(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    try:
+        result = _sync_network_nodes(_store(db))
+    except NetworkProviderError as exc:
+        typer.echo(f"network sync failed: {exc}")
+        raise typer.Exit(1) from exc
+    typer.echo(f"provider: {result.provider}")
+    typer.echo(f"linked: {result.linked}")
+    typer.echo(f"updated: {result.updated}")
+    if result.unmatched:
+        typer.echo("unmatched: " + ", ".join(result.unmatched))
+    else:
+        typer.echo("unmatched: -")
+
+
+preauth_key_app = typer.Typer(help="管理 Headscale preauth key")
+network_app.add_typer(preauth_key_app, name="preauth-key")
+
+
+@preauth_key_app.command("create")
+def network_preauth_key_create(
+    node_id: str = typer.Option("", "--node", help="HMN 节点 ID/hostname，用于记录用途"),
+    tag: list[str] = typer.Option([], "--tag", help="Headscale ACL tag，可重复填写"),
+    reusable: bool = typer.Option(False, "--reusable/--single-use", help="是否可复用"),
+    ephemeral: bool = typer.Option(False, "--ephemeral/--persistent", help="是否临时节点"),
+    expiration: str | None = typer.Option(None, "--expiration", help="过期时间，按 Headscale API 字符串传递"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    try:
+        provider = _require_network_provider()
+        result = provider.create_preauth_key(
+            node_id=node_id,
+            tags=list(tag),
+            reusable=reusable,
+            ephemeral=ephemeral,
+            expiration=expiration,
+        )
+    except NetworkProviderError as exc:
+        typer.echo(f"preauth key create failed: {exc}")
+        raise typer.Exit(1) from exc
+    _store(db).record_audit(
+        event_type="network",
+        subject_type="headscale_preauth_key",
+        subject_id=node_id or "-",
+        action="preauth_key/create",
+        outcome="ok",
+        details={"provider": provider.provider_name, "tags": result.tags, "reusable": result.reusable, "ephemeral": result.ephemeral},
+    )
+    typer.echo(result.key)
 
 
 @token_app.command("create")

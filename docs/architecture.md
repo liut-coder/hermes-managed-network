@@ -35,6 +35,27 @@ Hermes Master 负责：
 - 维护节点清单
 - 同步机器 / 服务 / 域名文档
 
+
+## Network Provider
+
+HMN Core 通过 Network Provider seam 接入组网层，当前 MVP 支持 Headscale。
+Core 只保存可审计的节点映射状态，不保存明文 API key：
+
+- `network_provider`：例如 `headscale`
+- `network_node_id`：provider 侧 node id
+- `network_ip`：Tailnet IP
+- `network_tags`：Headscale ACL tags
+- `network_online`：provider 侧在线状态
+
+当前命令闭环：
+
+- `hmn network status`：读取 provider 状态。
+- `hmn network sync`：按 hostname / node_id 匹配 Headscale nodes，更新 HMN node network 字段并写 audit。
+- `hmn network preauth-key create`：生成 Headscale 接入 key 并写 audit。
+- `hmn wake --network headscale`：同时输出 Tailscale/Headscale 接入命令和 HMN join 命令。
+
+配置只引用环境变量名，例如 `api_key_env: HMN_HEADSCALE_API_KEY`；明文 token 不进入仓库、文档或审计。
+
 ## 执行模式
 
 HMN 的执行面分成两层：
@@ -105,6 +126,8 @@ Managed Worker -> Pull Task -> Execute Local Playbook -> Report Result
 - Worker token 可撤销
 - 任务必须绑定 node id
 - 高风险任务仍需审批
+- revoked 节点不得继续 heartbeat / poll task / submit result
+- worker protocol 不兼容时允许 heartbeat，但禁止领取任务
 
 ## 默认数据流
 
@@ -122,5 +145,8 @@ Managed Worker -> Pull Task -> Execute Local Playbook -> Report Result
 
 - Telegram 只是入口，不保存核心状态
 - Headscale 只负责连接，不代表全网互信
+- Network Provider 只通过抽象 seam 接入；Core 不硬编码 Headscale 业务细节
 - 节点只拿最小权限
 - 所有高风险动作必须进入审批链路
+- 审批流已通过 API / Telegram callback / gateway poller 闭环到任务派发
+- 节点在线性由 heartbeat 审计派生，统一分为 online / stale / offline

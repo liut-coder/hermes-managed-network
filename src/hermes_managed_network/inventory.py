@@ -16,6 +16,11 @@ class Node:
     ssh_host: str = ""
     ssh_user: str = ""
     ssh_port: int = 22
+    network_provider: str = ""
+    network_node_id: str = ""
+    network_ip: str = ""
+    network_tags: list[str] = field(default_factory=list)
+    network_online: bool = False
 
 
 class NodeRegistry:
