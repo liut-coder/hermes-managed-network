@@ -33,6 +33,7 @@
 - [ ] SSH executor
 - [x] audit log
 - [x] Approval 数据模型和 CLI 骨架
+- [x] Approval -> Task dispatch 闭环
 - [ ] Telegram approval flow
 
 ## v0.4：Worker 模式

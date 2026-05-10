@@ -276,6 +276,7 @@ def test_approval_cli_list_show_approve_reject(tmp_path):
     assert approved.exit_code == 0
     assert "approved" in approved.stdout
     assert SQLiteStore(db).load_approval_request(approval.approval_id).status == "approved"
+    assert SQLiteStore(db).list_tasks() == []
 
     second = store.create_approval_request(
         subject_type="task",

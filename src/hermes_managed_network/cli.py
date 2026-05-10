@@ -1102,10 +1102,19 @@ def approve_approval(
     by: str = typer.Option("operator", "--by", help="审批人"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
-    approval = _store(db).resolve_approval_request(approval_id, status="approved", decided_by=by)
+    store = _store(db)
+    approval = store.resolve_approval_request(approval_id, status="approved", decided_by=by)
     if approval is None:
         raise typer.Exit(1)
     typer.echo(f"approved: {approval.approval_id}")
+    if approval.subject_type == "task" and approval.action == "task.run":
+        task = store.dispatch_approved_task_request(approval.approval_id)
+        if task is None:
+            typer.echo("未创建任务：审批详情缺少 node_id/command，或审批类型不可调度。")
+            raise typer.Exit(1)
+        typer.echo(f"已创建任务: {task.task_id}")
+        typer.echo(f"节点: {task.node_id}")
+        typer.echo(f"命令: {task.command}")
 
 
 @approval_app.command("reject")
