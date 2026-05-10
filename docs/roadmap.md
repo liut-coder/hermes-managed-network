@@ -26,7 +26,7 @@
 ## v0.3：控制面 MVP
 
 - [x] join token 创建
-- [ ] join token 撤销 / 过期 UX
+- [x] join token 撤销 / 过期 UX
 - [x] node registry
 - [x] SQLite 存储
 - [ ] SSH executor

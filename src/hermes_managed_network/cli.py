@@ -222,6 +222,7 @@ def _show_menu() -> None:
     typer.echo("15. hmn component uninstall         卸载组件")
     typer.echo("16. hmn audit list                  查看审计")
     typer.echo("17. hmn token create                创建 token")
+    typer.echo("    hmn token list / expire / revoke 管理 token")
     typer.echo("18. hmn version                     查看版本")
     typer.echo("19. hmn update                      更新主控")
     typer.echo("20. hmn uninstall                   卸载主控")
@@ -243,6 +244,9 @@ def _show_menu() -> None:
     typer.echo("  hmn component verify reverse-proxy --node node1")
     typer.echo("  hmn component uninstall reverse-proxy --node node1")
     typer.echo("  hmn audit list")
+    typer.echo("  hmn token list")
+    typer.echo("  hmn token expire")
+    typer.echo("  hmn token revoke <TOKEN>")
     typer.echo("  hmn version")
     typer.echo("帮助：hmn <command> --help")
 
@@ -269,6 +273,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("15) hmn component uninstall 卸载组件")
         typer.echo("16) hmn audit list   查看审计")
         typer.echo("17) hmn token create 创建 token")
+        typer.echo("    hmn token list / expire / revoke 管理 token")
         typer.echo("18) hmn version      查看版本")
         typer.echo("19) hmn update       更新主控")
         typer.echo("20) hmn uninstall    卸载主控")
@@ -332,6 +337,12 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             return
         if normalized in {"17", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
+            return
+        if normalized in {"token list", "hmn token list"}:
+            list_tokens(db=db)
+            return
+        if normalized in {"token expire", "hmn token expire"}:
+            expire_tokens(db=db)
             return
         if normalized in {"18", "version", "hmn version"}:
             version()
@@ -487,6 +498,26 @@ def create_token(
 def list_tokens(db: Path = typer.Option(DEFAULT_DB, "--db", help="SQLite 数据库路径")) -> None:
     for token in _store(db).list_tokens():
         typer.echo(f"{token.value}\t{token.status}\ttrust={token.trust_level}\tlabels={','.join(token.labels)}")
+
+
+@token_app.command("expire")
+def expire_tokens(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    store = _store(db)
+    expired_values = store.expire_pending_tokens()
+    for token_value in expired_values:
+        store.record_audit(
+            event_type="token",
+            subject_type="join_token",
+            subject_id=token_value,
+            action="expire",
+            outcome="ok",
+            details={},
+        )
+    count = len(expired_values)
+    noun = "token" if count == 1 else "tokens"
+    typer.echo(f"expired {count} {noun}")
+    for token_value in expired_values:
+        typer.echo(token_value)
 
 
 @token_app.command("revoke")

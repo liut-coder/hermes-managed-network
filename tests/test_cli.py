@@ -38,6 +38,34 @@ def test_cli_can_create_and_revoke_token(tmp_path):
     assert SQLiteStore(db).load_token(token_value).status == "revoked"
 
 
+def test_cli_can_expire_pending_tokens(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--ttl-minutes", "-1"]).stdout.strip()
+
+    result = runner.invoke(app, ["token", "expire", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "expired 1 token" in result.stdout
+    assert token_value in result.stdout
+    assert SQLiteStore(db).load_token(token_value).status == "expired"
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "expire"
+    assert events[-1].subject_id == token_value
+
+
+def test_cli_token_list_refreshes_expired_status(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db), "--ttl-minutes", "-1"]).stdout.strip()
+
+    result = runner.invoke(app, ["token", "list", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert f"{token_value}\texpired" in result.stdout
+    assert SQLiteStore(db).load_token(token_value).status == "expired"
+
+
 def test_cli_can_render_join_command(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"

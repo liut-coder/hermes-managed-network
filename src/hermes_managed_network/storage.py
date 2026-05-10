@@ -637,7 +637,24 @@ class SQLiteStore:
         self.save_token(token)
         return token
 
+    def expire_pending_tokens(self, *, now: datetime | None = None) -> list[str]:
+        now = now or datetime.now(timezone.utc)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT value FROM join_tokens
+                WHERE status = 'pending' AND expires_at < ?
+                ORDER BY created_at DESC
+                """,
+                (_dt(now),),
+            ).fetchall()
+            values = [row["value"] for row in rows]
+            if values:
+                conn.executemany("UPDATE join_tokens SET status = 'expired' WHERE value = ?", [(value,) for value in values])
+        return values
+
     def list_tokens(self) -> list[JoinToken]:
+        self.expire_pending_tokens()
         with self.connect() as conn:
             rows = conn.execute("SELECT value FROM join_tokens ORDER BY created_at DESC").fetchall()
         return [token for row in rows if (token := self.load_token(row["value"])) is not None]

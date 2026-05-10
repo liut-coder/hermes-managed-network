@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from hermes_managed_network.inventory import Node
 from hermes_managed_network.storage import SQLiteStore
@@ -17,6 +17,22 @@ def test_sqlite_persists_join_tokens(tmp_path):
     assert loaded.value == token.value
     assert loaded.trust_level == "B"
     assert loaded.labels == ["managed"]
+
+
+def test_sqlite_marks_pending_expired_tokens(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    token_store = JoinTokenStore(now=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    expired = token_store.create(trust_level="B", labels=[], ttl=timedelta(minutes=1))
+    fresh = JoinTokenStore().create(trust_level="C", labels=["fresh"], ttl=timedelta(minutes=30))
+    store.save_token(expired)
+    store.save_token(fresh)
+
+    changed = store.expire_pending_tokens(now=datetime(2026, 1, 1, 0, 2, tzinfo=timezone.utc))
+
+    assert changed == [expired.value]
+    assert store.load_token(expired.value).status == "expired"
+    assert store.load_token(fresh.value).status == "pending"
 
 
 def test_sqlite_persists_nodes(tmp_path):
