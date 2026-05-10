@@ -180,6 +180,48 @@ def _load_component_for_node(store: SQLiteStore, component_id: str, node_id: str
     return component, node
 
 
+def _component_action_requires_approval(risk: str, *, mutating: bool) -> bool:
+    return mutating and risk in {"high", "critical"}
+
+
+def _request_component_action_approval(
+    store: SQLiteStore,
+    component: ComponentManifest,
+    *,
+    node_id: str,
+    action: str,
+    plan: dict[str, object],
+    config: dict[str, str] | None = None,
+    result: dict[str, object] | None = None,
+):
+    run = store.record_component_run(
+        component_id=component.id,
+        node_id=node_id,
+        action=action,
+        risk=component.risk,
+        status="pending_approval",
+        plan=plan,
+        result=result or {"machine_changed": False, "approval_required": True},
+    )
+    approval = store.create_approval_request(
+        subject_type="component_run",
+        subject_id=run.run_id,
+        action=f"component.{action}",
+        risk=component.risk,
+        requested_by="hmn",
+        details={
+            "action": action,
+            "run_id": run.run_id,
+            "component_id": component.id,
+            "node_id": node_id,
+            "config": config or {},
+            "version": component.version,
+            "driver": str(component.drivers.get("default", "")),
+        },
+    )
+    return run, approval
+
+
 def _read_master_env(path: Path = Path("/etc/hermes-managed-network/master.env")) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -1652,6 +1694,14 @@ def approve_approval(
             typer.echo("未更新网络 tags：审批详情不完整或节点不可用。")
             raise typer.Exit(1)
         typer.echo("已更新网络 tags")
+    if approval.subject_type == "component_run" and approval.action.startswith("component."):
+        run = store.dispatch_approved_component_action(approval.approval_id)
+        if run is None:
+            typer.echo("未执行组件操作：审批详情不完整或组件动作不可调度。")
+            raise typer.Exit(1)
+        typer.echo(f"已执行组件操作: {run.run_id}")
+        typer.echo(f"组件: {run.component_id}")
+        typer.echo(f"节点: {run.node_id}")
 
 
 @approval_app.command("reject")
@@ -1798,31 +1848,15 @@ def apply_component(
     store = _store(db)
     component, _node = _load_component_for_node(store, component_id, node_id)
     config = _parse_key_values(set_values)
-    plan = _component_plan(component, node_id=node_id, config=config, action="apply", mutating=False)
-    if component.risk == "high":
-        run = store.record_component_run(
-            component_id=component.id,
+    plan = _component_plan(component, node_id=node_id, config=config, action="apply", mutating=True)
+    if _component_action_requires_approval(component.risk, mutating=bool(plan["mutating"])):
+        run, approval = _request_component_action_approval(
+            store,
+            component,
             node_id=node_id,
             action="apply",
-            risk=component.risk,
-            status="pending_approval",
             plan=plan,
-            result={"machine_changed": False, "approval_required": True},
-        )
-        approval = store.create_approval_request(
-            subject_type="component_run",
-            subject_id=run.run_id,
-            action="component.apply",
-            risk=component.risk,
-            requested_by="hmn",
-            details={
-                "run_id": run.run_id,
-                "component_id": component.id,
-                "node_id": node_id,
-                "config": config,
-                "version": component.version,
-                "driver": str(component.drivers.get("default", "")),
-            },
+            config=config,
         )
         typer.echo(f"需要审批: {approval.approval_id}")
         typer.echo(f"apply: {component.id}")
@@ -1955,7 +1989,21 @@ def uninstall_component(
     """记录组件卸载期望状态；卸载是一等动作。"""
     store = _store(db)
     component, _node = _load_component_for_node(store, component_id, node_id)
-    plan = _component_plan(component, node_id=node_id, config={}, action="uninstall", mutating=False)
+    plan = _component_plan(component, node_id=node_id, config={}, action="uninstall", mutating=True)
+    if _component_action_requires_approval(component.risk, mutating=bool(plan["mutating"])):
+        run, approval = _request_component_action_approval(
+            store,
+            component,
+            node_id=node_id,
+            action="uninstall",
+            plan=plan,
+        )
+        typer.echo(f"需要审批: {approval.approval_id}")
+        typer.echo(f"uninstall: {component.id}")
+        typer.echo(f"run: {run.run_id}")
+        typer.echo(f"node: {node_id}")
+        typer.echo("state: pending_approval")
+        raise typer.Exit(1)
     result = {"machine_changed": False, "state_closed_loop": True, "remote_execution": "not_enabled"}
     run = store.record_component_run(
         component_id=component.id,

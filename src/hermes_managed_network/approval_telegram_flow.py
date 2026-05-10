@@ -79,6 +79,15 @@ def handle_telegram_approval_callback(
                 message="已批准，但任务创建失败：审批详情缺少 node_id/command。",
             )
         dispatched_task_id = task.task_id
+    if target_status == "approved" and resolved.subject_type == "component_run" and resolved.action.startswith("component."):
+        run = store.dispatch_approved_component_action(resolved.approval_id)
+        if run is None:
+            return TelegramApprovalCallbackResult(
+                ok=False,
+                approval_id=resolved.approval_id,
+                status=resolved.status,
+                message="已批准，但组件操作执行失败：审批详情不完整或动作不可调度。",
+            )
 
     if target_status == "approved":
         message = "已批准。"

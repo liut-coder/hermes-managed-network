@@ -519,11 +519,52 @@ class SQLiteStore:
         )
         if status == "approved" and approval.subject_type == "task" and approval.action == "task.run":
             self.dispatch_approved_task_request(approval.approval_id)
-        if status == "approved" and approval.subject_type == "component_run" and approval.action == "component.apply":
-            self.dispatch_approved_component_apply(approval.approval_id)
+        if status == "approved" and approval.subject_type == "component_run" and approval.action.startswith("component."):
+            self.dispatch_approved_component_action(approval.approval_id)
         return approval
 
     def dispatch_approved_component_apply(self, approval_id: str) -> ComponentRun | None:
+        return self.dispatch_approved_component_action(approval_id)
+
+    def _insert_audit_event(self, conn: sqlite3.Connection, event: AuditEvent) -> None:
+        conn.execute(
+            """
+            INSERT INTO audit_events (
+                event_type, subject_type, subject_id, action, outcome,
+                details_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_type,
+                event.subject_type,
+                event.subject_id,
+                event.action,
+                event.outcome,
+                json.dumps(event.details, sort_keys=True),
+                _dt(event.created_at),
+            ),
+        )
+
+    def _record_component_dispatch_failure(
+        self,
+        conn: sqlite3.Connection,
+        approval: ApprovalRequest,
+        *,
+        reason: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        event = AuditEvent(
+            event_type="approval",
+            subject_type="component_run",
+            subject_id=approval.approval_id,
+            action="approval/dispatch",
+            outcome="failed",
+            details={"subject_id": approval.subject_id, "reason": reason, **(details or {})},
+            created_at=datetime.now(timezone.utc),
+        )
+        self._insert_audit_event(conn, event)
+
+    def dispatch_approved_component_action(self, approval_id: str) -> ComponentRun | None:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             approval_row = conn.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
@@ -532,7 +573,7 @@ class SQLiteStore:
             approval = self._approval_from_row(approval_row)
             if approval.status != "approved":
                 return None
-            if approval.subject_type != "component_run" or approval.action != "component.apply":
+            if approval.subject_type != "component_run" or not approval.action.startswith("component."):
                 return None
             run_row = conn.execute("SELECT * FROM component_runs WHERE run_id = ?", (approval.subject_id,)).fetchone()
             if run_row is None:
@@ -541,10 +582,73 @@ class SQLiteStore:
             if run.status == "state_recorded":
                 return run
 
+            action = str(approval.details.get("action") or approval.action.removeprefix("component.") or run.action)
+            mismatched = []
+            expected = {
+                "run_id": run.run_id,
+                "component_id": run.component_id,
+                "node_id": run.node_id,
+                "action": run.action,
+                "risk": run.risk,
+            }
+            observed = {
+                "run_id": str(approval.details.get("run_id") or approval.subject_id),
+                "component_id": str(approval.details.get("component_id") or ""),
+                "node_id": str(approval.details.get("node_id") or ""),
+                "action": action,
+                "risk": approval.risk,
+            }
+            approval_action = approval.action.removeprefix("component.")
+            if approval_action != run.action:
+                mismatched.append("approval.action")
+            for key, expected_value in expected.items():
+                if observed[key] != expected_value:
+                    mismatched.append(key)
+            if mismatched:
+                self._record_component_dispatch_failure(
+                    conn,
+                    approval,
+                    reason="component approval details mismatch",
+                    details={"mismatched": sorted(set(mismatched)), "run_id": run.run_id},
+                )
+                return None
+            if run.status != "pending_approval":
+                self._record_component_dispatch_failure(
+                    conn,
+                    approval,
+                    reason="component run is not pending approval",
+                    details={"run_id": run.run_id, "run_status": run.status},
+                )
+                return None
+            if action not in {"apply", "uninstall"}:
+                self._record_component_dispatch_failure(
+                    conn,
+                    approval,
+                    reason="component action is not dispatchable",
+                    details={"run_id": run.run_id, "component_action": action},
+                )
+                return None
             details = approval.details
-            component_id = str(details.get("component_id") or run.component_id)
-            node_id = str(details.get("node_id") or run.node_id)
+            component_id = run.component_id
+            node_id = run.node_id
             config = details.get("config") if isinstance(details.get("config"), dict) else {}
+            if action == "uninstall":
+                existing = conn.execute(
+                    "SELECT * FROM node_components WHERE node_id = ? AND component_id = ?",
+                    (node_id, component_id),
+                ).fetchone()
+                if existing is not None:
+                    config = json.loads(existing["config_json"])
+                    installed_version = existing["installed_version"]
+                    driver = existing["driver"]
+                else:
+                    installed_version = str(details.get("version") or "")
+                    driver = str(details.get("driver") or "")
+                desired_state = "absent"
+            else:
+                installed_version = str(details.get("version") or "")
+                driver = str(details.get("driver") or "")
+                desired_state = "enabled"
             conn.execute(
                 """
                 INSERT INTO node_components (
@@ -564,11 +668,11 @@ class SQLiteStore:
                 (
                     node_id,
                     component_id,
-                    "enabled",
+                    desired_state,
                     "planned",
                     json.dumps(config, sort_keys=True),
-                    str(details.get("version") or ""),
-                    str(details.get("driver") or ""),
+                    installed_version,
+                    driver,
                     "",
                     run.run_id,
                     None,
@@ -605,7 +709,7 @@ class SQLiteStore:
                 event_type="component",
                 subject_type="component",
                 subject_id=component_id,
-                action="apply",
+                action=action,
                 outcome="state_recorded",
                 details={"node_id": node_id, "run_id": run.run_id, "risk": run.risk, "approval_id": approval.approval_id},
                 created_at=datetime.now(timezone.utc),

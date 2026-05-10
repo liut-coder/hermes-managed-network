@@ -324,6 +324,10 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             if task is None:
                 raise HTTPException(status_code=422, detail="approval cannot be dispatched")
             dispatched_task_id = task.task_id
+        if status == "approved" and approval.subject_type == "component_run" and approval.action.startswith("component."):
+            run = store.dispatch_approved_component_action(approval.approval_id)
+            if run is None:
+                raise HTTPException(status_code=422, detail="approval cannot be dispatched")
         return ApprovalDecisionResponse(
             approval_id=approval.approval_id,
             status=approval.status,

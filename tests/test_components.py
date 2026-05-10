@@ -437,6 +437,78 @@ def test_dispatch_approved_component_apply_returns_existing_state_recorded_run_w
     assert SQLiteStore(db).list_audit_events() == before_events
 
 
+def test_dispatch_approved_component_action_rejects_mismatched_approval_details(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    run = store.record_component_run(
+        component_id="danger-proxy",
+        node_id="node_guarded_component",
+        action="apply",
+        risk="high",
+        status="pending_approval",
+        plan={"config": {"domain": "safe.example"}},
+    )
+    approval = store.create_approval_request(
+        subject_type="component_run",
+        subject_id=run.run_id,
+        action="component.apply",
+        risk="high",
+        requested_by="hmn",
+        details={
+            "action": "apply",
+            "run_id": run.run_id,
+            "component_id": "other-proxy",
+            "node_id": "node_guarded_component",
+            "config": {"domain": "unsafe.example"},
+        },
+    )
+    store.resolve_approval_request(approval.approval_id, status="approved", decided_by="Misk")
+
+    dispatched = SQLiteStore(db).dispatch_approved_component_action(approval.approval_id)
+
+    assert dispatched is None
+    assert SQLiteStore(db).list_node_components("node_guarded_component") == []
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "approval/dispatch"
+    assert events[-1].outcome == "failed"
+    assert "component_id" in events[-1].details["mismatched"]
+
+
+def test_dispatch_approved_component_action_requires_pending_approval_status(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    run = store.record_component_run(
+        component_id="danger-proxy",
+        node_id="node_wrong_status_component",
+        action="apply",
+        risk="high",
+        status="planned",
+    )
+    approval = store.create_approval_request(
+        subject_type="component_run",
+        subject_id=run.run_id,
+        action="component.apply",
+        risk="high",
+        requested_by="hmn",
+        details={
+            "action": "apply",
+            "run_id": run.run_id,
+            "component_id": run.component_id,
+            "node_id": run.node_id,
+        },
+    )
+    store.resolve_approval_request(approval.approval_id, status="approved", decided_by="Misk")
+
+    dispatched = SQLiteStore(db).dispatch_approved_component_action(approval.approval_id)
+
+    assert dispatched is None
+    assert SQLiteStore(db).list_node_components("node_wrong_status_component") == []
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "approval/dispatch"
+    assert events[-1].outcome == "failed"
+    assert events[-1].details["reason"] == "component run is not pending approval"
+
+
 def test_component_verify_is_independent_from_apply_and_records_audit(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -524,6 +596,53 @@ def test_component_uninstall_is_first_class_and_records_state_and_audit(tmp_path
     events = store.list_audit_events()
     assert events[-1].action == "uninstall"
     assert events[-1].outcome == "state_recorded"
+
+
+def test_high_risk_component_uninstall_requires_approval_and_dispatches_after_approve(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _save_managed_node(store, "node_high_uninstall")
+    high_component = replace(load_builtin_components()["reverse-proxy"], id="danger-uninstall", risk="high")
+    store.save_component(high_component)
+    store.set_node_component(
+        node_id="node_high_uninstall",
+        component_id="danger-uninstall",
+        desired_state="enabled",
+        current_state="planned",
+        config={"domain": "example.com"},
+        installed_version="1.2.3",
+        driver="caddy",
+    )
+
+    result = runner.invoke(app, ["component", "uninstall", "danger-uninstall", "--node", "node_high_uninstall", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "需要审批:" in result.stdout
+    item = store.list_node_components("node_high_uninstall")[0]
+    assert item.desired_state == "enabled"
+    runs = store.list_component_runs()
+    assert len(runs) == 1
+    assert runs[0].action == "uninstall"
+    assert runs[0].status == "pending_approval"
+    approvals = store.list_approval_requests(status="pending")
+    assert len(approvals) == 1
+    assert approvals[0].subject_type == "component_run"
+    assert approvals[0].subject_id == runs[0].run_id
+    assert approvals[0].action == "component.uninstall"
+
+    approved = runner.invoke(app, ["approval", "approve", approvals[0].approval_id, "--db", str(db)])
+
+    assert approved.exit_code == 0
+    assert "已执行组件操作" in approved.stdout
+    item = SQLiteStore(db).list_node_components("node_high_uninstall")[0]
+    assert item.component_id == "danger-uninstall"
+    assert item.desired_state == "absent"
+    assert item.current_state == "planned"
+    assert item.last_run_id == runs[0].run_id
+    dispatched_run = SQLiteStore(db).list_component_runs()[0]
+    assert dispatched_run.status == "state_recorded"
+    assert dispatched_run.result["approval_id"] == approvals[0].approval_id
 
 
 def test_component_status_reports_node_components(tmp_path):
