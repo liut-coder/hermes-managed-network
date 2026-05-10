@@ -25,11 +25,12 @@
 
 ## v0.3：控制面 MVP
 
-- [ ] join token 创建 / 撤销
-- [ ] node registry
-- [ ] SQLite 存储
+- [x] join token 创建
+- [ ] join token 撤销 / 过期 UX
+- [x] node registry
+- [x] SQLite 存储
 - [ ] SSH executor
-- [ ] audit log
+- [x] audit log
 - [ ] Telegram approval flow
 
 ## v0.4：Worker 模式

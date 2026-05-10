@@ -238,6 +238,7 @@ curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/f
 ## 文档
 
 - [架构总览](docs/architecture.md)
+- [优先级推进计划](docs/priority-plan.md)
 - [插件化组件架构](docs/component-architecture.md)
 - [平台与运行时扩展架构](docs/platform-architecture.md)
 - [安全模型](docs/security-model.md)
