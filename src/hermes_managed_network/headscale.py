@@ -108,3 +108,16 @@ class HeadscaleProvider(NetworkProvider):
             tags=[str(tag) for tag in (data.get("aclTags") or tags)],
             raw=data,
         )
+
+    def set_node_tags(self, provider_node_id: str, tags: list[str]) -> NetworkNodeRecord:
+        client = self._client()
+        response = client.request_json("POST", f"/api/v1/node/{provider_node_id}/tags", payload={"tags": tags})
+        data = response.get("node") or response.get("machine") or response
+        if not isinstance(data, dict):
+            raise NetworkProviderError("Headscale tag update 返回格式错误")
+        normalized = self._normalize_node(data)
+        if not normalized.provider_node_id:
+            normalized.provider_node_id = provider_node_id
+        if not normalized.tags:
+            normalized.tags = list(tags)
+        return normalized

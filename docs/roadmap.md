@@ -64,7 +64,8 @@
 - [x] `hmn wake --network headscale` 生成 Headscale/Tailscale 接入命令
 - [x] node record 保存 `network_provider` / `network_node_id` / `network_ip` / `network_tags` / `network_online`
 - [x] network sync / preauth-key audit
-- [ ] Headscale tag/ACL 写操作审批化
+- [x] Headscale tag 写操作审批化
+- [ ] Headscale ACL 文件级更新审批化（更高风险 action，单独实现）
 - [x] SSH executor 使用 Tailscale IP
 - [x] component verify 使用 Tailscale/Headscale `network_ip` 作为只读探测目标
 

@@ -48,6 +48,7 @@ app = typer.Typer(
         "  hmn network status         查看网络 provider 状态\n"
         "  hmn network sync           同步 Headscale 节点映射\n"
         "  hmn network preauth-key create 生成 Headscale 接入 key\n"
+        "  hmn network node tags set 设置节点 tag（审批）\n"
         "  hmn task run              下发任务（worker/ssh）\n"
         "  hmn task list             查看任务队列\n"
         "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
@@ -235,22 +236,23 @@ def _show_menu() -> None:
     typer.echo("9. hmn network status                查看网络状态")
     typer.echo("10. hmn network sync                 同步 Headscale 映射")
     typer.echo("11. hmn network preauth-key create   生成接入 key")
-    typer.echo("12. hmn task run                     下发任务（worker/ssh）")
-    typer.echo("13. hmn task list                   查看任务")
-    typer.echo("    hmn task ssh-run-next           执行下一个 SSH 任务")
-    typer.echo("11. hmn approval list               查看审批")
-    typer.echo("12. hmn telegram-gateway poll-once  发送审批通知")
-    typer.echo("13. hmn component list              查看组件")
-    typer.echo("14. hmn component status            查看组件状态")
-    typer.echo("15. hmn component apply             记录组件状态")
-    typer.echo("16. hmn component verify            独立验证组件")
-    typer.echo("17. hmn component uninstall         卸载组件")
-    typer.echo("18. hmn audit list                  查看审计")
-    typer.echo("19. hmn token create                创建 token")
+    typer.echo("12. hmn network node tags set        设置节点 tag（审批）")
+    typer.echo("13. hmn task run                     下发任务（worker/ssh）")
+    typer.echo("14. hmn task list                    查看任务")
+    typer.echo("    hmn task ssh-run-next            执行下一个 SSH 任务")
+    typer.echo("15. hmn approval list                查看审批")
+    typer.echo("16. hmn telegram-gateway poll-once   发送审批通知")
+    typer.echo("17. hmn component list               查看组件")
+    typer.echo("18. hmn component status             查看组件状态")
+    typer.echo("19. hmn component apply              记录组件状态")
+    typer.echo("20. hmn component verify             独立验证组件")
+    typer.echo("21. hmn component uninstall          卸载组件")
+    typer.echo("22. hmn audit list                   查看审计")
+    typer.echo("23. hmn token create                 创建 token")
     typer.echo("    hmn token list / expire / revoke 管理 token")
-    typer.echo("20. hmn version                     查看版本")
-    typer.echo("21. hmn update                      更新主控")
-    typer.echo("22. hmn uninstall                   卸载主控")
+    typer.echo("24. hmn version                      查看版本")
+    typer.echo("25. hmn update                       更新主控")
+    typer.echo("26. hmn uninstall                    卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
@@ -260,6 +262,7 @@ def _show_menu() -> None:
     typer.echo("  hmn node heartbeat-command")
     typer.echo("  hmn node install-heartbeat")
     typer.echo("  hmn node worker-status")
+    typer.echo("  hmn network node tags set --node node1 --tag tag:worker")
     typer.echo("  hmn task run 'uptime'")
     typer.echo("  hmn task run 'uptime' --executor ssh --wait")
     typer.echo("  hmn task list")
@@ -295,20 +298,21 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("9) hmn network status 查看网络状态")
         typer.echo("10) hmn network sync  同步 Headscale 映射")
         typer.echo("11) hmn network preauth-key create 生成接入 key")
-        typer.echo("12) hmn task run      下发任务")
-        typer.echo("13) hmn task list    查看任务")
+        typer.echo("12) hmn network node tags set  设置节点 tag（审批）")
+        typer.echo("13) hmn task run      下发任务")
+        typer.echo("14) hmn task list    查看任务")
         typer.echo("    hmn task ssh-run-next  执行 SSH 任务")
-        typer.echo("14) hmn component list   查看组件")
-        typer.echo("15) hmn component status 组件状态")
-        typer.echo("16) hmn component apply  记录组件状态")
-        typer.echo("17) hmn component verify 独立验证组件")
-        typer.echo("18) hmn component uninstall 卸载组件")
-        typer.echo("19) hmn audit list   查看审计")
-        typer.echo("20) hmn token create 创建 token")
+        typer.echo("15) hmn component list   查看组件")
+        typer.echo("16) hmn component status 组件状态")
+        typer.echo("17) hmn component apply  记录组件状态")
+        typer.echo("18) hmn component verify 独立验证组件")
+        typer.echo("19) hmn component uninstall 卸载组件")
+        typer.echo("20) hmn audit list   查看审计")
+        typer.echo("21) hmn token create 创建 token")
         typer.echo("    hmn token list / expire / revoke 管理 token")
-        typer.echo("21) hmn version      查看版本")
-        typer.echo("22) hmn update       更新主控")
-        typer.echo("23) hmn uninstall    卸载主控")
+        typer.echo("22) hmn version      查看版本")
+        typer.echo("23) hmn update       更新主控")
+        typer.echo("24) hmn uninstall    卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -346,17 +350,22 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             node_id = typer.prompt("节点 ID/hostname", default="node1")
             network_preauth_key_create(node_id=node_id, tag=[], reusable=False, ephemeral=False, expiration=None, db=db)
             return
-        if normalized in {"12", "task run", "hmn task run"}:
+        if normalized in {"12", "network node tags set", "hmn network node tags set"}:
+            node_id = typer.prompt("节点 ID", default="node1")
+            tags_raw = typer.prompt("目标 tags（逗号分隔）", default="tag:worker")
+            network_node_tags_set(node_id=node_id, tag=_parse_labels(tags_raw), db=db)
+            return
+        if normalized in {"13", "task run", "hmn task run"}:
             command = typer.prompt("任务命令", default="uptime")
             create_task_command(command=command, node_id=None, risk="low", db=db)
             return
-        if normalized in {"13", "task", "task list", "hmn task list"}:
+        if normalized in {"14", "task", "task list", "hmn task list"}:
             list_task_commands(db=db)
             return
-        if normalized in {"14", "component", "component list", "hmn component list"}:
+        if normalized in {"15", "component", "component list", "hmn component list"}:
             list_components(db=db)
             return
-        if normalized in {"15", "component status", "hmn component status"}:
+        if normalized in {"component status", "hmn component status"}:
             component_status(node_id=None, db=db)
             return
         if normalized in {"apply", "component apply", "hmn component apply"}:
@@ -364,20 +373,20 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             node_id = typer.prompt("节点 ID", default="node1")
             apply_component(component_id=component, node_id=node_id, set_values=[], db=db)
             return
-        if normalized in {"verify", "component verify", "hmn component verify"}:
+        if normalized in {"18", "verify", "component verify", "hmn component verify"}:
             component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             verify_component(component_id=component, node_id=node_id, db=db)
             return
-        if normalized in {"uninstall component", "component uninstall", "hmn component uninstall"}:
+        if normalized in {"19", "uninstall component", "component uninstall", "hmn component uninstall"}:
             component = typer.prompt("组件 ID", default="forwarder")
             node_id = typer.prompt("节点 ID", default="node1")
             uninstall_component(component_id=component, node_id=node_id, db=db)
             return
-        if normalized in {"16", "19", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"16", "20", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"17", "20", "token", "token create", "hmn token create"}:
+        if normalized in {"17", "21", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
         if normalized in {"token list", "hmn token list"}:
@@ -386,13 +395,13 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"token expire", "hmn token expire"}:
             expire_tokens(db=db)
             return
-        if normalized in {"18", "21", "version", "hmn version"}:
+        if normalized in {"22", "version", "hmn version"}:
             version()
             return
-        if normalized in {"19", "22", "update", "hmn update"}:
+        if normalized in {"23", "update", "hmn update"}:
             update()
             return
-        if normalized in {"20", "23", "uninstall", "hmn uninstall"}:
+        if normalized in {"24", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -649,6 +658,104 @@ def network_sync(db: Path = typer.Option(None, "--db", help="SQLite 数据库路
         typer.echo("unmatched: " + ", ".join(result.unmatched))
     else:
         typer.echo("unmatched: -")
+
+
+def _dispatch_approved_network_tag_update(store: SQLiteStore, approval_id: str) -> bool:
+    approval = store.load_approval_request(approval_id)
+    if approval is None or approval.status != "approved":
+        return False
+    if approval.subject_type != "network_node" or approval.action != "network.tags.set":
+        return False
+    details = approval.details
+    node_id = str(details.get("node_id") or approval.subject_id)
+    provider_node_id = str(details.get("provider_node_id") or "")
+    requested_tags = [str(tag) for tag in details.get("requested_tags", [])]
+    if not node_id or not provider_node_id:
+        return False
+    node = store.load_node(node_id)
+    if node is None or node.status != "managed":
+        return False
+    provider = _require_network_provider()
+    try:
+        provider.set_node_tags(provider_node_id, requested_tags)
+    except NetworkProviderError as exc:
+        store.record_audit(
+            event_type="network",
+            subject_type="network_node",
+            subject_id=node_id,
+            action="tags/update",
+            outcome="failed",
+            details={
+                "node_id": node_id,
+                "provider_node_id": provider_node_id,
+                "old_tags": list(node.network_tags),
+                "requested_tags": requested_tags,
+                "approval_id": approval.approval_id,
+                "error": str(exc),
+            },
+        )
+        raise
+    old_tags = list(node.network_tags)
+    node.network_tags = requested_tags
+    node.network_provider = node.network_provider or provider.provider_name
+    node.network_node_id = provider_node_id
+    store.save_node(node)
+    store.record_audit(
+        event_type="network",
+        subject_type="network_node",
+        subject_id=node_id,
+        action="tags/update",
+        outcome="ok",
+        details={
+            "node_id": node_id,
+            "provider_node_id": provider_node_id,
+            "old_tags": old_tags,
+            "requested_tags": requested_tags,
+            "approval_id": approval.approval_id,
+            "provider": provider.provider_name,
+        },
+    )
+    return True
+
+
+network_node_app = typer.Typer(help="管理网络节点")
+network_tags_app = typer.Typer(help="管理网络节点 tag")
+network_app.add_typer(network_node_app, name="node")
+network_node_app.add_typer(network_tags_app, name="tags")
+
+
+@network_tags_app.command("set")
+def network_node_tags_set(
+    node_id: str = typer.Option(..., "--node", help="HMN 节点 ID"),
+    tag: list[str] = typer.Option([], "--tag", help="目标 tag，可重复填写"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    node = store.load_node(node_id)
+    if node is None or node.status != "managed":
+        typer.echo(f"节点不可用或未 managed: {node_id}")
+        raise typer.Exit(1)
+    if not node.network_node_id:
+        typer.echo(f"节点缺少 network_node_id，请先运行 hmn network sync: {node_id}")
+        raise typer.Exit(1)
+    requested_tags = list(tag)
+    approval = store.create_approval_request(
+        subject_type="network_node",
+        subject_id=node.node_id,
+        action="network.tags.set",
+        risk="high",
+        requested_by="hmn",
+        details={
+            "node_id": node.node_id,
+            "provider": node.network_provider or "headscale",
+            "provider_node_id": node.network_node_id,
+            "old_tags": list(node.network_tags),
+            "requested_tags": requested_tags,
+        },
+    )
+    typer.echo(f"需要审批: {approval.approval_id}")
+    typer.echo("未执行 provider 写操作；审批通过后才会更新网络 tags。")
+    raise typer.Exit(1)
 
 
 preauth_key_app = typer.Typer(help="管理 Headscale preauth key")
@@ -1535,6 +1642,16 @@ def approve_approval(
         typer.echo(f"已创建任务: {task.task_id}")
         typer.echo(f"节点: {task.node_id}")
         typer.echo(f"命令: {task.command}")
+    if approval.subject_type == "network_node" and approval.action == "network.tags.set":
+        try:
+            dispatched = _dispatch_approved_network_tag_update(store, approval.approval_id)
+        except NetworkProviderError as exc:
+            typer.echo(f"网络 tags 更新失败: {exc}")
+            raise typer.Exit(1) from exc
+        if not dispatched:
+            typer.echo("未更新网络 tags：审批详情不完整或节点不可用。")
+            raise typer.Exit(1)
+        typer.echo("已更新网络 tags")
 
 
 @approval_app.command("reject")

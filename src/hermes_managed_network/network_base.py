@@ -75,6 +75,10 @@ class NetworkProvider(ABC):
     ) -> PreauthKeyResult:
         raise NotImplementedError
 
+    @abstractmethod
+    def set_node_tags(self, provider_node_id: str, tags: list[str]) -> NetworkNodeRecord:
+        raise NotImplementedError
+
 
 def load_network_config(config_path: str | Path | None = None) -> dict[str, object]:
     candidates: list[Path] = []
