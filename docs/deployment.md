@@ -91,6 +91,59 @@ hmn task list
 
 默认 worker 只轮询和上报心跳。真正执行任务需要在节点侧显式开启 `HMN_ENABLE_EXEC=1`，避免误执行。
 
+安全模式行为：
+
+- `HMN_ENABLE_EXEC=0` 是默认值
+- worker 收到 task 后不会执行 shell
+- result 会回传 `exit_code=126`
+- `stderr` 会说明 `execution disabled; set HMN_ENABLE_EXEC=1`
+- 任务状态会变成 `failed`，用于证明队列和 result 回传闭环可用
+
+## 本地端到端 smoke test
+
+下面命令会使用临时数据库，本机启动 controller，模拟节点 join/confirm，运行 worker，并下发一条 disabled-exec 任务：
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+
+DB=$(mktemp /tmp/hmn-smoke.XXXXXX.db)
+HMN_DB="$DB" uvicorn 'hermes_managed_network.api:create_app' --factory --host 127.0.0.1 --port 8765 &
+SERVER_PID=$!
+trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -f "$DB"' EXIT
+
+curl -fsS http://127.0.0.1:8765/healthz
+TOKEN=$(HMN_DB="$DB" hmn token create --trust B --label worker)
+
+curl -fsS -X POST http://127.0.0.1:8765/api/v1/join \
+  -H 'Content-Type: application/json' \
+  --data "{\"token\":\"$TOKEN\",\"fingerprint\":\"sha256:smoke\",\"hostname\":\"smoke-node\",\"addresses\":[\"127.0.0.1\"]}"
+
+HMN_DB="$DB" hmn node confirm
+HMN_DB="$DB" hmn task run 'echo smoke-disabled'
+
+NODE_ID=$(HMN_DB="$DB" hmn node list | awk '{print $1; exit}')
+sudo install -d -m 0700 /etc/hermes-managed-network
+sudo tee /etc/hermes-managed-network/node.env >/dev/null <<EOF
+HERMES_MASTER_URL=http://127.0.0.1:8765
+HERMES_NODE_ID=$NODE_ID
+HERMES_NODE_FINGERPRINT=sha256:smoke
+HMN_ENABLE_EXEC=0
+EOF
+sudo chmod 0600 /etc/hermes-managed-network/node.env
+HMN_ENABLE_EXEC=0 bash src/hermes_managed_network/assets/worker.sh || true
+HMN_DB="$DB" hmn task list
+```
+
+预期结果：
+
+- `/healthz` 返回 `{"status":"ok"}`
+- join 返回 `pending` 节点
+- `hmn node confirm` 把节点变成 `managed`
+- `hmn task list` 里任务状态为 `failed`
+- result stderr 为 disabled-exec 提示，证明 worker 安全拒绝并完成回传
+
 ## 更新已安装主控
 
 再次执行仓库短安装脚本即可：
