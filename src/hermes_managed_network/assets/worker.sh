@@ -169,6 +169,39 @@ raise SystemExit(0 if hmac.compare_digest(expected, os.environ["TASK_SIGNATURE"]
 PY
 }
 
+write_fingerprint_env() {
+  local new_fingerprint="$1"
+  ENV_FILE_PATH="$ENV_FILE" NEW_FINGERPRINT="$new_fingerprint" python3 - <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["ENV_FILE_PATH"])
+new_line = f'HERMES_NODE_FINGERPRINT="{os.environ["NEW_FINGERPRINT"]}"'
+lines = path.read_text().splitlines()
+updated = False
+for index, line in enumerate(lines):
+    if line.startswith("HERMES_NODE_FINGERPRINT="):
+        lines[index] = new_line
+        updated = True
+if not updated:
+    lines.append(new_line)
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text("\n".join(lines) + "\n")
+tmp.chmod(0o600)
+tmp.replace(path)
+PY
+}
+
+rotate_fingerprint_from_task() {
+  local task_id="$1" new_fingerprint="$2" old_fingerprint="$HERMES_NODE_FINGERPRINT" old_json new_json
+  old_json="$(json_value "$old_fingerprint")"
+  new_json="$(json_value "$new_fingerprint")"
+  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/rotate-fingerprint"     -H 'Content-Type: application/json'     --data "{\"fingerprint\":${old_json},\"new_fingerprint\":${new_json}}" >/dev/null
+  write_fingerprint_env "$new_fingerprint"
+  HERMES_NODE_FINGERPRINT="$new_fingerprint"
+  submit_result "$task_id" 0 "fingerprint rotated" ""
+}
+
 run_once() {
   heartbeat
   local response task_id command risk signature stdout_file stderr_file exit_code
@@ -182,6 +215,12 @@ run_once() {
     submit_result "$task_id" 127 "" "task signature mismatch"
     exit 0
   fi
+  case "$command" in
+    hmn:rotate-fingerprint\ *)
+      rotate_fingerprint_from_task "$task_id" "${command#hmn:rotate-fingerprint }"
+      exit 0
+      ;;
+  esac
   if [ "$HMN_ENABLE_EXEC" != "1" ]; then
     submit_result "$task_id" 126 "" "execution disabled; set HMN_ENABLE_EXEC=1"
     exit 0

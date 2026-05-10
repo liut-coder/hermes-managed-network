@@ -39,6 +39,7 @@
 - [x] task signing
 - [x] heartbeat
 - [x] node token rotation
+- [x] worker fingerprint rotation 自动同步
 - [x] offline node handling
 - [x] runtime profile 自动选择
 - [x] service manager adapter 安装器

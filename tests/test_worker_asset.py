@@ -95,3 +95,69 @@ def test_worker_verifies_task_signature_before_execution():
     assert "verify_task_signature" in script
     assert "task signature mismatch" in script
     assert "hmac.compare_digest" in script
+
+
+
+def test_worker_applies_signed_fingerprint_rotation_task(tmp_path):
+    from hermes_managed_network.signing import sign_task_payload
+
+    env_file = tmp_path / "node.env"
+    curl_log = tmp_path / "curl.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    old_fp = "sha256:old-worker"
+    new_fp = "sha256:new-worker"
+    command = f"hmn:rotate-fingerprint {new_fp}"
+    signature = sign_task_payload(
+        node_fingerprint=old_fp,
+        task_id="task-rotate",
+        command=command,
+        risk="low",
+    )
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "log=${HMN_CURL_LOG:?}\n"
+        "url=\"\"\n"
+        "data=\"\"\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    --data) shift; data=\"$1\" ;;\n"
+        "    http://*) url=\"$1\" ;;\n"
+        "  esac\n"
+        "  shift || true\n"
+        "done\n"
+        "printf '%s\\t%s\\n' \"$url\" \"$data\" >>\"$log\"\n"
+        "case \"$url\" in\n"
+        f"  */tasks/next) printf '%s' '{{\"task_id\":\"task-rotate\",\"command\":\"{command}\",\"risk\":\"low\",\"signature\":\"{signature}\"}}' ;;\n"
+        "  */rotate-fingerprint) printf '{\"node_id\":\"node-rotate\",\"status\":\"rotated\"}' ;;\n"
+        "  *) printf '{\"status\":\"ok\"}' ;;\n"
+        "esac\n"
+    )
+    curl.chmod(0o755)
+    env_file.write_text(
+        'HERMES_MASTER_URL="http://master.example"\n'
+        'HERMES_NODE_ID="node-rotate"\n'
+        f'HERMES_NODE_FINGERPRINT="{old_fp}"\n'
+    )
+
+    subprocess.run(
+        ["bash", "scripts/worker.sh"],
+        check=True,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "HMN_ENV_FILE": str(env_file),
+            "HMN_CURL_LOG": str(curl_log),
+            "HMN_ENABLE_EXEC": "0",
+        },
+    )
+
+    assert f'HERMES_NODE_FINGERPRINT="{new_fp}"' in env_file.read_text()
+    calls = [line.rstrip("\n").split("\t", 1) for line in curl_log.read_text().splitlines()]
+    payloads = [(url, json.loads(payload)) for url, payload in calls]
+    rotate_payload = [payload for url, payload in payloads if url.endswith("/rotate-fingerprint")][0]
+    result_payload = [payload for url, payload in payloads if "/tasks/task-rotate/result" in url][0]
+    assert rotate_payload == {"fingerprint": old_fp, "new_fingerprint": new_fp}
+    assert result_payload["fingerprint"] == new_fp
+    assert result_payload["exit_code"] == 0
+    assert result_payload["stdout"] == "fingerprint rotated"
