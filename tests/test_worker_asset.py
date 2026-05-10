@@ -30,6 +30,9 @@ def test_worker_heartbeat_collects_safe_facts_without_enabling_exec():
     assert '"disk"' in script
     assert '"memory"' in script
     assert '"uptime"' in script
+    assert '"capabilities"' in script
+    assert '"has_systemctl"' in script
+    assert '"writable_etc"' in script
     assert '"exec_enabled": os.environ.get("HMN_ENABLE_EXEC") == "1"' in script
     assert "bash -lc" not in script.split("if [ \"$HMN_ENABLE_EXEC\" != \"1\" ]; then", maxsplit=1)[0]
 

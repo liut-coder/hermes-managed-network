@@ -88,6 +88,38 @@ def disk_summary(path="/"):
     used = total - free
     return {"path": path, "total_bytes": total, "used_bytes": used, "free_bytes": free}
 
+
+def has_command(name):
+    path = os.environ.get("PATH", "")
+    for directory in path.split(os.pathsep):
+        if directory and os.path.isfile(os.path.join(directory, name)) and os.access(os.path.join(directory, name), os.X_OK):
+            return True
+    return False
+
+
+def capability_summary():
+    disk = disk_summary("/")
+    memory = memory_summary()
+    return {
+        "os_family": "linux" if os.path.exists("/proc") else "unknown",
+        "has_sh": has_command("sh"),
+        "has_bash": has_command("bash"),
+        "has_curl": has_command("curl"),
+        "has_wget": has_command("wget"),
+        "has_python3": has_command("python3"),
+        "has_busybox": has_command("busybox"),
+        "has_systemctl": has_command("systemctl"),
+        "has_openrc": has_command("openrc"),
+        "has_procd": has_command("procd"),
+        "has_launchctl": has_command("launchctl"),
+        "has_powershell": has_command("powershell"),
+        "has_crond": has_command("crond"),
+        "writable_etc": os.access("/etc", os.W_OK),
+        "writable_tmp": os.access("/tmp", os.W_OK),
+        "memory_mb": (memory.get("total_kb") // 1024) if memory.get("total_kb") else None,
+        "disk_free_mb": (disk.get("free_bytes") // 1024 // 1024) if disk.get("free_bytes") else None,
+    }
+
 facts = {
     "worker_protocol_version": os.environ.get("HMN_WORKER_PROTOCOL_VERSION_VALUE", ""),
     "worker_version": os.environ.get("HMN_WORKER_VERSION", "unknown"),
@@ -96,6 +128,7 @@ facts = {
     "load_average": load_average(),
     "memory": memory_summary(),
     "disk": disk_summary("/"),
+    "capabilities": capability_summary(),
 }
 print(json.dumps(facts, separators=(",", ":")))
 PY

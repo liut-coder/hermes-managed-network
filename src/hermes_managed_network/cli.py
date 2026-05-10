@@ -16,6 +16,7 @@ from .components import ComponentManifest, load_builtin_components
 from .executor import PlaybookExecutor
 from .inventory import NodeRegistry
 from .playbook import Playbook
+from .platforms import classify_capabilities, probe_from_facts
 from .storage import SQLiteStore
 from .tokens import JoinTokenStore
 from .version import current_version_info
@@ -686,7 +687,11 @@ def _select_managed_node(store: SQLiteStore, node_id: str | None):
     return managed_nodes[choice - 1]
 
 
-def _render_node_status(node, liveness: dict[str, object] | None = None) -> None:
+def _render_node_status(
+    node,
+    liveness: dict[str, object] | None = None,
+    runtime: dict[str, object] | None = None,
+) -> None:
     typer.echo(f"node: {node.node_id}")
     typer.echo(f"status: {node.status}")
     typer.echo(f"host: {node.hostname}")
@@ -697,6 +702,9 @@ def _render_node_status(node, liveness: dict[str, object] | None = None) -> None
     if liveness is not None:
         typer.echo(f"liveness: {liveness['state']}")
         typer.echo(f"last_heartbeat: {liveness['last_heartbeat'] or '-'}")
+    if runtime is not None:
+        typer.echo(f"runtime: {runtime['runtime_profile']}")
+        typer.echo(f"service_manager: {runtime['service_manager']}")
 
 
 @node_app.command("status")
@@ -708,7 +716,10 @@ def status_node(
     store = _store(db)
     node = _select_managed_node(store, node_id)
     liveness = _node_liveness(store, node.node_id, now=_parse_now(now))
-    _render_node_status(node, liveness)
+    event = _latest_heartbeat_event(store, node.node_id)
+    facts = event.details.get("facts", {}) if event else {}
+    runtime = _runtime_summary_from_facts(facts if isinstance(facts, dict) else {})
+    _render_node_status(node, liveness, runtime)
     _record_liveness_audit(store, node.node_id, liveness)
 
 
@@ -769,12 +780,27 @@ def _latest_heartbeat_event(store: SQLiteStore, node_id: str):
     return None
 
 
+def _runtime_summary_from_facts(facts: dict[str, object]) -> dict[str, object]:
+    probe = probe_from_facts(facts)
+    profile = classify_capabilities(probe)
+    return {
+        "runtime_profile": str(profile.runtime),
+        "service_manager": str(profile.service_manager),
+        "can_report_heartbeat": profile.can_report_heartbeat,
+        "can_poll_tasks": profile.can_poll_tasks,
+        "can_execute_tasks": profile.can_execute_tasks,
+    }
+
+
 def _monitor_summary(store: SQLiteStore, node_id: str) -> dict[str, object]:
     event = _latest_heartbeat_event(store, node_id)
     facts = event.details.get("facts", {}) if event else {}
+    if not isinstance(facts, dict):
+        facts = {}
     compatible = bool(event.details.get("worker_compatible", True)) if event else False
     heartbeat_ok = event is not None and event.outcome == "ok" and compatible
     exec_enabled = bool(facts.get("exec_enabled", False))
+    runtime = _runtime_summary_from_facts(facts)
     return {
         "heartbeat_seen": event is not None,
         "heartbeat_ok": heartbeat_ok,
@@ -786,6 +812,7 @@ def _monitor_summary(store: SQLiteStore, node_id: str) -> dict[str, object]:
         "exec_enabled": exec_enabled,
         "exec_mode": "ENABLED" if exec_enabled else "SAFE",
         "facts": facts,
+        **runtime,
     }
 
 
@@ -800,6 +827,8 @@ def _echo_monitor_summary(summary: dict[str, object]) -> None:
     typer.echo(f"worker_protocol={summary['worker_protocol_version']}")
     typer.echo(f"worker_version={summary['worker_version']}")
     typer.echo(f"worker_compatible={'yes' if summary['worker_compatible'] else 'no'}")
+    typer.echo(f"runtime: {summary['runtime_profile']}")
+    typer.echo(f"service_manager: {summary['service_manager']}")
     typer.echo(f"exec={summary['exec_mode']}")
     facts = summary.get("facts", {})
     if not isinstance(facts, dict):
@@ -837,10 +866,13 @@ def worker_status(
     node = _select_managed_node(store, node_id)
     event = _latest_heartbeat_event(store, node.node_id)
     facts = event.details.get("facts", {}) if event else {}
+    if not isinstance(facts, dict):
+        facts = {}
     compatible = bool(event.details.get("worker_compatible", True)) if event else False
     protocol = facts.get("worker_protocol_version") or "unknown"
     version_value = facts.get("worker_version") or "unknown"
     exec_enabled = bool(facts.get("exec_enabled", False))
+    runtime = _runtime_summary_from_facts(facts)
 
     liveness = _node_liveness(store, node.node_id)
     typer.echo(f"worker: {node.node_id}")
@@ -857,6 +889,8 @@ def worker_status(
     else:
         typer.echo(f"协议: WARN {protocol} incompatible")
     typer.echo(f"版本: {version_value}")
+    typer.echo(f"runtime: {runtime['runtime_profile']}")
+    typer.echo(f"service_manager: {runtime['service_manager']}")
     if exec_enabled:
         typer.echo("执行: ENABLED HMN_ENABLE_EXEC=1")
     else:
@@ -873,6 +907,7 @@ def worker_status(
             "worker_compatible": compatible,
             "exec_enabled": exec_enabled,
             "liveness": liveness,
+            **runtime,
         },
     )
     _record_liveness_audit(store, node.node_id, liveness)

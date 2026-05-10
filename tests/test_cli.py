@@ -717,6 +717,8 @@ def test_node_status_shows_stale_for_old_heartbeat_and_records_audit(tmp_path):
     assert result.exit_code == 0
     assert "liveness: stale" in result.stdout
     assert "last_heartbeat: 2026-01-01T00:00:00+00:00" in result.stdout
+    assert "runtime: proxy-managed" in result.stdout
+    assert "service_manager: none" in result.stdout
     event = store.list_audit_events()[-1]
     assert event.action == "liveness"
     assert event.outcome == "stale"
@@ -756,6 +758,14 @@ def test_node_worker_status_reports_ok_from_heartbeat_audit(tmp_path):
                 "worker_protocol_version": "0.1",
                 "worker_version": "0.1.0",
                 "exec_enabled": False,
+                "capabilities": {
+                    "os_family": "linux",
+                    "has_sh": True,
+                    "has_curl": True,
+                    "has_python3": True,
+                    "has_systemctl": True,
+                    "writable_etc": True,
+                },
             },
             "worker_compatible": True,
         },
@@ -769,7 +779,13 @@ def test_node_worker_status_reports_ok_from_heartbeat_audit(tmp_path):
     assert "worker: OK installed/reported" in result.stdout
     assert "协议: OK 0.1" in result.stdout
     assert "版本: 0.1.0" in result.stdout
+    assert "runtime: full-worker" in result.stdout
+    assert "service_manager: systemd" in result.stdout
     assert "执行: SAFE HMN_ENABLE_EXEC=0" in result.stdout
+    event = store.list_audit_events()[-2]
+    assert event.action == "worker-status"
+    assert event.details["runtime_profile"] == "full-worker"
+    assert event.details["service_manager"] == "systemd"
 
 
 def test_node_worker_status_warns_for_incompatible_worker(tmp_path):

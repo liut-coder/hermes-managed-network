@@ -69,6 +69,55 @@ class RuntimeCapabilities:
     notes: list[str] = field(default_factory=list)
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
+def _optional_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def probe_from_facts(facts: dict[str, object]) -> CapabilityProbe:
+    """Build a normalized capability probe from heartbeat facts.
+
+    Heartbeats may send either a nested ``capabilities`` object or flat probe
+    keys. Unknown/missing values stay conservative.
+    """
+
+    raw = facts.get("capabilities") if isinstance(facts.get("capabilities"), dict) else facts
+    assert isinstance(raw, dict)
+    return CapabilityProbe(
+        os_family=str(raw.get("os_family") or "unknown"),
+        has_sh=_truthy(raw.get("has_sh")),
+        has_bash=_truthy(raw.get("has_bash")),
+        has_curl=_truthy(raw.get("has_curl")),
+        has_wget=_truthy(raw.get("has_wget")),
+        has_python3=_truthy(raw.get("has_python3")),
+        has_busybox=_truthy(raw.get("has_busybox")),
+        has_systemctl=_truthy(raw.get("has_systemctl")),
+        has_openrc=_truthy(raw.get("has_openrc")),
+        has_procd=_truthy(raw.get("has_procd")),
+        has_launchctl=_truthy(raw.get("has_launchctl")),
+        has_powershell=_truthy(raw.get("has_powershell")),
+        has_crond=_truthy(raw.get("has_crond")),
+        writable_etc=_truthy(raw.get("writable_etc")),
+        writable_tmp=_truthy(raw.get("writable_tmp")),
+        memory_mb=_optional_int(raw.get("memory_mb")),
+        disk_free_mb=_optional_int(raw.get("disk_free_mb")),
+    )
+
+
 def detect_service_manager(probe: CapabilityProbe) -> ServiceManager:
     """Pick the best service manager without assuming systemd everywhere."""
 

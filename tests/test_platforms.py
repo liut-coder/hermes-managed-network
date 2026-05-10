@@ -6,6 +6,7 @@ from hermes_managed_network.platforms import (
     ServiceManager,
     classify_capabilities,
     detect_service_manager,
+    probe_from_facts,
     render_capability_probe,
 )
 
@@ -80,3 +81,23 @@ def test_platform_specific_service_managers_are_detected():
     assert detect_service_manager(CapabilityProbe(os_family="openwrt", has_procd=True)) == ServiceManager.PROCD
     assert detect_service_manager(CapabilityProbe(os_family="darwin", has_launchctl=True)) == ServiceManager.LAUNCHD
     assert detect_service_manager(CapabilityProbe(os_family="windows", has_powershell=True)) == ServiceManager.WINDOWS_TASK
+
+
+def test_probe_from_heartbeat_facts_classifies_runtime_profile():
+    facts = {
+        "capabilities": {
+            "os_family": "linux",
+            "has_sh": True,
+            "has_curl": True,
+            "has_python3": True,
+            "has_systemctl": True,
+            "writable_etc": True,
+        }
+    }
+
+    probe = probe_from_facts(facts)
+    profile = classify_capabilities(probe)
+
+    assert probe.has_http_client is True
+    assert profile.runtime == NodeRuntimeProfile.FULL_WORKER
+    assert profile.service_manager == ServiceManager.SYSTEMD

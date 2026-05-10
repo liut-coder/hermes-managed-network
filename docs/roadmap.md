@@ -40,7 +40,7 @@
 - [x] heartbeat
 - [ ] node token rotation
 - [x] offline node handling
-- [ ] runtime profile 自动选择
+- [x] runtime profile 自动选择
 - [ ] service manager adapter 安装器
 
 ## v0.5：资产文档自动化
