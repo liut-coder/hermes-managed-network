@@ -4,6 +4,8 @@ set -euo pipefail
 HMN_DIR="${HMN_DIR:-/etc/hermes-managed-network}"
 ENV_FILE="${HMN_ENV_FILE:-$HMN_DIR/node.env}"
 : "${HMN_ENABLE_EXEC:=0}"
+: "${HMN_WORKER_MODE:=worker}"
+: "${HMN_BEACON_ONLY:=0}"
 HMN_WORKER_PROTOCOL_VERSION="${HMN_WORKER_PROTOCOL_VERSION:-0.1}"
 
 if [ ! -r "$ENV_FILE" ]; then
@@ -22,8 +24,17 @@ need_command python3
 json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 json_value() { printf '%s' "$1" | json_escape; }
 
+is_beacon_only() {
+  [ "${HMN_BEACON_ONLY:-0}" = "1" ] || [ "${HMN_WORKER_MODE:-worker}" = "beacon" ] || [ "${HMN_WORKER_MODE:-worker}" = "beacon-only" ]
+}
+
 collect_worker_facts() {
-  HMN_ENABLE_EXEC_VALUE="$HMN_ENABLE_EXEC" HMN_WORKER_PROTOCOL_VERSION_VALUE="$HMN_WORKER_PROTOCOL_VERSION" python3 - <<'PY'
+  local beacon_only=0 effective_mode="${HMN_WORKER_MODE:-worker}"
+  if is_beacon_only; then
+    beacon_only=1
+    effective_mode="beacon"
+  fi
+  HMN_ENABLE_EXEC_VALUE="$HMN_ENABLE_EXEC" HMN_WORKER_MODE_VALUE="$effective_mode" HMN_BEACON_ONLY_VALUE="$beacon_only" HMN_WORKER_PROTOCOL_VERSION_VALUE="$HMN_WORKER_PROTOCOL_VERSION" python3 - <<'PY'
 import json
 import os
 
@@ -123,7 +134,10 @@ def capability_summary():
 facts = {
     "worker_protocol_version": os.environ.get("HMN_WORKER_PROTOCOL_VERSION_VALUE", ""),
     "worker_version": os.environ.get("HMN_WORKER_VERSION", "unknown"),
-    "exec_enabled": os.environ.get("HMN_ENABLE_EXEC") == "1",
+    "worker_mode": os.environ.get("HMN_WORKER_MODE_VALUE", "worker"),
+    "task_policy": "heartbeat-only" if os.environ.get("HMN_BEACON_ONLY_VALUE") == "1" else "poll-tasks",
+    "can_poll_tasks": os.environ.get("HMN_BEACON_ONLY_VALUE") != "1",
+    "exec_enabled": os.environ.get("HMN_ENABLE_EXEC_VALUE") == "1" and os.environ.get("HMN_BEACON_ONLY_VALUE") != "1",
     "uptime": {"seconds": uptime_seconds()},
     "load_average": load_average(),
     "memory": memory_summary(),
@@ -204,6 +218,9 @@ rotate_fingerprint_from_task() {
 
 run_once() {
   heartbeat
+  if is_beacon_only; then
+    exit 0
+  fi
   local response task_id command risk signature stdout_file stderr_file exit_code
   response="$(poll_task)"
   task_id="$(printf '%s' "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("task_id", ""))')"

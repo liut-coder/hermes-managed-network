@@ -102,8 +102,64 @@ def test_worker_heartbeat_collects_safe_facts_without_enabling_exec():
     assert '"capabilities"' in script
     assert '"has_systemctl"' in script
     assert '"writable_etc"' in script
-    assert '"exec_enabled": os.environ.get("HMN_ENABLE_EXEC") == "1"' in script
+    assert '"exec_enabled": os.environ.get("HMN_ENABLE_EXEC_VALUE") == "1"' in script
     assert "bash -lc" not in script.split("if [ \"$HMN_ENABLE_EXEC\" != \"1\" ]; then", maxsplit=1)[0]
+
+
+def test_worker_beacon_mode_heartbeats_without_polling_or_execution(tmp_path):
+    env_file = tmp_path / "node.env"
+    curl_log = tmp_path / "curl.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "log=${HMN_CURL_LOG:?}\n"
+        "url=\"\"\n"
+        "data=\"\"\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    --data) shift; data=\"$1\" ;;\n"
+        "    http://*) url=\"$1\" ;;\n"
+        "  esac\n"
+        "  shift || true\n"
+        "done\n"
+        "printf '%s\\t%s\\n' \"$url\" \"$data\" >>\"$log\"\n"
+        "case \"$url\" in\n"
+        "  */tasks/next) printf '%s' '{\"task_id\":\"must-not-poll\",\"command\":\"touch SHOULD_NOT_RUN\"}' ;;\n"
+        "  *) printf '{\"status\":\"ok\"}' ;;\n"
+        "esac\n"
+    )
+    curl.chmod(0o755)
+    env_file.write_text(
+        'HERMES_MASTER_URL="http://master.example"\n'
+        'HERMES_NODE_ID="node-beacon"\n'
+        'HERMES_NODE_FINGERPRINT="sha256:beacon"\n'
+        'HMN_WORKER_MODE="beacon"\n'
+    )
+
+    subprocess.run(
+        ["bash", str(Path.cwd() / "scripts/worker.sh")],
+        check=True,
+        cwd=tmp_path,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "HMN_ENV_FILE": str(env_file),
+            "HMN_CURL_LOG": str(curl_log),
+            "HMN_ENABLE_EXEC": "1",
+        },
+    )
+
+    calls = [line.rstrip("\n").split("\t", 1) for line in curl_log.read_text().splitlines()]
+    assert len(calls) == 1
+    url, payload = calls[0]
+    assert url.endswith("/api/v1/nodes/node-beacon/heartbeat")
+    facts = json.loads(payload)["facts"]
+    assert facts["worker_mode"] == "beacon"
+    assert facts["task_policy"] == "heartbeat-only"
+    assert facts["can_poll_tasks"] is False
+    assert facts["exec_enabled"] is False
+    assert not (tmp_path / "SHOULD_NOT_RUN").exists()
 
 
 def test_worker_json_payloads_escape_special_characters(tmp_path):

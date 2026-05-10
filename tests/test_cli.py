@@ -681,6 +681,36 @@ def test_node_install_heartbeat_can_render_cron_adapter(tmp_path):
     assert "systemctl enable" not in result.stdout
 
 
+def test_node_install_heartbeat_can_render_beacon_only_mode(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_beacon",
+            fingerprint="sha256:beacon",
+            hostname="beacon-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["node", "install-heartbeat", "--db", str(db), "--master-url", "https://master.example", "--beacon-only"],
+    )
+
+    assert result.exit_code == 0
+    assert "beacon-only" in result.stdout
+    assert "HMN_WORKER_MODE=beacon" in result.stdout
+    assert "HMN_BEACON_ONLY=1" in result.stdout
+    assert "不会 poll tasks" in result.stdout
+
+
 def test_node_install_heartbeat_records_audit_event(tmp_path):
     from hermes_managed_network.inventory import Node
 

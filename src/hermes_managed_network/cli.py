@@ -922,9 +922,12 @@ def worker_status(
         raise typer.Exit(1)
 
 
-def _render_worker_installer(node, master_url: str, service_manager: ServiceManager = ServiceManager.SYSTEMD) -> str:
+def _render_worker_installer(
+    node, master_url: str, service_manager: ServiceManager = ServiceManager.SYSTEMD, beacon_only: bool = False
+) -> str:
     url = master_url.rstrip("/")
     service_wiring = render_service_manager_installer(service_manager)
+    beacon_env = "HMN_WORKER_MODE=beacon\nHMN_BEACON_ONLY=1" if beacon_only else ""
     script = f"""set -euo pipefail
 install -d -m 0700 /etc/hermes-managed-network
 cat >/etc/hermes-managed-network/node.env <<'EOF'
@@ -932,6 +935,7 @@ HERMES_MASTER_URL={url}
 HERMES_NODE_ID={node.node_id}
 HERMES_NODE_FINGERPRINT={node.fingerprint}
 HMN_ENABLE_EXEC=0
+{beacon_env}
 EOF
 chmod 0600 /etc/hermes-managed-network/node.env
 curl -fsSL {url}/scripts/worker.sh -o /usr/local/bin/hmn-worker
@@ -966,6 +970,7 @@ def install_heartbeat(
     node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
     master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
     service_manager: ServiceManager = typer.Option(ServiceManager.SYSTEMD, "--service-manager", help="服务管理器适配器"),
+    beacon_only: bool = typer.Option(False, "--beacon-only", help="安装 beacon-only 模式：只心跳，不 poll tasks，不执行命令"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     store = _store(db)
@@ -980,9 +985,12 @@ def install_heartbeat(
         details={"master_url": url, "service_manager": str(service_manager), "enable_exec": False},
     )
     typer.echo("请复制下面命令到目标节点执行，它会安装心跳/worker 定时器：")
-    typer.echo("默认安全模式：HMN_ENABLE_EXEC=0，不会执行下发 shell 命令。")
+    if beacon_only:
+        typer.echo("beacon-only 模式：只 heartbeat，不会 poll tasks，不会执行命令。")
+    else:
+        typer.echo("默认安全模式：HMN_ENABLE_EXEC=0，不会执行下发 shell 命令。")
     typer.echo(f"service_manager={service_manager}")
-    typer.echo(_render_worker_installer(node, url, service_manager))
+    typer.echo(_render_worker_installer(node, url, service_manager, beacon_only=beacon_only))
 
 
 @node_app.command("revoke")
