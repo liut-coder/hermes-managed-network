@@ -65,7 +65,7 @@
 - [x] node record 保存 `network_provider` / `network_node_id` / `network_ip` / `network_tags` / `network_online`
 - [x] network sync / preauth-key audit
 - [ ] Headscale tag/ACL 写操作审批化
-- [ ] SSH executor 使用 Tailscale IP
+- [x] SSH executor 使用 Tailscale IP
 
 ## v0.6：资产文档自动化
 

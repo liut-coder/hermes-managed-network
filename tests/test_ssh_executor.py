@@ -40,6 +40,42 @@ def test_run_ssh_task_prefers_explicit_node_ssh_fields(tmp_path, monkeypatch):
     assert completed.status == "succeeded"
     assert calls == [["ssh", "-p", "2201", "deploy@10.10.10.10", "uptime"]]
 
+def test_run_ssh_task_prefers_network_ip_over_address_when_no_explicit_host(tmp_path, monkeypatch):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_headscale",
+            fingerprint="sha256:headscale",
+            hostname="headscale-node.example",
+            addresses=["192.0.2.44"],
+            trust_level="B",
+            labels=["ssh-user=ops", "ssh-port=2222"],
+            status="managed",
+            permission_bundles=["observe"],
+            network_provider="headscale",
+            network_node_id="123",
+            network_ip="100.64.0.44",
+            network_online=True,
+        )
+    )
+    task = store.create_task(node_id="node_headscale", command="hostname", risk="low", created_by="test", executor="ssh")
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("hermes_managed_network.executor.subprocess.run", fake_run)
+
+    completed = run_ssh_task(store, task.task_id)
+
+    assert completed.status == "succeeded"
+    assert calls == [["ssh", "-p", "2222", "ops@100.64.0.44", "hostname"]]
+    event = [event for event in store.list_audit_events() if event.action == "ssh_execute"][0]
+    assert event.details["host"] == "100.64.0.44"
+    assert event.details["target_source"] == "network_ip"
 
 
 

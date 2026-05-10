@@ -386,6 +386,9 @@ def test_node_status_without_id_auto_selects_single_managed_node(tmp_path):
     assert "ssh_host: 100.64.0.3" in result.stdout
     assert "ssh_user: ops" in result.stdout
     assert "ssh_port: 2222" in result.stdout
+    assert "network_provider: -" in result.stdout
+    assert "network_ip: -" in result.stdout
+    assert "network_online: -" in result.stdout
     assert "last_ssh_check: -" in result.stdout
 
 
@@ -421,6 +424,80 @@ def test_node_status_shows_last_ssh_check_from_doctor_audit(tmp_path, monkeypatc
     assert result.exit_code == 0
     assert "last_ssh_check: ok ops@100.64.0.4:2227" in result.stdout
     assert "ssh_reason: SSH 连通正常" in result.stdout
+
+
+def test_node_status_shows_headscale_network_fields(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_status_network",
+            fingerprint="fp-status-network",
+            hostname="status-network-node",
+            addresses=["10.0.0.6"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe"],
+            network_provider="headscale",
+            network_node_id="321",
+            network_ip="100.64.0.6",
+            network_tags=["tag:worker", "tag:ssh"],
+            network_online=True,
+        )
+    )
+
+    result = runner.invoke(app, ["node", "status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "network_provider: headscale" in result.stdout
+    assert "network_node_id: 321" in result.stdout
+    assert "network_ip: 100.64.0.6" in result.stdout
+    assert "network_tags: tag:worker, tag:ssh" in result.stdout
+    assert "network_online: yes" in result.stdout
+
+
+def test_node_doctor_uses_headscale_network_ip_when_no_ssh_host(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_doctor_network",
+            fingerprint="fp-doctor-network",
+            hostname="doctor-network-node",
+            addresses=["192.0.2.7"],
+            trust_level="B",
+            labels=["ssh-user=ops", "ssh-port=2207"],
+            status="managed",
+            permission_bundles=["observe"],
+            network_provider="headscale",
+            network_node_id="777",
+            network_ip="100.64.0.7",
+            network_online=True,
+        )
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("hermes_managed_network.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["node", "doctor", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert calls == [["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", "2207", "ops@100.64.0.7", "true"]]
+    assert "ssh_host: -" in result.stdout
+    assert "network_ip: 100.64.0.7" in result.stdout
+    assert "SSH 连通: OK ops@100.64.0.7:2207" in result.stdout
+    event = SQLiteStore(db).list_audit_events()[-1]
+    assert event.details["ssh_connectivity"]["host"] == "100.64.0.7"
+    assert event.details["ssh_connectivity"]["target_source"] == "network_ip"
 
 
 def test_worker_status_shows_friendly_ssh_reason(tmp_path):

@@ -53,8 +53,32 @@ def _ssh_label_value(labels: list[str], key: str) -> str:
     return ""
 
 
+@dataclass
+class SSHTarget:
+    host: str
+    user: str
+    port: str
+    source: str
+
+
 def ssh_target_for_node(node) -> tuple[str, str, str]:
-    host = node.ssh_host or _ssh_label_value(node.labels, "ssh-host") or (node.addresses[0] if node.addresses else "")
+    target = ssh_target_details_for_node(node)
+    return target.host, target.user, target.port
+
+
+def ssh_target_details_for_node(node) -> SSHTarget:
+    if node.ssh_host:
+        host = node.ssh_host
+        source = "ssh_host"
+    elif _ssh_label_value(node.labels, "ssh-host"):
+        host = _ssh_label_value(node.labels, "ssh-host")
+        source = "label:ssh-host"
+    elif getattr(node, "network_ip", ""):
+        host = node.network_ip
+        source = "network_ip"
+    else:
+        host = node.addresses[0] if node.addresses else ""
+        source = "address" if host else ""
     user = node.ssh_user or _ssh_label_value(node.labels, "ssh-user") or "root"
     port = str(node.ssh_port or 22)
     label_port = _ssh_label_value(node.labels, "ssh-port")
@@ -62,12 +86,12 @@ def ssh_target_for_node(node) -> tuple[str, str, str]:
         port = label_port
     if not host:
         raise ValueError(f"node {node.node_id} missing ssh host")
-    return host, user, port
+    return SSHTarget(host=host, user=user, port=port, source=source)
 
 
-def _ssh_target(task: Task, node) -> tuple[str, str, str]:
+def _ssh_target(task: Task, node) -> SSHTarget:
     try:
-        return ssh_target_for_node(node)
+        return ssh_target_details_for_node(node)
     except ValueError as exc:
         raise ValueError(f"node {node.node_id} missing ssh host for task {task.task_id}") from exc
 
@@ -84,12 +108,12 @@ def run_ssh_task(store: SQLiteStore, task_id: str, *, allow_risk: set[str] | Non
     node = store.load_node(task.node_id)
     if node is None or node.status != "managed":
         raise ValueError(f"node {task.node_id} is not managed")
-    host, user, port = _ssh_target(task, node)
+    target = _ssh_target(task, node)
     running = task
     running.status = "running"
     running.started_at = datetime.now(timezone.utc)
     store.save_task(running)
-    command = ["ssh", "-p", port, f"{user}@{host}", task.command]
+    command = ["ssh", "-p", target.port, f"{target.user}@{target.host}", task.command]
     started = monotonic()
     completed = subprocess.run(command, check=False, text=True, capture_output=True, timeout=timeout_seconds)
     duration_ms = max(0, int((monotonic() - started) * 1000))
@@ -105,9 +129,10 @@ def run_ssh_task(store: SQLiteStore, task_id: str, *, allow_risk: set[str] | Non
         details={
             "node_id": task.node_id,
             "command": task.command,
-            "host": host,
-            "user": user,
-            "port": int(port),
+            "host": target.host,
+            "user": target.user,
+            "port": int(target.port),
+            "target_source": target.source,
             "duration_ms": duration_ms,
             "stdout_preview": stdout_preview,
             "stderr_preview": stderr_preview,

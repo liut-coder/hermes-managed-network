@@ -16,7 +16,7 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
-from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_for_node
+from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_details_for_node, ssh_target_for_node
 from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
@@ -971,6 +971,11 @@ def _render_node_status(
     typer.echo(f"ssh_host: {node.ssh_host or '-'}")
     typer.echo(f"ssh_user: {node.ssh_user or '-'}")
     typer.echo(f"ssh_port: {node.ssh_port}")
+    typer.echo(f"network_provider: {node.network_provider or '-'}")
+    typer.echo(f"network_node_id: {node.network_node_id or '-'}")
+    typer.echo(f"network_ip: {node.network_ip or '-'}")
+    typer.echo(f"network_tags: {', '.join(node.network_tags) if node.network_tags else '-'}")
+    typer.echo(f"network_online: {'yes' if node.network_online else ('no' if node.network_provider else '-')}")
     typer.echo(f"last_ssh_check: {_format_last_ssh_check(ssh_connectivity)}")
     typer.echo(f"ssh_reason: {_summarize_ssh_connectivity(ssh_connectivity)['reason']}")
     if liveness is not None:
@@ -1027,10 +1032,18 @@ def doctor_node(
         ssh_check_ok = True
     elif node.status == "managed":
         try:
-            host, user, port = ssh_target_for_node(node)
-            ssh_connectivity.update({"configured": True, "host": host, "user": user, "port": int(port)})
+            target = ssh_target_details_for_node(node)
+            ssh_connectivity.update(
+                {
+                    "configured": True,
+                    "host": target.host,
+                    "user": target.user,
+                    "port": int(target.port),
+                    "target_source": target.source,
+                }
+            )
             completed = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", port, f"{user}@{host}", "true"],
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", target.port, f"{target.user}@{target.host}", "true"],
                 check=False,
                 text=True,
                 capture_output=True,
@@ -1055,6 +1068,9 @@ def doctor_node(
     typer.echo(f"ssh_host: {node.ssh_host or '-'}")
     typer.echo(f"ssh_user: {node.ssh_user or '-'}")
     typer.echo(f"ssh_port: {node.ssh_port}")
+    typer.echo(f"network_provider: {node.network_provider or '-'}")
+    typer.echo(f"network_ip: {node.network_ip or '-'}")
+    typer.echo(f"network_online: {'yes' if node.network_online else ('no' if node.network_provider else '-')}")
     for name, ok in checks.items():
         typer.echo(f"{name}: {'OK' if ok else 'WARN'}")
     if no_ssh_check:
