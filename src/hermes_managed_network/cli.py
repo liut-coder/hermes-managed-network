@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 from importlib.metadata import PackageNotFoundError, version as package_version
 import shutil
 import shlex
@@ -20,6 +21,7 @@ from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .storage import SQLiteStore
+from .telegram_gateway import HttpGatewayApiClient, TelegramBotApiClient, poll_once
 from .tokens import JoinTokenStore
 from .version import current_version_info
 
@@ -45,6 +47,7 @@ app = typer.Typer(
         "  hmn task run              下发低风险任务\n"
         "  hmn task list             查看任务队列\n"
         "  hmn approval list         查看待审批操作\n"
+        "  hmn telegram-gateway poll-once 发送一次 Telegram 审批通知\n"
         "  hmn component list        查看可用组件\n"
         "  hmn component plan        生成组件执行计划\n"
         "  hmn component apply       记录组件期望状态\n"
@@ -65,6 +68,7 @@ audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
+telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -72,6 +76,7 @@ app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
+app.add_typer(telegram_gateway_app, name="telegram-gateway")
 
 
 def _default_db() -> Path:
@@ -223,17 +228,18 @@ def _show_menu() -> None:
     typer.echo("9. hmn task run                     下发低风险任务")
     typer.echo("10. hmn task list                   查看任务")
     typer.echo("11. hmn approval list               查看审批")
-    typer.echo("12. hmn component list              查看组件")
-    typer.echo("13. hmn component status            查看组件状态")
-    typer.echo("14. hmn component apply             记录组件状态")
-    typer.echo("15. hmn component verify            独立验证组件")
-    typer.echo("16. hmn component uninstall         卸载组件")
-    typer.echo("17. hmn audit list                  查看审计")
-    typer.echo("18. hmn token create                创建 token")
+    typer.echo("12. hmn telegram-gateway poll-once  发送审批通知")
+    typer.echo("13. hmn component list              查看组件")
+    typer.echo("14. hmn component status            查看组件状态")
+    typer.echo("15. hmn component apply             记录组件状态")
+    typer.echo("16. hmn component verify            独立验证组件")
+    typer.echo("17. hmn component uninstall         卸载组件")
+    typer.echo("18. hmn audit list                  查看审计")
+    typer.echo("19. hmn token create                创建 token")
     typer.echo("    hmn token list / expire / revoke 管理 token")
-    typer.echo("19. hmn version                     查看版本")
-    typer.echo("20. hmn update                      更新主控")
-    typer.echo("21. hmn uninstall                   卸载主控")
+    typer.echo("20. hmn version                     查看版本")
+    typer.echo("21. hmn update                      更新主控")
+    typer.echo("22. hmn uninstall                   卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
@@ -245,6 +251,7 @@ def _show_menu() -> None:
     typer.echo("  hmn node worker-status")
     typer.echo("  hmn task run 'uptime'")
     typer.echo("  hmn task list")
+    typer.echo("  hmn telegram-gateway poll-once")
     typer.echo("  hmn component list")
     typer.echo("  hmn component plan reverse-proxy --node node1 --set domain=example.com --set upstream=http://127.0.0.1:3000")
     typer.echo("  hmn component plan forwarder --node node1 --set listen=tcp://0.0.0.0:8443 --set target=tcp://10.0.0.10:443")
@@ -1127,6 +1134,63 @@ def reject_approval(
     if approval is None:
         raise typer.Exit(1)
     typer.echo(f"rejected: {approval.approval_id}")
+
+
+def _telegram_gateway_settings(
+    api_url: str | None,
+    chat_id: str | None,
+    token: str | None,
+) -> tuple[str, str, str]:
+    resolved_api_url = (api_url or os.environ.get("HMN_API_URL") or _default_master_url()).rstrip("/")
+    resolved_chat_id = chat_id or os.environ.get("HMN_TELEGRAM_CHAT_ID")
+    resolved_token = token or os.environ.get("HMN_TELEGRAM_BOT_TOKEN")
+    if not resolved_chat_id:
+        typer.echo("缺少 Telegram chat id：请传 --chat-id 或设置 HMN_TELEGRAM_CHAT_ID。")
+        raise typer.Exit(1)
+    if not resolved_token:
+        typer.echo("缺少 Telegram bot token：请传 --token 或设置 HMN_TELEGRAM_BOT_TOKEN。")
+        raise typer.Exit(1)
+    return resolved_api_url, resolved_chat_id, resolved_token
+
+
+@telegram_gateway_app.command("poll-once")
+def telegram_gateway_poll_once(
+    api_url: str | None = typer.Option(None, "--api-url", help="HMN API 地址，默认 HMN_API_URL 或本机 master URL"),
+    chat_id: str | None = typer.Option(None, "--chat-id", help="Telegram 目标 chat id，默认 HMN_TELEGRAM_CHAT_ID"),
+    token: str | None = typer.Option(None, "--token", help="Telegram Bot token，默认 HMN_TELEGRAM_BOT_TOKEN"),
+) -> None:
+    """拉取一次 outbox，并向 Telegram 发送审批通知。"""
+    resolved_api_url, resolved_chat_id, resolved_token = _telegram_gateway_settings(api_url, chat_id, token)
+    result = poll_once(
+        HttpGatewayApiClient(resolved_api_url),
+        TelegramBotApiClient(resolved_token),
+        chat_id=resolved_chat_id,
+    )
+    typer.echo(f"sent={result.sent} failed={result.failed}")
+    if result.failed:
+        raise typer.Exit(1)
+
+
+@telegram_gateway_app.command("run")
+def telegram_gateway_run(
+    api_url: str | None = typer.Option(None, "--api-url", help="HMN API 地址，默认 HMN_API_URL 或本机 master URL"),
+    chat_id: str | None = typer.Option(None, "--chat-id", help="Telegram 目标 chat id，默认 HMN_TELEGRAM_CHAT_ID"),
+    token: str | None = typer.Option(None, "--token", help="Telegram Bot token，默认 HMN_TELEGRAM_BOT_TOKEN"),
+    interval_seconds: int = typer.Option(10, "--interval", min=1, help="轮询间隔秒数"),
+    once: bool = typer.Option(False, "--once", help="只轮询一次后退出"),
+) -> None:
+    """持续轮询 outbox，并向 Telegram 发送审批通知。"""
+    resolved_api_url, resolved_chat_id, resolved_token = _telegram_gateway_settings(api_url, chat_id, token)
+    api_client = HttpGatewayApiClient(resolved_api_url)
+    telegram_client = TelegramBotApiClient(resolved_token)
+    while True:
+        result = poll_once(api_client, telegram_client, chat_id=resolved_chat_id)
+        typer.echo(f"sent={result.sent} failed={result.failed}")
+        if once:
+            if result.failed:
+                raise typer.Exit(1)
+            return
+        time.sleep(interval_seconds)
 
 
 @component_app.command("list")

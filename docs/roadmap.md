@@ -39,7 +39,7 @@
 - [x] Telegram approval flow 核心处理器
 - [x] Telegram gateway 发送/回调接入 API
 - [x] Telegram gateway 实际 Bot 轮询发送器核心
-- [ ] Telegram gateway systemd/CLI 运维入口
+- [x] Telegram gateway systemd/CLI 运维入口
 
 ## v0.4：Worker 模式
 

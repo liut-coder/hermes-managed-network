@@ -99,6 +99,65 @@ hmn task list
 - `stderr` 会说明 `execution disabled; set HMN_ENABLE_EXEC=1`
 - 任务状态会变成 `failed`，用于证明队列和 result 回传闭环可用
 
+## Telegram 审批网关
+
+高风险任务会进入 approval outbox。主控机可以运行 Telegram 网关，把审批卡片发送到指定 chat。
+
+一次性发送 pending 审批通知：
+
+```bash
+HMN_API_URL='http://127.0.0.1:8765' \
+HMN_TELEGRAM_CHAT_ID='<chat-id>' \
+HMN_TELEGRAM_BOT_TOKEN='<bot-token>' \
+hmn telegram-gateway poll-once
+```
+
+持续运行：
+
+```bash
+HMN_API_URL='http://127.0.0.1:8765' \
+HMN_TELEGRAM_CHAT_ID='<chat-id>' \
+HMN_TELEGRAM_BOT_TOKEN='<bot-token>' \
+hmn telegram-gateway run --interval 10
+```
+
+systemd 示例（token 建议写入 root-only env 文件，不要写入命令行历史）：
+
+```ini
+# /etc/hermes-managed-network/telegram-gateway.env
+HMN_API_URL=http://127.0.0.1:8765
+HMN_TELEGRAM_CHAT_ID=<chat-id>
+HMN_TELEGRAM_BOT_TOKEN=<bot-token>
+```
+
+```ini
+# /etc/systemd/system/hermes-managed-network-telegram-gateway.service
+[Unit]
+Description=Hermes Managed Network Telegram approval gateway
+After=network-online.target hermes-managed-network.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/hermes-managed-network/telegram-gateway.env
+ExecStart=/usr/local/bin/hmn telegram-gateway run --interval 10
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用：
+
+```bash
+sudo install -d -m 700 /etc/hermes-managed-network
+sudo chmod 600 /etc/hermes-managed-network/telegram-gateway.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now hermes-managed-network-telegram-gateway.service
+```
+
 ## 本地端到端 smoke test
 
 下面命令会使用临时数据库，本机启动 controller，模拟节点 join/confirm，运行 worker，并下发一条 disabled-exec 任务：
