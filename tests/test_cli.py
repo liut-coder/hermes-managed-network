@@ -679,6 +679,50 @@ def test_node_install_heartbeat_records_audit_event(tmp_path):
     }
 
 
+def test_node_list_shows_offline_when_no_heartbeat_and_records_audit(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_no_hb", hostname="no-hb-node"))
+
+    result = runner.invoke(app, ["node", "list", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "node_no_hb\tmanaged\tno-hb-node\ttrust=B\tliveness=offline" in result.stdout
+    event = store.list_audit_events()[-1]
+    assert event.action == "liveness"
+    assert event.subject_id == "node_no_hb"
+    assert event.outcome == "offline"
+    assert event.details["reason"] == "missing_heartbeat"
+
+
+def test_node_status_shows_stale_for_old_heartbeat_and_records_audit(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_stale", hostname="stale-node"))
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_stale",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
+    )
+    with store.connect() as conn:
+        conn.execute("UPDATE audit_events SET created_at = ? WHERE action = 'heartbeat'", ("2026-01-01T00:00:00+00:00",))
+
+    result = runner.invoke(app, ["node", "status", "--db", str(db), "--now", "2026-01-01T00:06:00+00:00"])
+
+    assert result.exit_code == 0
+    assert "liveness: stale" in result.stdout
+    assert "last_heartbeat: 2026-01-01T00:00:00+00:00" in result.stdout
+    event = store.list_audit_events()[-1]
+    assert event.action == "liveness"
+    assert event.outcome == "stale"
+    assert event.details["age_seconds"] == 360
+
+
 def test_node_worker_status_reports_missing_heartbeat(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -689,6 +733,7 @@ def test_node_worker_status_reports_missing_heartbeat(tmp_path):
     assert result.exit_code == 1
     assert "自动选择 managed 节点: node_no_hb (no-hb-node)" in result.stdout
     assert "worker: node_no_hb" in result.stdout
+    assert "liveness: offline" in result.stdout
     assert "心跳: WARN 未收到" in result.stdout
     assert "worker: WARN 未安装或未上报" in result.stdout
     assert "执行: SAFE HMN_ENABLE_EXEC=0" in result.stdout

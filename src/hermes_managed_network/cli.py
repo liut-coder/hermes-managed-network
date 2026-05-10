@@ -7,7 +7,7 @@ import shutil
 import shlex
 import socket
 import subprocess
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
@@ -284,13 +284,13 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             wake(db=db, master_url=None)
             return
         if normalized in {"2", "node", "nodes", "node list", "hmn node list"}:
-            list_nodes(db=db)
+            list_nodes(db=db, now=None)
             return
         if normalized in {"3", "confirm", "node confirm", "hmn node confirm"}:
             confirm_node(node_id=None, bundle=["observe"], db=db)
             return
         if normalized in {"4", "status", "node status", "hmn node status"}:
-            status_node(node_id=None, db=db)
+            status_node(node_id=None, db=db, now=None)
             return
         if normalized in {"5", "doctor", "node doctor", "hmn node doctor"}:
             doctor_node(node_id=None, db=db)
@@ -552,10 +552,69 @@ def join_command(
     typer.echo(_render_join_command(token_value, master_url, user, safe=safe))
 
 
+def _parse_now(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value else None
+
+
+def _node_liveness(store: SQLiteStore, node_id: str, *, now: datetime | None = None) -> dict[str, object]:
+    now = now or datetime.now(timezone.utc)
+    event = _latest_heartbeat_event(store, node_id)
+    if event is None:
+        return {
+            "state": "offline",
+            "reason": "missing_heartbeat",
+            "last_heartbeat": "",
+            "age_seconds": None,
+        }
+    age_seconds = int((now - event.created_at).total_seconds())
+    if event.outcome != "ok":
+        state = "stale"
+        reason = "heartbeat_warn"
+    elif age_seconds <= 300:
+        state = "online"
+        reason = "fresh_heartbeat"
+    elif age_seconds <= 900:
+        state = "stale"
+        reason = "stale_heartbeat"
+    else:
+        state = "offline"
+        reason = "heartbeat_timeout"
+    return {
+        "state": state,
+        "reason": reason,
+        "last_heartbeat": event.created_at.isoformat(),
+        "age_seconds": age_seconds,
+    }
+
+
+def _record_liveness_audit(store: SQLiteStore, node_id: str, liveness: dict[str, object]) -> None:
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id=node_id,
+        action="liveness",
+        outcome=str(liveness["state"]),
+        details={
+            "reason": liveness["reason"],
+            "last_heartbeat": liveness["last_heartbeat"],
+            "age_seconds": liveness["age_seconds"],
+        },
+    )
+
+
 @node_app.command("list")
-def list_nodes(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
-    for node in _store(db).list_nodes():
-        typer.echo(f"{node.node_id}\t{node.status}\t{node.hostname}\ttrust={node.trust_level}")
+def list_nodes(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    now: str | None = typer.Option(None, "--now", help="测试/排障用：指定当前时间 ISO8601"),
+) -> None:
+    store = _store(db)
+    current_time = _parse_now(now)
+    for node in store.list_nodes():
+        liveness = _node_liveness(store, node.node_id, now=current_time) if node.status == "managed" else None
+        suffix = f"\tliveness={liveness['state']}" if liveness else ""
+        typer.echo(f"{node.node_id}\t{node.status}\t{node.hostname}\ttrust={node.trust_level}{suffix}")
+        if liveness:
+            _record_liveness_audit(store, node.node_id, liveness)
 
 
 @node_app.command("confirm")
@@ -627,7 +686,7 @@ def _select_managed_node(store: SQLiteStore, node_id: str | None):
     return managed_nodes[choice - 1]
 
 
-def _render_node_status(node) -> None:
+def _render_node_status(node, liveness: dict[str, object] | None = None) -> None:
     typer.echo(f"node: {node.node_id}")
     typer.echo(f"status: {node.status}")
     typer.echo(f"host: {node.hostname}")
@@ -635,16 +694,22 @@ def _render_node_status(node) -> None:
     typer.echo(f"labels: {', '.join(node.labels) if node.labels else '-'}")
     typer.echo(f"addresses: {', '.join(node.addresses) if node.addresses else '-'}")
     typer.echo(f"bundles: {', '.join(node.permission_bundles) if node.permission_bundles else '-'}")
+    if liveness is not None:
+        typer.echo(f"liveness: {liveness['state']}")
+        typer.echo(f"last_heartbeat: {liveness['last_heartbeat'] or '-'}")
 
 
 @node_app.command("status")
 def status_node(
     node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    now: str | None = typer.Option(None, "--now", help="测试/排障用：指定当前时间 ISO8601"),
 ) -> None:
     store = _store(db)
     node = _select_managed_node(store, node_id)
-    _render_node_status(node)
+    liveness = _node_liveness(store, node.node_id, now=_parse_now(now))
+    _render_node_status(node, liveness)
+    _record_liveness_audit(store, node.node_id, liveness)
 
 
 @node_app.command("doctor")
@@ -777,8 +842,10 @@ def worker_status(
     version_value = facts.get("worker_version") or "unknown"
     exec_enabled = bool(facts.get("exec_enabled", False))
 
+    liveness = _node_liveness(store, node.node_id)
     typer.echo(f"worker: {node.node_id}")
     typer.echo(f"host: {node.hostname}")
+    typer.echo(f"liveness: {liveness['state']}")
     if event is None:
         typer.echo("心跳: WARN 未收到")
         typer.echo("worker: WARN 未安装或未上报")
@@ -805,8 +872,10 @@ def worker_status(
             "worker_protocol_version": protocol,
             "worker_compatible": compatible,
             "exec_enabled": exec_enabled,
+            "liveness": liveness,
         },
     )
+    _record_liveness_audit(store, node.node_id, liveness)
     if event is None or event.outcome != "ok" or not compatible:
         raise typer.Exit(1)
 

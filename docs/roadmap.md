@@ -39,7 +39,7 @@
 - [ ] task signing
 - [x] heartbeat
 - [ ] node token rotation
-- [ ] offline node handling
+- [x] offline node handling
 - [ ] runtime profile 自动选择
 - [ ] service manager adapter 安装器
 
