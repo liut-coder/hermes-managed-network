@@ -117,6 +117,10 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     def worker_script() -> Response:
         return _asset_script("worker.sh")
 
+    @app.get("/scripts/worker-lite.sh", include_in_schema=False)
+    def worker_lite_script() -> Response:
+        return _asset_script("worker-lite.sh")
+
     @app.post("/api/v1/join", response_model=JoinResponse)
     def join(request: JoinRequest) -> JoinResponse:
         token = store.load_token(request.token)

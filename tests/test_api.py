@@ -94,6 +94,17 @@ def test_control_plane_serves_worker_script(tmp_path):
     assert response.headers["content-type"].startswith("text/x-shellscript")
 
 
+def test_control_plane_serves_worker_lite_script(tmp_path):
+    client = TestClient(create_app(tmp_path / "hmn.db"))
+
+    response = client.get("/scripts/worker-lite.sh")
+
+    assert response.status_code == 200
+    assert response.text.startswith("#!/bin/sh")
+    assert "task_policy\":\"heartbeat-only" in response.text
+    assert response.headers["content-type"].startswith("text/x-shellscript")
+
+
 def test_control_plane_version_endpoint_reports_protocol_versions(tmp_path):
     client = TestClient(create_app(tmp_path / "hmn.db"))
 
