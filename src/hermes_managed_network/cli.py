@@ -44,6 +44,7 @@ app = typer.Typer(
         "  hmn node worker-status     查看节点 worker 安装状态\n"
         "  hmn task run              下发低风险任务\n"
         "  hmn task list             查看任务队列\n"
+        "  hmn approval list         查看待审批操作\n"
         "  hmn component list        查看可用组件\n"
         "  hmn component plan        生成组件执行计划\n"
         "  hmn component apply       记录组件期望状态\n"
@@ -62,12 +63,14 @@ node_app = typer.Typer(help="管理已登记节点")
 playbook_app = typer.Typer(help="运行本地 playbook")
 audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
+approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
 app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
+app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
 
 
@@ -219,17 +222,18 @@ def _show_menu() -> None:
     typer.echo("8. hmn node worker-status           查看 worker 状态")
     typer.echo("9. hmn task run                     下发低风险任务")
     typer.echo("10. hmn task list                   查看任务")
-    typer.echo("11. hmn component list              查看组件")
-    typer.echo("12. hmn component status            查看组件状态")
-    typer.echo("13. hmn component apply             记录组件状态")
-    typer.echo("14. hmn component verify            独立验证组件")
-    typer.echo("15. hmn component uninstall         卸载组件")
-    typer.echo("16. hmn audit list                  查看审计")
-    typer.echo("17. hmn token create                创建 token")
+    typer.echo("11. hmn approval list               查看审批")
+    typer.echo("12. hmn component list              查看组件")
+    typer.echo("13. hmn component status            查看组件状态")
+    typer.echo("14. hmn component apply             记录组件状态")
+    typer.echo("15. hmn component verify            独立验证组件")
+    typer.echo("16. hmn component uninstall         卸载组件")
+    typer.echo("17. hmn audit list                  查看审计")
+    typer.echo("18. hmn token create                创建 token")
     typer.echo("    hmn token list / expire / revoke 管理 token")
-    typer.echo("18. hmn version                     查看版本")
-    typer.echo("19. hmn update                      更新主控")
-    typer.echo("20. hmn uninstall                   卸载主控")
+    typer.echo("19. hmn version                     查看版本")
+    typer.echo("20. hmn update                      更新主控")
+    typer.echo("21. hmn uninstall                   卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
@@ -1023,11 +1027,24 @@ def create_task_command(
     risk: str = typer.Option("low", "--risk", help="风险级别；当前只允许 low/medium"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
-    if risk not in {"low", "medium"}:
-        typer.echo("当前只允许下发 low/medium 风险任务。")
-        raise typer.Exit(1)
     store = _store(db)
     node = _select_managed_node(store, node_id)
+    if risk in {"high", "critical"}:
+        approval = store.create_approval_request(
+            subject_type="task",
+            subject_id="pending-task",
+            action="task.run",
+            risk=risk,
+            requested_by="hmn",
+            details={"node_id": node.node_id, "command": command},
+        )
+        typer.echo(f"需要审批: {approval.approval_id}")
+        typer.echo(f"节点: {node.node_id}")
+        typer.echo(f"命令: {command}")
+        raise typer.Exit(1)
+    if risk not in {"low", "medium"}:
+        typer.echo("风险级别只允许 low/medium/high/critical。")
+        raise typer.Exit(1)
     task = store.create_task(node_id=node.node_id, command=command, risk=risk, created_by="hmn")
     typer.echo(f"已创建任务: {task.task_id}")
     typer.echo(f"节点: {node.node_id}")
@@ -1038,6 +1055,61 @@ def create_task_command(
 def list_task_commands(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
     for task in _store(db).list_tasks():
         typer.echo(f"{task.task_id}	{task.node_id}	{task.status}	risk={task.risk}	{task.command}")
+
+
+@approval_app.command("list")
+def list_approvals(
+    status: str | None = typer.Option(None, "--status", help="按状态过滤：pending/approved/rejected"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    for approval in _store(db).list_approval_requests(status=status):
+        typer.echo(
+            f"{approval.approval_id}\t{approval.status}\trisk={approval.risk}\t{approval.action}\t{approval.subject_type}:{approval.subject_id}"
+        )
+
+
+@approval_app.command("show")
+def show_approval(
+    approval_id: str = typer.Argument(...),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    approval = _store(db).load_approval_request(approval_id)
+    if approval is None:
+        raise typer.Exit(1)
+    typer.echo(f"approval: {approval.approval_id}")
+    typer.echo(f"status: {approval.status}")
+    typer.echo(f"risk: {approval.risk}")
+    typer.echo(f"action: {approval.action}")
+    typer.echo(f"subject: {approval.subject_type}:{approval.subject_id}")
+    typer.echo(f"requested_by: {approval.requested_by}")
+    if approval.decided_by:
+        typer.echo(f"decided_by: {approval.decided_by}")
+    typer.echo("details:")
+    typer.echo(json.dumps(approval.details, ensure_ascii=False, sort_keys=True))
+
+
+@approval_app.command("approve")
+def approve_approval(
+    approval_id: str = typer.Argument(...),
+    by: str = typer.Option("operator", "--by", help="审批人"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    approval = _store(db).resolve_approval_request(approval_id, status="approved", decided_by=by)
+    if approval is None:
+        raise typer.Exit(1)
+    typer.echo(f"approved: {approval.approval_id}")
+
+
+@approval_app.command("reject")
+def reject_approval(
+    approval_id: str = typer.Argument(...),
+    by: str = typer.Option("operator", "--by", help="审批人"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    approval = _store(db).resolve_approval_request(approval_id, status="rejected", decided_by=by)
+    if approval is None:
+        raise typer.Exit(1)
+    typer.echo(f"rejected: {approval.approval_id}")
 
 
 @component_app.command("list")

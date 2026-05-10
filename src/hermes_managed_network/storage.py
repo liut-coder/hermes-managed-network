@@ -60,6 +60,21 @@ class Task:
 
 
 @dataclass
+class ApprovalRequest:
+    approval_id: str
+    subject_type: str
+    subject_id: str
+    action: str
+    risk: str
+    status: str
+    requested_by: str
+    details: dict[str, Any]
+    created_at: datetime
+    decided_by: str = ""
+    decided_at: datetime | None = None
+
+
+@dataclass
 class AuditEvent:
     event_type: str
     subject_type: str
@@ -147,6 +162,20 @@ class SQLiteStore:
                     exit_code INTEGER,
                     stdout TEXT NOT NULL DEFAULT '',
                     stderr TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS approval_requests (
+                    approval_id TEXT PRIMARY KEY,
+                    subject_type TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    decided_by TEXT NOT NULL DEFAULT '',
+                    decided_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS components (
@@ -246,6 +275,124 @@ class SQLiteStore:
             )
             for row in rows
         ]
+
+    def create_approval_request(
+        self,
+        *,
+        subject_type: str,
+        subject_id: str,
+        action: str,
+        risk: str,
+        requested_by: str,
+        details: dict[str, Any] | None = None,
+    ) -> ApprovalRequest:
+        approval = ApprovalRequest(
+            approval_id="appr_" + uuid4().hex[:12],
+            subject_type=subject_type,
+            subject_id=subject_id,
+            action=action,
+            risk=risk,
+            status="pending",
+            requested_by=requested_by,
+            details=details or {},
+            created_at=datetime.now(timezone.utc),
+        )
+        self.save_approval_request(approval)
+        self.record_audit(
+            event_type="approval",
+            subject_type=subject_type,
+            subject_id=approval.approval_id,
+            action="approval/request",
+            outcome="pending",
+            details={"subject_id": subject_id, "action": action, "risk": risk, **approval.details},
+        )
+        return approval
+
+    def save_approval_request(self, approval: ApprovalRequest) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO approval_requests (
+                    approval_id, subject_type, subject_id, action, risk, status,
+                    requested_by, details_json, created_at, decided_by, decided_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(approval_id) DO UPDATE SET
+                    subject_type=excluded.subject_type,
+                    subject_id=excluded.subject_id,
+                    action=excluded.action,
+                    risk=excluded.risk,
+                    status=excluded.status,
+                    requested_by=excluded.requested_by,
+                    details_json=excluded.details_json,
+                    created_at=excluded.created_at,
+                    decided_by=excluded.decided_by,
+                    decided_at=excluded.decided_at
+                """,
+                (
+                    approval.approval_id,
+                    approval.subject_type,
+                    approval.subject_id,
+                    approval.action,
+                    approval.risk,
+                    approval.status,
+                    approval.requested_by,
+                    json.dumps(approval.details, sort_keys=True),
+                    _dt(approval.created_at),
+                    approval.decided_by,
+                    _dt(approval.decided_at),
+                ),
+            )
+
+    def _approval_from_row(self, row) -> ApprovalRequest:
+        return ApprovalRequest(
+            approval_id=row["approval_id"],
+            subject_type=row["subject_type"],
+            subject_id=row["subject_id"],
+            action=row["action"],
+            risk=row["risk"],
+            status=row["status"],
+            requested_by=row["requested_by"],
+            details=json.loads(row["details_json"]),
+            created_at=_parse_dt(row["created_at"]),
+            decided_by=row["decided_by"],
+            decided_at=_parse_dt(row["decided_at"]),
+        )
+
+    def load_approval_request(self, approval_id: str) -> ApprovalRequest | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
+        return self._approval_from_row(row) if row else None
+
+    def list_approval_requests(self, status: str | None = None) -> list[ApprovalRequest]:
+        with self.connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM approval_requests WHERE status = ? ORDER BY created_at DESC",
+                    (status,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM approval_requests ORDER BY created_at DESC").fetchall()
+        return [self._approval_from_row(row) for row in rows]
+
+    def resolve_approval_request(self, approval_id: str, *, status: str, decided_by: str) -> ApprovalRequest | None:
+        if status not in {"approved", "rejected"}:
+            raise ValueError("approval status must be approved or rejected")
+        approval = self.load_approval_request(approval_id)
+        if approval is None:
+            return None
+        approval.status = status
+        approval.decided_by = decided_by
+        approval.decided_at = datetime.now(timezone.utc)
+        self.save_approval_request(approval)
+        self.record_audit(
+            event_type="approval",
+            subject_type=approval.subject_type,
+            subject_id=approval.approval_id,
+            action=f"approval/{status}",
+            outcome=status,
+            details={"subject_id": approval.subject_id, "risk": approval.risk, "decided_by": decided_by},
+        )
+        return approval
 
     def create_task(self, *, node_id: str, command: str, risk: str = "low", created_by: str = "hmn") -> Task:
         task = Task(

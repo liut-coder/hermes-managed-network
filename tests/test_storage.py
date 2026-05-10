@@ -74,3 +74,111 @@ def test_sqlite_records_audit_events(tmp_path):
     assert len(events) == 1
     assert events[0].subject_id == "j_demo"
     assert events[0].details == {"trust_level": "B"}
+
+
+def test_sqlite_persists_approval_requests(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+
+    approval = store.create_approval_request(
+        subject_type="task",
+        subject_id="task_high",
+        action="task.run",
+        risk="high",
+        requested_by="hmn",
+        details={"node_id": "node_1", "command": "systemctl restart nginx"},
+    )
+
+    assert approval.approval_id.startswith("appr_")
+    assert approval.status == "pending"
+    assert approval.risk == "high"
+    loaded = store.load_approval_request(approval.approval_id)
+    assert loaded == approval
+    assert store.list_approval_requests()[0] == approval
+
+    approved = store.resolve_approval_request(approval.approval_id, status="approved", decided_by="operator")
+    assert approved is not None
+    assert approved.status == "approved"
+    assert approved.decided_by == "operator"
+    assert approved.decided_at is not None
+
+    events = store.list_audit_events()
+    assert [event.action for event in events] == ["approval/request", "approval/approved"]
+    assert events[0].details["risk"] == "high"
+
+
+def test_high_risk_task_cli_creates_pending_approval_instead_of_task(tmp_path):
+    from typer.testing import CliRunner
+    from hermes_managed_network.cli import app
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_high_risk",
+            fingerprint="sha256:task",
+            hostname="task-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(app, ["task", "run", "reboot", "--risk", "high", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "需要审批" in result.stdout
+    assert SQLiteStore(db).list_tasks() == []
+    approvals = SQLiteStore(db).list_approval_requests()
+    assert len(approvals) == 1
+    assert approvals[0].status == "pending"
+    assert approvals[0].subject_type == "task"
+    assert approvals[0].details["command"] == "reboot"
+
+
+def test_approval_cli_list_show_approve_reject(tmp_path):
+    from typer.testing import CliRunner
+    from hermes_managed_network.cli import app
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    approval = store.create_approval_request(
+        subject_type="component",
+        subject_id="run_1",
+        action="component.apply",
+        risk="high",
+        requested_by="hmn",
+        details={"component_id": "reverse-proxy"},
+    )
+
+    listed = runner.invoke(app, ["approval", "list", "--db", str(db)])
+    assert listed.exit_code == 0
+    assert approval.approval_id in listed.stdout
+    assert "pending" in listed.stdout
+
+    shown = runner.invoke(app, ["approval", "show", approval.approval_id, "--db", str(db)])
+    assert shown.exit_code == 0
+    assert "component.apply" in shown.stdout
+    assert "reverse-proxy" in shown.stdout
+
+    approved = runner.invoke(app, ["approval", "approve", approval.approval_id, "--by", "Misk", "--db", str(db)])
+    assert approved.exit_code == 0
+    assert "approved" in approved.stdout
+    assert SQLiteStore(db).load_approval_request(approval.approval_id).status == "approved"
+
+    second = store.create_approval_request(
+        subject_type="task",
+        subject_id="task_2",
+        action="task.run",
+        risk="critical",
+        requested_by="hmn",
+        details={"command": "rm -rf /tmp/demo"},
+    )
+    rejected = runner.invoke(app, ["approval", "reject", second.approval_id, "--by", "Misk", "--db", str(db)])
+    assert rejected.exit_code == 0
+    assert "rejected" in rejected.stdout
+    assert SQLiteStore(db).load_approval_request(second.approval_id).status == "rejected"

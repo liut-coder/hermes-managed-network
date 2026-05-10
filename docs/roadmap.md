@@ -32,6 +32,7 @@
 - [x] SQLite 存储
 - [ ] SSH executor
 - [x] audit log
+- [x] Approval 数据模型和 CLI 骨架
 - [ ] Telegram approval flow
 
 ## v0.4：Worker 模式
