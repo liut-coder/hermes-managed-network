@@ -12,12 +12,11 @@ import socket
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import monotonic
 
 import typer
 
 from .components import ComponentManifest, load_builtin_components
-from .executor import PlaybookExecutor, SSHExecutionError, run_ssh_task, ssh_target_for_node
+from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_for_node
 from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
@@ -707,6 +706,43 @@ def _select_managed_node(store: SQLiteStore, node_id: str | None):
     return managed_nodes[choice - 1]
 
 
+def _format_ssh_reason_cn(reason: str, stderr: str = "") -> str:
+    mapping = {
+        "ssh_auth": "SSH 认证失败",
+        "ssh_connectivity": "SSH 网络不通",
+        "timeout": "SSH 检查超时",
+        "remote_command": "远端命令执行失败",
+        "none": "正常",
+        "unknown": "未知",
+    }
+    label = mapping.get(reason or "unknown", "未知")
+    detail = (stderr or "").strip()
+    if detail and reason in {"ssh_auth", "ssh_connectivity", "timeout", "remote_command"}:
+        return f"{label}：{detail}"
+    return label
+
+
+def _summarize_ssh_connectivity(ssh_connectivity: dict[str, object] | None) -> dict[str, str]:
+    if not ssh_connectivity:
+        return {"status": "unknown", "reason": "无记录", "summary": "-"}
+    if ssh_connectivity.get("skipped"):
+        return {"status": "skipped", "reason": "已跳过 SSH 检查", "summary": "skipped"}
+    if not ssh_connectivity.get("configured"):
+        detail = str(ssh_connectivity.get("stderr") or "未配置")
+        return {"status": "warn", "reason": f"SSH 未配置：{detail}", "summary": f"warn {detail}"}
+    summary = f"{ssh_connectivity.get('user') or '-'}@{ssh_connectivity.get('host') or '-'}:{ssh_connectivity.get('port') or '-'}"
+    if ssh_connectivity.get("reachable"):
+        return {"status": "ok", "reason": "SSH 连通正常", "summary": f"ok {summary}"}
+    stderr = str(ssh_connectivity.get("stderr") or "")
+    exit_code = int(ssh_connectivity.get("exit_code") or 1)
+    reason = classify_ssh_failure(exit_code, stderr)
+    return {
+        "status": "warn",
+        "reason": _format_ssh_reason_cn(reason, stderr),
+        "summary": f"warn {summary} {stderr or f'exit_code={exit_code}'}".strip(),
+    }
+
+
 def _latest_doctor_ssh_connectivity(store: SQLiteStore, node_id: str) -> dict[str, object] | None:
     for event in reversed(store.list_audit_events()):
         if event.event_type == "node" and event.subject_id == node_id and event.action == "doctor":
@@ -717,18 +753,7 @@ def _latest_doctor_ssh_connectivity(store: SQLiteStore, node_id: str) -> dict[st
 
 
 def _format_last_ssh_check(ssh_connectivity: dict[str, object] | None) -> str:
-    if not ssh_connectivity:
-        return "-"
-    if ssh_connectivity.get("skipped"):
-        return "skipped"
-    if not ssh_connectivity.get("configured"):
-        detail = str(ssh_connectivity.get("stderr") or "未配置")
-        return f"warn {detail}"
-    summary = f"{ssh_connectivity.get('user') or '-'}@{ssh_connectivity.get('host') or '-'}:{ssh_connectivity.get('port') or '-'}"
-    if ssh_connectivity.get("reachable"):
-        return f"ok {summary}"
-    detail = str(ssh_connectivity.get("stderr") or f"exit_code={ssh_connectivity.get('exit_code')}")
-    return f"warn {summary} {detail}".strip()
+    return _summarize_ssh_connectivity(ssh_connectivity)["summary"]
 
 
 def _render_node_status(
@@ -748,6 +773,7 @@ def _render_node_status(
     typer.echo(f"ssh_user: {node.ssh_user or '-'}")
     typer.echo(f"ssh_port: {node.ssh_port}")
     typer.echo(f"last_ssh_check: {_format_last_ssh_check(ssh_connectivity)}")
+    typer.echo(f"ssh_reason: {_summarize_ssh_connectivity(ssh_connectivity)['reason']}")
     if liveness is not None:
         typer.echo(f"liveness: {liveness['state']}")
         typer.echo(f"last_heartbeat: {liveness['last_heartbeat'] or '-'}")
@@ -974,6 +1000,8 @@ def worker_status(
     version_value = facts.get("worker_version") or "unknown"
     exec_enabled = bool(facts.get("exec_enabled", False))
     runtime = _runtime_summary_from_facts(facts)
+    ssh_connectivity = _latest_doctor_ssh_connectivity(store, node.node_id)
+    ssh_summary = _summarize_ssh_connectivity(ssh_connectivity)
 
     liveness = _node_liveness(store, node.node_id)
     typer.echo(f"worker: {node.node_id}")
@@ -992,6 +1020,8 @@ def worker_status(
     typer.echo(f"版本: {version_value}")
     typer.echo(f"runtime: {runtime['runtime_profile']}")
     typer.echo(f"service_manager: {runtime['service_manager']}")
+    typer.echo(f"ssh: {ssh_summary['summary']}")
+    typer.echo(f"ssh_reason: {ssh_summary['reason']}")
     if exec_enabled:
         typer.echo("执行: ENABLED HMN_ENABLE_EXEC=1")
     else:
@@ -1008,6 +1038,8 @@ def worker_status(
             "worker_compatible": compatible,
             "exec_enabled": exec_enabled,
             "liveness": liveness,
+            "ssh_connectivity": ssh_connectivity or {},
+            "ssh_reason": ssh_summary["reason"],
             **runtime,
         },
     )
@@ -1623,35 +1655,80 @@ def component_status(
         )
 
 
+def _audit_ssh_summary(details: dict[str, object]) -> str:
+    reason = str(details.get("failure_reason") or "")
+    stdout_preview = str(details.get("stdout_preview") or "")
+    stderr_preview = str(details.get("stderr_preview") or "")
+    duration_ms = details.get("duration_ms")
+    ssh_connectivity = details.get("ssh_connectivity") if isinstance(details.get("ssh_connectivity"), dict) else None
+    if ssh_connectivity is not None:
+        summary = _summarize_ssh_connectivity(ssh_connectivity)
+        return summary["reason"]
+    if reason:
+        return _format_ssh_reason_cn(reason, stderr_preview)
+    if duration_ms is not None or stdout_preview or stderr_preview:
+        parts: list[str] = []
+        if duration_ms is not None:
+            parts.append(f"耗时 {duration_ms}ms")
+        if stdout_preview:
+            parts.append(f"stdout={stdout_preview}")
+        if stderr_preview:
+            parts.append(f"stderr={stderr_preview}")
+        return "；".join(parts) if parts else "-"
+    return "-"
+
+
 @audit_app.command("list")
 def list_audit_events(
-    limit: int = typer.Option(50, "--limit", "-n", help="最多显示多少条事件"),
-    json_output: bool = typer.Option(False, "--json", help="输出 JSON Lines"),
+    limit: int = typer.Option(50, "--limit", min=1, max=500, help="最多显示多少条"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     events = _store(db).list_audit_events()[-limit:]
+    if json_output:
+        payload = [
+            {
+                "event_type": event.event_type,
+                "subject_type": event.subject_type,
+                "subject_id": event.subject_id,
+                "action": event.action,
+                "outcome": event.outcome,
+                "details": event.details,
+                "created_at": event.created_at.isoformat(),
+            }
+            for event in events
+        ]
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
     for event in events:
-        if json_output:
-            typer.echo(
-                json.dumps(
-                    {
-                        "created_at": event.created_at.isoformat(),
-                        "event_type": event.event_type,
-                        "subject_type": event.subject_type,
-                        "subject_id": event.subject_id,
-                        "action": event.action,
-                        "outcome": event.outcome,
-                        "details": event.details,
-                    },
-                    sort_keys=True,
-                )
-            )
-        else:
-            details = json.dumps(event.details, ensure_ascii=False, sort_keys=True)
-            typer.echo(
-                f"{event.created_at.isoformat()}\t{event.event_type}\t{event.subject_type}\t"
-                f"{event.subject_id}\t{event.action}\t{event.outcome}\t{details}"
-            )
+        typer.echo(
+            f"{event.created_at.isoformat()}\t{event.event_type}\t{event.subject_type}:{event.subject_id}\t{event.action}\t{event.outcome}"
+        )
+        ssh_summary = _audit_ssh_summary(event.details)
+        if ssh_summary != "-":
+            typer.echo(f"  ssh: {ssh_summary}")
+
+
+@audit_app.command("show")
+def show_audit_event(
+    subject_id: str = typer.Argument(..., help="事件 subject_id"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    events = [event for event in _store(db).list_audit_events() if event.subject_id == subject_id]
+    if not events:
+        typer.echo("审计事件不存在。")
+        raise typer.Exit(1)
+    event = events[-1]
+    typer.echo(f"time: {event.created_at.isoformat()}")
+    typer.echo(f"event_type: {event.event_type}")
+    typer.echo(f"subject: {event.subject_type}:{event.subject_id}")
+    typer.echo(f"action: {event.action}")
+    typer.echo(f"outcome: {event.outcome}")
+    ssh_summary = _audit_ssh_summary(event.details)
+    if ssh_summary != "-":
+        typer.echo(f"ssh: {ssh_summary}")
+    typer.echo("details:")
+    typer.echo(json.dumps(event.details, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == "__main__":

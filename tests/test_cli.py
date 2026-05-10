@@ -121,7 +121,9 @@ def test_cli_can_list_audit_events_as_json_lines(tmp_path):
     result = runner.invoke(app, ["audit", "list", "--db", str(db), "--json"])
 
     assert result.exit_code == 0
-    event = json.loads(result.stdout.strip())
+    payload = json.loads(result.stdout.strip())
+    assert isinstance(payload, list)
+    event = payload[-1]
     assert event["subject_id"] == token_value
     assert event["subject_type"] == "join_token"
     assert event["action"] == "create"
@@ -418,6 +420,56 @@ def test_node_status_shows_last_ssh_check_from_doctor_audit(tmp_path, monkeypatc
 
     assert result.exit_code == 0
     assert "last_ssh_check: ok ops@100.64.0.4:2227" in result.stdout
+    assert "ssh_reason: SSH 连通正常" in result.stdout
+
+
+def test_worker_status_shows_friendly_ssh_reason(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_worker_ssh_warn",
+            fingerprint="fp-worker-ssh",
+            hostname="worker-ssh-node",
+            addresses=["10.0.0.5"],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+            ssh_host="100.64.0.5",
+            ssh_user="ops",
+            ssh_port=2228,
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_worker_ssh_warn",
+        action="doctor",
+        outcome="warn",
+        details={
+            "checks": {"SSH 连通": False},
+            "ssh_connectivity": {
+                "configured": True,
+                "reachable": False,
+                "host": "100.64.0.5",
+                "user": "ops",
+                "port": 2228,
+                "exit_code": 255,
+                "stderr": "Connection refused",
+                "skipped": False,
+            },
+        },
+    )
+
+    result = runner.invoke(app, ["node", "worker-status", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "ssh: warn ops@100.64.0.5:2228 Connection refused" in result.stdout
+    assert "ssh_reason: SSH 网络不通：Connection refused" in result.stdout
 
 
 

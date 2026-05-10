@@ -36,10 +36,10 @@ def classify_ssh_failure(exit_code: int, stderr: str) -> str:
     message = (stderr or "").lower()
     if "permission denied" in message or "publickey" in message or "authentication failed" in message:
         return "ssh_auth"
-    if "timed out" in message or "no route to host" in message or "connection refused" in message or "could not resolve hostname" in message:
-        return "ssh_connectivity"
     if exit_code == 124:
         return "timeout"
+    if "timed out" in message or "no route to host" in message or "connection refused" in message or "could not resolve hostname" in message:
+        return "ssh_connectivity"
     if exit_code != 0:
         return "remote_command"
     return "none"

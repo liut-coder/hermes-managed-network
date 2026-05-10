@@ -104,6 +104,52 @@ def test_task_ssh_run_next_records_failure_summary(tmp_path, monkeypatch):
     assert event.details["failure_reason"] == "ssh_auth"
 
 
+def test_task_ssh_run_next_classifies_timeout_failure(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node())
+    task = store.create_task(node_id="node_cli_ssh", command="uptime", risk="medium", created_by="hmn", executor="ssh")
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=124, stdout="", stderr="operation timed out")
+
+    monkeypatch.setattr("hermes_managed_network.executor.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["task", "ssh-run-next", "--db", str(db)])
+
+    assert result.exit_code == 1
+    event = SQLiteStore(db).list_audit_events()[-1]
+    assert event.action == "ssh-run-next"
+    assert event.outcome == "failed"
+    assert event.details["task_id"] == task.task_id
+    assert event.details["failure_reason"] == "timeout"
+    assert event.details["stderr_preview"] == "operation timed out"
+
+
+def test_task_ssh_run_next_classifies_network_failure(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node())
+    task = store.create_task(node_id="node_cli_ssh", command="uptime", risk="medium", created_by="hmn", executor="ssh")
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=255, stdout="", stderr="No route to host")
+
+    monkeypatch.setattr("hermes_managed_network.executor.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["task", "ssh-run-next", "--db", str(db)])
+
+    assert result.exit_code == 1
+    event = SQLiteStore(db).list_audit_events()[-1]
+    assert event.action == "ssh-run-next"
+    assert event.outcome == "failed"
+    assert event.details["task_id"] == task.task_id
+    assert event.details["failure_reason"] == "ssh_connectivity"
+    assert event.details["stderr_preview"] == "No route to host"
+
+
 
 def test_task_ssh_run_next_executes_approved_pending_ssh_task(tmp_path, monkeypatch):
     runner = CliRunner()
@@ -141,3 +187,27 @@ def test_task_ssh_run_next_executes_approved_pending_ssh_task(tmp_path, monkeypa
     assert event.details["stdout_preview"] == "done"
     assert event.details["stderr_preview"] == ""
     assert event.details["failure_reason"] == "none"
+
+
+def test_audit_list_and_show_render_ssh_summary(tmp_path, monkeypatch):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node())
+    task = store.create_task(node_id="node_cli_ssh", command="systemctl restart app", risk="medium", created_by="hmn", executor="ssh")
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=255, stdout="", stderr="No route to host")
+
+    monkeypatch.setattr("hermes_managed_network.executor.subprocess.run", fake_run)
+
+    runner.invoke(app, ["task", "ssh-run-next", "--db", str(db)])
+
+    list_result = runner.invoke(app, ["audit", "list", "--db", str(db)])
+    assert list_result.exit_code == 0
+    assert "ssh: SSH 网络不通：No route to host" in list_result.stdout
+
+    show_result = runner.invoke(app, ["audit", "show", task.task_id, "--db", str(db)])
+    assert show_result.exit_code == 0
+    assert "subject: task:" + task.task_id in show_result.stdout
+    assert "ssh: SSH 网络不通：No route to host" in show_result.stdout
