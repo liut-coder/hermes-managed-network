@@ -29,7 +29,7 @@ def _ssh_label_value(labels: list[str], key: str) -> str:
     return ""
 
 
-def _ssh_target(task: Task, node) -> tuple[str, str, str]:
+def ssh_target_for_node(node) -> tuple[str, str, str]:
     host = node.ssh_host or _ssh_label_value(node.labels, "ssh-host") or (node.addresses[0] if node.addresses else "")
     user = node.ssh_user or _ssh_label_value(node.labels, "ssh-user") or "root"
     port = str(node.ssh_port or 22)
@@ -37,8 +37,15 @@ def _ssh_target(task: Task, node) -> tuple[str, str, str]:
     if node.ssh_port == 22 and label_port:
         port = label_port
     if not host:
-        raise ValueError(f"node {node.node_id} missing ssh host for task {task.task_id}")
+        raise ValueError(f"node {node.node_id} missing ssh host")
     return host, user, port
+
+
+def _ssh_target(task: Task, node) -> tuple[str, str, str]:
+    try:
+        return ssh_target_for_node(node)
+    except ValueError as exc:
+        raise ValueError(f"node {node.node_id} missing ssh host for task {task.task_id}") from exc
 
 
 def run_ssh_task(store: SQLiteStore, task_id: str, *, allow_risk: set[str] | None = None, timeout_seconds: int = 120) -> Task:

@@ -16,7 +16,7 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
-from .executor import PlaybookExecutor, SSHExecutionError, run_ssh_task
+from .executor import PlaybookExecutor, SSHExecutionError, run_ssh_task, ssh_target_for_node
 from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
@@ -758,6 +758,30 @@ def doctor_node(
         "信任级别": node.trust_level in {"A", "B", "C"},
         "权限包": bool(node.permission_bundles),
     }
+    ssh_connectivity = {"configured": False, "reachable": False, "host": "", "user": "", "port": node.ssh_port, "exit_code": None, "stderr": ""}
+    if node.status == "managed":
+        try:
+            host, user, port = ssh_target_for_node(node)
+            ssh_connectivity.update({"configured": True, "host": host, "user": user, "port": int(port)})
+            completed = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", port, f"{user}@{host}", "true"],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=8,
+            )
+            ssh_connectivity.update(
+                {
+                    "reachable": completed.returncode == 0,
+                    "exit_code": completed.returncode,
+                    "stderr": (completed.stderr or "").strip(),
+                }
+            )
+        except ValueError as exc:
+            ssh_connectivity["stderr"] = str(exc)
+        except subprocess.TimeoutExpired:
+            ssh_connectivity.update({"configured": True, "exit_code": 124, "stderr": "ssh connectivity check timed out"})
+    checks["SSH 连通"] = ssh_connectivity["configured"] and ssh_connectivity["reachable"]
     outcome = "ok" if all(checks.values()) else "warn"
     typer.echo(f"doctor: {node.node_id}")
     typer.echo(f"host: {node.hostname}")
@@ -766,14 +790,22 @@ def doctor_node(
     typer.echo(f"ssh_port: {node.ssh_port}")
     for name, ok in checks.items():
         typer.echo(f"{name}: {'OK' if ok else 'WARN'}")
-    typer.echo("远程执行: 未启用（下一步接 SSH/worker 通道）")
+    if ssh_connectivity["configured"]:
+        summary = f"{ssh_connectivity['user']}@{ssh_connectivity['host']}:{ssh_connectivity['port']}"
+        if ssh_connectivity["reachable"]:
+            typer.echo(f"SSH 连通: OK {summary}")
+        else:
+            detail = ssh_connectivity["stderr"] or f"exit_code={ssh_connectivity['exit_code']}"
+            typer.echo(f"SSH 连通: WARN {summary} {detail}")
+    else:
+        typer.echo(f"SSH 连通: WARN {ssh_connectivity['stderr'] or '未配置'}")
     store.record_audit(
         event_type="node",
         subject_type="node",
         subject_id=node.node_id,
         action="doctor",
         outcome=outcome,
-        details={"checks": checks, "remote_execution": "not_configured"},
+        details={"checks": checks, "ssh_connectivity": ssh_connectivity},
     )
     if outcome != "ok":
         raise typer.Exit(1)
@@ -1107,14 +1139,38 @@ def ssh_run_next(db: Path = typer.Option(None, "--db", help="SQLite 数据库路
     store = _store(db)
     candidates = [task for task in store.list_tasks() if task.executor == "ssh" and task.status == "pending"]
     if not candidates:
+        store.record_audit(
+            event_type="task",
+            subject_type="task",
+            subject_id="ssh-run-next",
+            action="ssh-run-next",
+            outcome="empty",
+            details={"pending_ssh_tasks": 0},
+        )
         typer.echo("没有待执行的 SSH 任务。")
         raise typer.Exit(1)
     task = sorted(candidates, key=lambda item: item.created_at)[0]
     try:
         completed = run_ssh_task(store, task.task_id, allow_risk={"low", "medium", "high", "critical"})
     except SSHExecutionError as exc:
+        store.record_audit(
+            event_type="task",
+            subject_type="task",
+            subject_id=task.task_id,
+            action="ssh-run-next",
+            outcome="failed",
+            details={"task_id": task.task_id, "node_id": task.node_id, "status": "failed", "exit_code": exc.exit_code},
+        )
         typer.echo(f"SSH 执行失败: {exc}")
         raise typer.Exit(1)
+    store.record_audit(
+        event_type="task",
+        subject_type="task",
+        subject_id=completed.task_id,
+        action="ssh-run-next",
+        outcome="ok",
+        details={"task_id": completed.task_id, "node_id": completed.node_id, "status": completed.status, "exit_code": completed.exit_code},
+    )
     typer.echo(f"已执行任务: {completed.task_id}")
     typer.echo(f"节点: {completed.node_id}")
     typer.echo(f"退出码: {completed.exit_code}")

@@ -63,6 +63,22 @@ def test_task_ssh_run_next_returns_non_zero_when_no_pending_ssh_task(tmp_path):
     assert "没有待执行的 SSH 任务" in result.stdout
 
 
+def test_task_ssh_run_next_records_no_task_audit(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node())
+
+    result = runner.invoke(app, ["task", "ssh-run-next", "--db", str(db)])
+
+    assert result.exit_code == 1
+    event = store.list_audit_events()[-1]
+    assert event.action == "ssh-run-next"
+    assert event.outcome == "empty"
+    assert event.details["pending_ssh_tasks"] == 0
+
+
+
 def test_task_ssh_run_next_executes_approved_pending_ssh_task(tmp_path, monkeypatch):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -90,3 +106,8 @@ def test_task_ssh_run_next_executes_approved_pending_ssh_task(tmp_path, monkeypa
     task = SQLiteStore(db).list_tasks()[0]
     assert task.executor == "ssh"
     assert task.status == "succeeded"
+    event = SQLiteStore(db).list_audit_events()[-1]
+    assert event.action == "ssh-run-next"
+    assert event.outcome == "ok"
+    assert event.details["task_id"] == task.task_id
+    assert event.details["status"] == "succeeded"

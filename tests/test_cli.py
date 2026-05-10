@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -443,7 +444,7 @@ def test_root_menu_can_show_node_status(tmp_path, monkeypatch):
 
 
 
-def test_node_doctor_auto_selects_and_records_audit(tmp_path):
+def test_node_doctor_auto_selects_and_records_audit(tmp_path, monkeypatch):
     from hermes_managed_network.inventory import Node
 
     runner = CliRunner()
@@ -464,6 +465,11 @@ def test_node_doctor_auto_selects_and_records_audit(tmp_path):
         )
     )
 
+    monkeypatch.setattr(
+        "hermes_managed_network.cli.subprocess.run",
+        lambda command, **kwargs: SimpleNamespace(returncode=0, stdout="pong\n", stderr=""),
+    )
+
     result = runner.invoke(app, ["node", "doctor", "--db", str(db)])
 
     assert result.exit_code == 0
@@ -478,6 +484,81 @@ def test_node_doctor_auto_selects_and_records_audit(tmp_path):
     assert events[-1].action == "doctor"
     assert events[-1].subject_id == "node_doctor"
     assert events[-1].outcome == "ok"
+
+
+def test_node_doctor_reports_ssh_connectivity_ok(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_doctor_ssh_ok",
+            fingerprint="fp",
+            hostname="doctor-ssh-ok",
+            addresses=["10.0.0.10"],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+            ssh_host="100.64.0.10",
+            ssh_user="root",
+            ssh_port=2222,
+        )
+    )
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="pong\n", stderr="")
+
+    monkeypatch.setattr("hermes_managed_network.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["node", "doctor", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "SSH 连通: OK" in result.stdout
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "doctor"
+    assert events[-1].details["ssh_connectivity"]["reachable"] is True
+    assert events[-1].details["ssh_connectivity"]["host"] == "100.64.0.10"
+
+
+
+def test_node_doctor_reports_ssh_connectivity_warn(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_doctor_ssh_warn",
+            fingerprint="fp",
+            hostname="doctor-ssh-warn",
+            addresses=["10.0.0.11"],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+            ssh_host="100.64.0.11",
+            ssh_user="root",
+            ssh_port=2223,
+        )
+    )
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=255, stdout="", stderr="Connection timed out")
+
+    monkeypatch.setattr("hermes_managed_network.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["node", "doctor", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "SSH 连通: WARN" in result.stdout
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "doctor"
+    assert events[-1].outcome == "warn"
+    assert events[-1].details["ssh_connectivity"]["reachable"] is False
+    assert events[-1].details["ssh_connectivity"]["exit_code"] == 255
+
 
 
 def test_node_doctor_reports_missing_permission_bundle(tmp_path):
@@ -524,6 +605,11 @@ def test_root_menu_can_run_node_doctor(tmp_path, monkeypatch):
             ssh_user="deploy",
             ssh_port=2206,
         )
+    )
+
+    monkeypatch.setattr(
+        "hermes_managed_network.cli.subprocess.run",
+        lambda command, **kwargs: SimpleNamespace(returncode=0, stdout="pong\n", stderr=""),
     )
 
     result = runner.invoke(app, [], input="5\n")
