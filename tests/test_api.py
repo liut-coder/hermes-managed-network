@@ -196,6 +196,7 @@ def test_task_lifecycle_assigns_next_task_and_records_result(tmp_path):
     assert next_response.status_code == 200
     assert next_response.json()["task_id"] == task.task_id
     assert next_response.json()["command"] == "uptime"
+    assert next_response.json()["signature"].startswith("hmac-sha256:")
     assert store.load_task(task.task_id).status == "running"
 
     result_response = client.post(

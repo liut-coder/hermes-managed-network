@@ -156,13 +156,32 @@ submit_result() {
   curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/tasks/${task_id}/result"     -H 'Content-Type: application/json'     --data "{\"fingerprint\":${fingerprint_json},\"exit_code\":${exit_code},\"stdout\":${stdout_json},\"stderr\":${stderr_json}}" >/dev/null
 }
 
+verify_task_signature() {
+  local task_id="$1" risk="$2" command="$3" signature="$4"
+  TASK_ID="$task_id" TASK_RISK="$risk" TASK_COMMAND="$command" TASK_SIGNATURE="$signature" NODE_FINGERPRINT="$HERMES_NODE_FINGERPRINT" python3 - <<'PY'
+import hashlib
+import hmac
+import os
+
+message = f"{os.environ['TASK_ID']}\n{os.environ['TASK_RISK']}\n{os.environ['TASK_COMMAND']}".encode()
+expected = "hmac-sha256:" + hmac.new(os.environ["NODE_FINGERPRINT"].encode(), message, hashlib.sha256).hexdigest()
+raise SystemExit(0 if hmac.compare_digest(expected, os.environ["TASK_SIGNATURE"]) else 1)
+PY
+}
+
 run_once() {
   heartbeat
-  local response task_id command stdout_file stderr_file exit_code
+  local response task_id command risk signature stdout_file stderr_file exit_code
   response="$(poll_task)"
   task_id="$(printf '%s' "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("task_id", ""))')"
   [ -z "$task_id" ] && exit 0
   command="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["command"])')"
+  risk="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("risk", "unknown"))')"
+  signature="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("signature", ""))')"
+  if [ -n "$signature" ] && ! verify_task_signature "$task_id" "$risk" "$command" "$signature"; then
+    submit_result "$task_id" 127 "" "task signature mismatch"
+    exit 0
+  fi
   if [ "$HMN_ENABLE_EXEC" != "1" ]; then
     submit_result "$task_id" 126 "" "execution disabled; set HMN_ENABLE_EXEC=1"
     exit 0

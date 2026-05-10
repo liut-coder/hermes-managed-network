@@ -36,7 +36,7 @@
 ## v0.4：Worker 模式
 
 - [x] worker pull task
-- [ ] task signing
+- [x] task signing
 - [x] heartbeat
 - [x] node token rotation
 - [x] offline node handling

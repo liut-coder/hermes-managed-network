@@ -87,3 +87,11 @@ def test_worker_json_payloads_escape_special_characters(tmp_path):
     assert payloads["next"]["fingerprint"] == 'sha256:quote" slash \\ line\\n tab\\t snowman ☃'
     assert payloads["result"]["fingerprint"] == 'sha256:quote" slash \\ line\\n tab\\t snowman ☃'
     assert payloads["result"]["stderr"] == "execution disabled; set HMN_ENABLE_EXEC=1"
+
+
+def test_worker_verifies_task_signature_before_execution():
+    script = Path("src/hermes_managed_network/assets/worker.sh").read_text()
+
+    assert "verify_task_signature" in script
+    assert "task signature mismatch" in script
+    assert "hmac.compare_digest" in script

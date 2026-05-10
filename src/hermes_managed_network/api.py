@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from typing import Any
 
+from .signing import sign_task_payload
 from .storage import SQLiteStore
 from .version import current_version_info, is_worker_compatible
 
@@ -66,6 +67,7 @@ class TaskResponse(BaseModel):
     task_id: str
     command: str
     risk: str
+    signature: str
 
 
 class NoTaskResponse(BaseModel):
@@ -208,7 +210,17 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         task = store.next_pending_task(node_id)
         if task is None:
             return NoTaskResponse(task=None)
-        return TaskResponse(task_id=task.task_id, command=task.command, risk=task.risk)
+        return TaskResponse(
+            task_id=task.task_id,
+            command=task.command,
+            risk=task.risk,
+            signature=sign_task_payload(
+                node_fingerprint=node.fingerprint,
+                task_id=task.task_id,
+                command=task.command,
+                risk=task.risk,
+            ),
+        )
 
     @app.post("/api/v1/tasks/{task_id}/result", response_model=TaskResultResponse)
     def task_result(task_id: str, request: TaskResultRequest) -> TaskResultResponse:
