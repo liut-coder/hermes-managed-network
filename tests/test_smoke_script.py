@@ -61,3 +61,34 @@ def test_remote_e2e_smoke_script_documents_repeatable_p1_gate():
     assert "BOT_TOKEN" not in script
     assert "example.invalid" in Path("docs/deployment.md").read_text(encoding="utf-8")
     assert "scripts/smoke-remote-e2e.sh" in Path("docs/roadmap.md").read_text(encoding="utf-8")
+
+
+def test_telegram_approval_smoke_script_documents_real_bot_callback_gate():
+    script_path = Path("scripts/smoke-telegram-approval.sh")
+
+    assert script_path.exists()
+    script = script_path.read_text(encoding="utf-8")
+
+    assert script.startswith("#!/usr/bin/env bash")
+    assert "set -euo pipefail" in script
+    assert "HMN_APPROVAL_GATEWAY_TOKEN" in script
+    assert "HMN_TELEGRAM_BOT_TOKEN" in script
+    assert "HMN_APPROVAL_GATEWAY_TARGET" in script
+    assert "HMN_TELEGRAM_CHAT_ID" in script
+    assert "hmn-server" in script
+    assert "/healthz" in script
+    assert "/api/v1/version" in script
+    assert "hmn task run" in script
+    assert "--risk high" in script
+    assert "approval-gateway poll-once --client telegram" in script
+    assert "sent=1" in script
+    assert "callbacks=" in script
+    assert "approved=1" in script
+    assert "hmn approval list" in script
+    assert "hmn task list" in script
+    assert "getUpdates" in script
+    assert "answerCallbackQuery" in script
+    assert "editMessageReplyMarkup" in script
+    assert "BOT_TOKEN=" not in script
+    assert "<bot-token>" in Path("docs/deployment.md").read_text(encoding="utf-8")
+    assert "scripts/smoke-telegram-approval.sh" in Path("docs/roadmap.md").read_text(encoding="utf-8")

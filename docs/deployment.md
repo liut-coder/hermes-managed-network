@@ -241,6 +241,39 @@ HMN_PUBLIC_URL=http://master.example.invalid:8765 \
 - Worker 不需要公网入站，只需要能主动访问 Master
 - 默认 disabled-exec 是预期行为；只有明确需要时才在 Worker 侧设置 `HMN_ENABLE_EXEC=1`
 
+
+## Telegram approval gateway 真实 bot smoke
+
+用于验证真实 Telegram Bot 审批卡片发送、按钮回调轮询和审批分发闭环。脚本会启动临时本地 HMN controller，创建 fresh high-risk approval card，然后等待操作者点击新卡片上的允许按钮。
+
+```bash
+HMN_APPROVAL_GATEWAY_TOKEN=<bot-token> \
+HMN_APPROVAL_GATEWAY_TARGET=<chat-id> \
+./scripts/smoke-telegram-approval.sh
+```
+
+兼容旧环境变量名：
+
+- `HMN_TELEGRAM_BOT_TOKEN`
+- `HMN_TELEGRAM_CHAT_ID`
+
+覆盖内容：
+
+- `hmn-server` 临时 controller 启动
+- `/healthz` 和 `/api/v1/version` 就绪检查
+- 模拟节点 join / confirm
+- `hmn task run --risk high` 生成 fresh approval outbox
+- `hmn approval-gateway poll-once --client telegram` 发送真实审批卡片
+- Telegram `getUpdates` 收到 callback
+- 成功后 `answerCallbackQuery` 并通过 `editMessageReplyMarkup` 清理 stale buttons
+- `hmn approval list` 与 `hmn task list` 验证审批已分发任务
+
+注意事项：
+
+- 不要复用旧卡片；每次 smoke 都应生成新的审批卡片。
+- Bot token 和 chat id 只通过环境变量提供，不写入文档、脚本或 shell 历史示例。
+- 该 bot token 不应和主 Hermes Telegram gateway 共用，避免多个 `getUpdates` consumer 抢更新。
+
 ## 更新已安装主控
 
 再次执行仓库短安装脚本即可：
