@@ -114,9 +114,9 @@
 
 ## v1.0：生产就绪
 
-- [ ] `hmn doctor` 覆盖安装、升级、回滚和服务状态检查
-- [ ] installer 写入 upgrade manifest / backup metadata
-- [ ] installer upgrade / rollback 说明闭环
-- [ ] 默认更新入口指向 main 分支 raw 安装脚本
+- [x] `hmn doctor` 覆盖安装、升级、回滚和服务状态检查
+- [x] installer 写入 upgrade manifest / backup metadata
+- [x] installer upgrade / rollback 说明闭环
+- [x] 默认更新入口指向 main 分支 raw 安装脚本
 - [x] 生产 readiness checklist 文档化：`docs/production-readiness.md`
 - [ ] 真实组件驱动闭环：monitor / backup / docs-sync 之一先落地
