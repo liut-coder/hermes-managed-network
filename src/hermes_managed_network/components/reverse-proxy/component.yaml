@@ -1,0 +1,76 @@
+id: reverse-proxy
+name: Reverse Proxy
+version: 0.1.0
+api_version: 1
+summary: HTTP/HTTPS reverse proxy component
+risk: medium
+
+requires:
+  runtime_profiles:
+    - full-worker
+    - proxy-managed
+  service_managers:
+    - systemd
+  capabilities:
+    - network.bind
+    - file.write
+    - service.manage
+  ports:
+    - 80
+    - 443
+
+provides:
+  services:
+    - reverse-proxy
+  commands:
+    - proxy.site.create
+    - proxy.site.remove
+    - proxy.reload
+
+permissions:
+  observe:
+    - component.status
+    - component.verify
+  operate:
+    - component.configure
+    - component.restart
+  admin:
+    - component.install
+    - component.uninstall
+
+config_schema:
+  type: object
+  required:
+    - domain
+    - upstream
+  properties:
+    domain:
+      type: string
+    upstream:
+      type: string
+    tls:
+      type: boolean
+      default: true
+
+drivers:
+  default: caddy
+  options:
+    - caddy
+    - nginx
+    - traefik
+
+playbooks:
+  install: playbooks/install.yaml
+  configure: playbooks/configure.yaml
+  verify: playbooks/verify.yaml
+  uninstall: playbooks/uninstall.yaml
+
+health:
+  checks:
+    - type: command
+      command: systemctl is-active caddy
+    - type: http
+      url: https://{{ domain }}/healthz
+
+audit:
+  category: component.reverse-proxy

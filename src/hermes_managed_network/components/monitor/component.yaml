@@ -1,0 +1,82 @@
+id: monitor
+name: Monitor
+version: 0.1.0
+api_version: 1
+summary: Lightweight node observability component built on HMN heartbeat facts first
+risk: low
+
+requires:
+  runtime_profiles:
+    - full-worker
+    - lite-worker
+    - beacon-only
+  service_managers:
+    - systemd
+    - openrc
+    - procd
+    - cron
+    - loop
+    - none
+  capabilities:
+    - metrics.read
+    - node.heartbeat
+  ports: []
+
+provides:
+  services:
+    - monitor
+  commands:
+    - monitor.status
+    - monitor.verify
+    - monitor.report
+
+permissions:
+  observe:
+    - component.status
+    - component.verify
+    - monitor.status
+  operate:
+    - monitor.configure
+  admin:
+    - component.install
+    - component.uninstall
+
+config_schema:
+  type: object
+  required: []
+  properties:
+    heartbeat_max_age_seconds:
+      type: integer
+      default: 300
+      description: Maximum accepted heartbeat age before the node is considered stale
+    collect_processes:
+      type: boolean
+      default: false
+      description: Collect lightweight process facts when the worker supports it
+    collect_disk:
+      type: boolean
+      default: true
+      description: Collect filesystem usage facts when available
+
+drivers:
+  default: heartbeat
+  options:
+    - heartbeat
+    - node-exporter
+    - agent-metrics
+
+playbooks:
+  install: playbooks/install.yaml
+  configure: playbooks/configure.yaml
+  verify: playbooks/verify.yaml
+  uninstall: playbooks/uninstall.yaml
+
+health:
+  checks:
+    - type: heartbeat
+      max_age_seconds: "{{ heartbeat_max_age_seconds }}"
+    - type: worker_protocol
+      compatible: true
+
+audit:
+  category: component.monitor

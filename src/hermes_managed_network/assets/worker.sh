@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HMN_DIR="${HMN_DIR:-/etc/hermes-managed-network}"
+ENV_FILE="${HMN_ENV_FILE:-$HMN_DIR/node.env}"
+: "${HMN_ENABLE_EXEC:=0}"
+: "${HMN_WORKER_MODE:=worker}"
+: "${HMN_BEACON_ONLY:=0}"
+HMN_WORKER_PROTOCOL_VERSION="${HMN_WORKER_PROTOCOL_VERSION:-0.1}"
+
+if [ ! -r "$ENV_FILE" ]; then
+  echo "missing node env: $ENV_FILE" >&2
+  exit 1
+fi
+. "$ENV_FILE"
+: "${HERMES_MASTER_URL:?missing HERMES_MASTER_URL}"
+: "${HERMES_NODE_ID:?missing HERMES_NODE_ID}"
+: "${HERMES_NODE_FINGERPRINT:?missing HERMES_NODE_FINGERPRINT}"
+
+need_command() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 1; }; }
+need_command curl
+need_command python3
+
+json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
+json_value() { printf '%s' "$1" | json_escape; }
+
+is_beacon_only() {
+  [ "${HMN_BEACON_ONLY:-0}" = "1" ] || [ "${HMN_WORKER_MODE:-worker}" = "beacon" ] || [ "${HMN_WORKER_MODE:-worker}" = "beacon-only" ]
+}
+
+collect_worker_facts() {
+  local beacon_only=0 effective_mode="${HMN_WORKER_MODE:-worker}"
+  if is_beacon_only; then
+    beacon_only=1
+    effective_mode="beacon"
+  fi
+  HMN_ENABLE_EXEC_VALUE="$HMN_ENABLE_EXEC" HMN_WORKER_MODE_VALUE="$effective_mode" HMN_BEACON_ONLY_VALUE="$beacon_only" HMN_WORKER_PROTOCOL_VERSION_VALUE="$HMN_WORKER_PROTOCOL_VERSION" python3 - <<'PY'
+import json
+import os
+
+
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def load_average():
+    text = read_text("/proc/loadavg")
+    if text:
+        parts = text.split()
+        if len(parts) >= 3:
+            return {"1m": parts[0], "5m": parts[1], "15m": parts[2]}
+    try:
+        one, five, fifteen = os.getloadavg()
+        return {"1m": f"{one:.2f}", "5m": f"{five:.2f}", "15m": f"{fifteen:.2f}"}
+    except (AttributeError, OSError):
+        return {}
+
+
+def uptime_seconds():
+    text = read_text("/proc/uptime")
+    if not text:
+        return None
+    try:
+        return int(float(text.split()[0]))
+    except (IndexError, ValueError):
+        return None
+
+
+def memory_summary():
+    text = read_text("/proc/meminfo")
+    values = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, raw = line.split(":", 1)
+        parts = raw.strip().split()
+        if parts and parts[0].isdigit():
+            values[key] = int(parts[0])
+    if not values:
+        return {}
+    return {
+        "total_kb": values.get("MemTotal"),
+        "available_kb": values.get("MemAvailable"),
+        "free_kb": values.get("MemFree"),
+    }
+
+
+def disk_summary(path="/"):
+    try:
+        usage = os.statvfs(path)
+    except OSError:
+        return {}
+    total = usage.f_blocks * usage.f_frsize
+    free = usage.f_bavail * usage.f_frsize
+    used = total - free
+    return {"path": path, "total_bytes": total, "used_bytes": used, "free_bytes": free}
+
+
+def has_command(name):
+    path = os.environ.get("PATH", "")
+    for directory in path.split(os.pathsep):
+        if directory and os.path.isfile(os.path.join(directory, name)) and os.access(os.path.join(directory, name), os.X_OK):
+            return True
+    return False
+
+
+def capability_summary():
+    disk = disk_summary("/")
+    memory = memory_summary()
+    return {
+        "os_family": "linux" if os.path.exists("/proc") else "unknown",
+        "has_sh": has_command("sh"),
+        "has_bash": has_command("bash"),
+        "has_curl": has_command("curl"),
+        "has_wget": has_command("wget"),
+        "has_python3": has_command("python3"),
+        "has_busybox": has_command("busybox"),
+        "has_systemctl": has_command("systemctl"),
+        "has_openrc": has_command("openrc"),
+        "has_procd": has_command("procd"),
+        "has_launchctl": has_command("launchctl"),
+        "has_powershell": has_command("powershell"),
+        "has_crond": has_command("crond"),
+        "writable_etc": os.access("/etc", os.W_OK),
+        "writable_tmp": os.access("/tmp", os.W_OK),
+        "memory_mb": (memory.get("total_kb") // 1024) if memory.get("total_kb") else None,
+        "disk_free_mb": (disk.get("free_bytes") // 1024 // 1024) if disk.get("free_bytes") else None,
+    }
+
+facts = {
+    "worker_protocol_version": os.environ.get("HMN_WORKER_PROTOCOL_VERSION_VALUE", ""),
+    "worker_version": os.environ.get("HMN_WORKER_VERSION", "unknown"),
+    "worker_mode": os.environ.get("HMN_WORKER_MODE_VALUE", "worker"),
+    "task_policy": "heartbeat-only" if os.environ.get("HMN_BEACON_ONLY_VALUE") == "1" else "poll-tasks",
+    "can_poll_tasks": os.environ.get("HMN_BEACON_ONLY_VALUE") != "1",
+    "exec_enabled": os.environ.get("HMN_ENABLE_EXEC_VALUE") == "1" and os.environ.get("HMN_BEACON_ONLY_VALUE") != "1",
+    "uptime": {"seconds": uptime_seconds()},
+    "load_average": load_average(),
+    "memory": memory_summary(),
+    "disk": disk_summary("/"),
+    "capabilities": capability_summary(),
+}
+print(json.dumps(facts, separators=(",", ":")))
+PY
+}
+
+heartbeat() {
+  local facts fingerprint_json
+  facts="$(collect_worker_facts)"
+  fingerprint_json="$(json_value "$HERMES_NODE_FINGERPRINT")"
+  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/heartbeat"     -H 'Content-Type: application/json'     --data "{\"fingerprint\":${fingerprint_json},\"status\":\"ok\",\"facts\":${facts}}" >/dev/null
+}
+
+poll_task() {
+  local fingerprint_json protocol_version_json
+  fingerprint_json="$(json_value "$HERMES_NODE_FINGERPRINT")"
+  protocol_version_json="$(json_value "$HMN_WORKER_PROTOCOL_VERSION")"
+  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/tasks/next"     -H 'Content-Type: application/json'     --data "{\"fingerprint\":${fingerprint_json},\"worker_protocol_version\":${protocol_version_json}}"
+}
+
+submit_result() {
+  local task_id="$1" exit_code="$2" fingerprint_json stdout_json stderr_json
+  fingerprint_json="$(json_value "$HERMES_NODE_FINGERPRINT")"
+  stdout_json="$(json_value "$3")"
+  stderr_json="$(json_value "$4")"
+  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/tasks/${task_id}/result"     -H 'Content-Type: application/json'     --data "{\"fingerprint\":${fingerprint_json},\"exit_code\":${exit_code},\"stdout\":${stdout_json},\"stderr\":${stderr_json}}" >/dev/null
+}
+
+verify_task_signature() {
+  local task_id="$1" risk="$2" command="$3" signature="$4"
+  TASK_ID="$task_id" TASK_RISK="$risk" TASK_COMMAND="$command" TASK_SIGNATURE="$signature" NODE_FINGERPRINT="$HERMES_NODE_FINGERPRINT" python3 - <<'PY'
+import hashlib
+import hmac
+import os
+
+message = f"{os.environ['TASK_ID']}\n{os.environ['TASK_RISK']}\n{os.environ['TASK_COMMAND']}".encode()
+expected = "hmac-sha256:" + hmac.new(os.environ["NODE_FINGERPRINT"].encode(), message, hashlib.sha256).hexdigest()
+raise SystemExit(0 if hmac.compare_digest(expected, os.environ["TASK_SIGNATURE"]) else 1)
+PY
+}
+
+write_fingerprint_env() {
+  local new_fingerprint="$1"
+  ENV_FILE_PATH="$ENV_FILE" NEW_FINGERPRINT="$new_fingerprint" python3 - <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["ENV_FILE_PATH"])
+new_line = f'HERMES_NODE_FINGERPRINT="{os.environ["NEW_FINGERPRINT"]}"'
+lines = path.read_text().splitlines()
+updated = False
+for index, line in enumerate(lines):
+    if line.startswith("HERMES_NODE_FINGERPRINT="):
+        lines[index] = new_line
+        updated = True
+if not updated:
+    lines.append(new_line)
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text("\n".join(lines) + "\n")
+tmp.chmod(0o600)
+tmp.replace(path)
+PY
+}
+
+rotate_fingerprint_from_task() {
+  local task_id="$1" new_fingerprint="$2" old_fingerprint="$HERMES_NODE_FINGERPRINT" old_json new_json
+  old_json="$(json_value "$old_fingerprint")"
+  new_json="$(json_value "$new_fingerprint")"
+  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/rotate-fingerprint"     -H 'Content-Type: application/json'     --data "{\"fingerprint\":${old_json},\"new_fingerprint\":${new_json}}" >/dev/null
+  write_fingerprint_env "$new_fingerprint"
+  HERMES_NODE_FINGERPRINT="$new_fingerprint"
+  submit_result "$task_id" 0 "fingerprint rotated" ""
+}
+
+run_once() {
+  heartbeat
+  if is_beacon_only; then
+    exit 0
+  fi
+  local response task_id command risk signature stdout_file stderr_file exit_code
+  response="$(poll_task)"
+  task_id="$(printf '%s' "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("task_id", ""))')"
+  [ -z "$task_id" ] && exit 0
+  command="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["command"])')"
+  risk="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("risk", "unknown"))')"
+  signature="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("signature", ""))')"
+  if [ -n "$signature" ] && ! verify_task_signature "$task_id" "$risk" "$command" "$signature"; then
+    submit_result "$task_id" 127 "" "task signature mismatch"
+    exit 0
+  fi
+  case "$command" in
+    hmn:rotate-fingerprint\ *)
+      rotate_fingerprint_from_task "$task_id" "${command#hmn:rotate-fingerprint }"
+      exit 0
+      ;;
+  esac
+  if [ "$HMN_ENABLE_EXEC" != "1" ]; then
+    submit_result "$task_id" 126 "" "execution disabled; set HMN_ENABLE_EXEC=1"
+    exit 0
+  fi
+  stdout_file="$(mktemp)"; stderr_file="$(mktemp)"
+  set +e
+  bash -lc "$command" >"$stdout_file" 2>"$stderr_file"
+  exit_code=$?
+  set -e
+  submit_result "$task_id" "$exit_code" "$(cat "$stdout_file")" "$(cat "$stderr_file")"
+  rm -f "$stdout_file" "$stderr_file"
+}
+
+run_once "$@"

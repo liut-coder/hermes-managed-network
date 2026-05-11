@@ -1,0 +1,87 @@
+id: headscale-server
+name: Headscale Server
+version: 0.1.0
+api_version: 1
+summary: Bundled Headscale control server for HMN-managed private overlay networking
+risk: high
+
+requires:
+  runtime_profiles:
+    - full-worker
+  service_managers:
+    - systemd
+  capabilities:
+    - network.listen
+    - file.write
+    - service.manage
+    - package.install
+  ports:
+    - 8080
+
+provides:
+  services:
+    - headscale
+  commands:
+    - headscale.install
+    - headscale.configure
+    - headscale.apikey.create
+    - headscale.preauthkey.create
+
+permissions:
+  observe:
+    - network.status
+    - component.verify
+  operate:
+    - network.preauthkey.create
+    - component.configure
+  admin:
+    - component.install
+    - component.uninstall
+    - network.tags.set
+    - network.acl.update
+
+config_schema:
+  type: object
+  required:
+    - server_url
+    - listen_addr
+    - namespace
+  properties:
+    server_url:
+      type: string
+      description: Public Headscale server URL, for example https://hs.example.com
+    listen_addr:
+      type: string
+      default: 127.0.0.1:8080
+      description: Local listen address for Headscale service
+    namespace:
+      type: string
+      default: misk
+      description: Default Headscale user/namespace for HMN nodes
+    database_path:
+      type: string
+      default: /var/lib/headscale/db.sqlite
+    config_path:
+      type: string
+      default: /etc/headscale/config.yaml
+
+drivers:
+  default: systemd
+  options:
+    - systemd
+
+playbooks:
+  install: playbooks/install.yaml
+  configure: playbooks/configure.yaml
+  verify: playbooks/verify.yaml
+  uninstall: playbooks/uninstall.yaml
+
+health:
+  checks:
+    - type: http
+      url: "{{ server_url }}/health"
+    - type: command
+      command: headscale version
+
+audit:
+  category: component.headscale-server
