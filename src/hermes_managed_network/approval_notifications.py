@@ -24,16 +24,31 @@ def _redact_command(command: str, *, max_length: int = 80) -> str:
 def build_approval_card(approval: ApprovalRequest) -> ApprovalCard:
     node_id = str(approval.details.get("node_id", "未知节点"))
     command = _redact_command(str(approval.details.get("command", "")))
-    text = "\n".join(
-        [
-            "⚠️ 高风险审批",
-            f"审批: `{approval.approval_id}`",
-            f"风险: `{approval.risk}`",
-            f"动作: `{approval.action}`",
-            f"节点: `{node_id}`",
-            f"命令: `{command}`" if command else "命令: `(无)`",
-        ]
-    )
+    lines = [
+        "⚠️ 高风险审批",
+        f"审批: `{approval.approval_id}`",
+        f"风险: `{approval.risk}`",
+        f"动作: `{approval.action}`",
+    ]
+    if approval.subject_type == "network_acl" and approval.action == "network.acl.apply":
+        diff = str(approval.details.get("diff", ""))
+        if len(diff) > 900:
+            diff = diff[:899] + "…"
+        lines.extend(
+            [
+                f"ACL: `{approval.details.get('current_path', approval.subject_id)}`",
+                "Diff:",
+                f"```diff\n{diff}\n```" if diff else "`(无 diff)`",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"节点: `{node_id}`",
+                f"命令: `{command}`" if command else "命令: `(无)`",
+            ]
+        )
+    text = "\n".join(lines)
     return ApprovalCard(
         text=text,
         buttons=[

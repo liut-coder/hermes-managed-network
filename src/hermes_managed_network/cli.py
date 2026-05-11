@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -33,6 +34,7 @@ from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
+from .network_acl import dispatch_approved_network_acl_apply, sha256_text
 from .storage import SQLiteStore
 from .approval_gateway import (
     ApprovalGatewayClientConfig,
@@ -786,8 +788,59 @@ def _dispatch_approved_network_tag_update(store: SQLiteStore, approval_id: str) 
 
 network_node_app = typer.Typer(help="管理网络节点")
 network_tags_app = typer.Typer(help="管理网络节点 tag")
+network_acl_app = typer.Typer(help="管理 Headscale ACL 文件审批")
 network_app.add_typer(network_node_app, name="node")
 network_node_app.add_typer(network_tags_app, name="tags")
+network_app.add_typer(network_acl_app, name="acl")
+
+
+@network_acl_app.command("plan")
+def network_acl_plan(
+    current: Path = typer.Option(..., "--current", help="当前 Headscale ACL 文件路径"),
+    proposed: Path = typer.Option(..., "--proposed", help="拟应用 Headscale ACL 文件路径"),
+    reload_command: str = typer.Option("systemctl reload headscale", "--reload-command", help="审批通过后执行的 reload 命令"),
+    verify_command: str = typer.Option("headscale nodes list", "--verify-command", help="审批通过后执行的验证命令"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    current_path = current.expanduser()
+    proposed_path = proposed.expanduser()
+    if not proposed_path.exists():
+        typer.echo(f"拟应用 ACL 文件不存在: {proposed_path}")
+        raise typer.Exit(1)
+    old_text = current_path.read_text(encoding="utf-8") if current_path.exists() else ""
+    new_text = proposed_path.read_text(encoding="utf-8")
+    diff = "".join(
+        difflib.unified_diff(
+            old_text.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile=str(current_path),
+            tofile=str(proposed_path),
+        )
+    )
+    if not diff:
+        typer.echo("ACL 无变化，无需审批。")
+        return
+    approval = _store(db).create_approval_request(
+        subject_type="network_acl",
+        subject_id=str(current_path),
+        action="network.acl.apply",
+        risk="critical",
+        requested_by="hmn",
+        details={
+            "provider": "headscale",
+            "current_path": str(current_path),
+            "proposed_path": str(proposed_path),
+            "diff": diff,
+            "old_sha256": sha256_text(old_text),
+            "new_sha256": sha256_text(new_text),
+            "reload_command": reload_command,
+            "verify_command": verify_command,
+        },
+    )
+    typer.echo(f"需要审批: {approval.approval_id}")
+    typer.echo("未写入 ACL；审批通过后才会 apply / reload / verify。")
+    typer.echo(diff)
+    raise typer.Exit(1)
 
 
 @network_tags_app.command("set")
@@ -1817,6 +1870,16 @@ def approve_approval(
             typer.echo("未更新网络 tags：审批详情不完整或节点不可用。")
             raise typer.Exit(1)
         typer.echo("已更新网络 tags")
+    if approval.subject_type == "network_acl" and approval.action == "network.acl.apply":
+        try:
+            dispatched = dispatch_approved_network_acl_apply(store, approval.approval_id)
+        except NetworkProviderError as exc:
+            typer.echo(f"Headscale ACL 应用失败: {exc}")
+            raise typer.Exit(1) from exc
+        if not dispatched:
+            typer.echo("未应用 Headscale ACL：审批详情不完整或文件不可用。")
+            raise typer.Exit(1)
+        typer.echo("已应用 Headscale ACL")
     if approval.subject_type == "component_run" and approval.action.startswith("component."):
         run = store.dispatch_approved_component_action(approval.approval_id)
         if run is None:

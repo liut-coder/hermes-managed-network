@@ -11,6 +11,8 @@ from typing import Any
 from .signing import sign_task_payload
 from .storage import Notification, SQLiteStore
 from .approval_telegram_flow import handle_telegram_approval_callback
+from .network_acl import dispatch_approved_network_acl_apply
+from .network_base import NetworkProviderError
 from .version import current_version_info, is_worker_compatible
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
@@ -333,6 +335,13 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         if status == "approved" and approval.subject_type == "component_run" and approval.action.startswith("component."):
             run = store.dispatch_approved_component_action(approval.approval_id)
             if run is None:
+                raise HTTPException(status_code=422, detail="approval cannot be dispatched")
+        if status == "approved" and approval.subject_type == "network_acl" and approval.action == "network.acl.apply":
+            try:
+                dispatched = dispatch_approved_network_acl_apply(store, approval.approval_id)
+            except NetworkProviderError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if not dispatched:
                 raise HTTPException(status_code=422, detail="approval cannot be dispatched")
         return ApprovalDecisionResponse(
             approval_id=approval.approval_id,

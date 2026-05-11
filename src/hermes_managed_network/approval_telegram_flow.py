@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from .approval_gateway import ApprovalCard
 from .approval_notifications import build_approval_card, parse_approval_callback
+from .network_acl import dispatch_approved_network_acl_apply
+from .network_base import NetworkProviderError
 from .storage import SQLiteStore
 
 
@@ -84,6 +86,23 @@ def handle_telegram_approval_callback(
                 approval_id=resolved.approval_id,
                 status=resolved.status,
                 message="已批准，但组件操作执行失败：审批详情不完整或动作不可调度。",
+            )
+    if target_status == "approved" and resolved.subject_type == "network_acl" and resolved.action == "network.acl.apply":
+        try:
+            dispatched = dispatch_approved_network_acl_apply(store, resolved.approval_id)
+        except NetworkProviderError as exc:
+            return TelegramApprovalCallbackResult(
+                ok=False,
+                approval_id=resolved.approval_id,
+                status=resolved.status,
+                message=f"已批准，但 Headscale ACL 应用失败：{exc}",
+            )
+        if not dispatched:
+            return TelegramApprovalCallbackResult(
+                ok=False,
+                approval_id=resolved.approval_id,
+                status=resolved.status,
+                message="已批准，但 Headscale ACL 应用失败：审批详情不完整或文件不可用。",
             )
 
     if target_status == "approved":

@@ -67,7 +67,7 @@
 - [x] network sync / preauth-key audit
 - [x] Headscale tag 写操作审批化
 - [x] installer 支持 Headscale bundled / external / disabled 配置入口
-- [ ] Headscale ACL 文件级更新审批化（更高风险 action，单独实现）
+- [x] Headscale ACL 文件级更新审批化（`hmn network acl plan` 生成 diff + critical approval，审批后 apply/reload/verify/audit）
 - [x] SSH executor 使用 Tailscale IP
 - [x] component verify 使用 Tailscale/Headscale `network_ip` 作为只读探测目标
 

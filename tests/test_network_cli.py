@@ -291,3 +291,88 @@ def test_approval_approve_dispatches_network_tag_update(tmp_path, monkeypatch):
     assert tag_event.details["old_tags"] == ["tag:old"]
     assert tag_event.details["requested_tags"] == ["tag:web"]
     assert tag_event.details["approval_id"] == approval.approval_id
+
+
+def test_network_acl_plan_creates_approval_with_diff_without_writing(tmp_path, monkeypatch):
+    db = tmp_path / "hmn.db"
+    current_acl = tmp_path / "acl.hujson"
+    proposed_acl = tmp_path / "acl.next.hujson"
+    config = tmp_path / "config.yaml"
+    _write_config(config)
+    monkeypatch.setenv("HMN_CONFIG", str(config))
+    current_acl.write_text('{"groups": {"group:admin": ["misk"]}}\n', encoding="utf-8")
+    proposed_acl.write_text('{"groups": {"group:admin": ["misk", "bot"]}}\n', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "network",
+            "acl",
+            "plan",
+            "--db",
+            str(db),
+            "--current",
+            str(current_acl),
+            "--proposed",
+            str(proposed_acl),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "需要审批" in result.stdout
+    assert current_acl.read_text(encoding="utf-8") == '{"groups": {"group:admin": ["misk"]}}\n'
+    approval = SQLiteStore(db).list_approval_requests(status="pending")[0]
+    assert approval.subject_type == "network_acl"
+    assert approval.subject_id == str(current_acl)
+    assert approval.action == "network.acl.apply"
+    assert approval.risk == "critical"
+    assert approval.details["current_path"] == str(current_acl)
+    assert approval.details["proposed_path"] == str(proposed_acl)
+    assert approval.details["old_sha256"] != approval.details["new_sha256"]
+    assert "-{" in approval.details["diff"]
+    assert "+{" in approval.details["diff"]
+
+
+def test_approval_approve_dispatches_network_acl_apply(tmp_path, monkeypatch):
+    db = tmp_path / "hmn.db"
+    current_acl = tmp_path / "acl.hujson"
+    proposed_acl = tmp_path / "acl.next.hujson"
+    config = tmp_path / "config.yaml"
+    _write_config(config)
+    monkeypatch.setenv("HMN_CONFIG", str(config))
+    current_acl.write_text('{"groups": {"group:admin": ["misk"]}}\n', encoding="utf-8")
+    proposed_acl.write_text('{"groups": {"group:admin": ["misk", "bot"]}}\n', encoding="utf-8")
+    plan_result = CliRunner().invoke(
+        app,
+        [
+            "network",
+            "acl",
+            "plan",
+            "--db",
+            str(db),
+            "--current",
+            str(current_acl),
+            "--proposed",
+            str(proposed_acl),
+            "--reload-command",
+            "printf reloaded > reload.txt",
+            "--verify-command",
+            "test -f acl.hujson && grep -q bot acl.hujson",
+        ],
+    )
+    assert plan_result.exit_code != 0
+    approval = SQLiteStore(db).list_approval_requests(status="pending")[0]
+
+    result = CliRunner().invoke(app, ["approval", "approve", approval.approval_id, "--db", str(db), "--by", "Misk"])
+
+    assert result.exit_code == 0
+    assert "已应用 Headscale ACL" in result.stdout
+    assert current_acl.read_text(encoding="utf-8") == proposed_acl.read_text(encoding="utf-8")
+    assert (tmp_path / "reload.txt").read_text(encoding="utf-8") == "reloaded"
+    events = SQLiteStore(db).list_audit_events()
+    acl_event = [event for event in events if event.event_type == "network" and event.action == "acl/apply"][-1]
+    assert acl_event.outcome == "ok"
+    assert acl_event.details["approval_id"] == approval.approval_id
+    assert acl_event.details["current_path"] == str(current_acl)
+    assert acl_event.details["verify_exit_code"] == 0
+    assert acl_event.details["reload_exit_code"] == 0
