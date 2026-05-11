@@ -23,7 +23,7 @@
 - [x] OpenWrt procd 模板
 - [x] OpenRC 模板
 - [x] systemd reporter 示例
-- [ ] 文档生成模板
+- [x] 文档生成模板（已由 v0.6 资产文档自动化吸收：`hmn docs server/service/generate`、机器/服务/域名/Runbook 索引）
 - [x] 本地 dry-run 模式
 
 ## v0.3：控制面 MVP
@@ -120,3 +120,37 @@
 - [x] 默认更新入口指向 main 分支 raw 安装脚本
 - [x] 生产 readiness checklist 文档化：`docs/production-readiness.md`
 - [x] 真实组件驱动闭环：monitor 已先落地（heartbeat facts → component apply/verify/status → MonitorSnapshot / node_component / audit 闭环）
+
+## v1.1：全托管自动化规划
+
+目标：让机器接入 HMN 后，逐步形成“服务发现 → 监控同步 → 文档中心 → 备份 → 迁移”的集中托管闭环。所有高风险变更仍必须走 approval / audit，不允许因为自动化而绕过安全边界。
+
+### 服务自动发现与状态页同步
+
+- [ ] 节点服务自动发现：识别 systemd unit、Docker / Compose、Caddy / Nginx 入口、监听端口、公开 URL 和本地健康检查路径。
+- [ ] 建立 service registry：服务绑定 node、runtime、端口、域名、部署路径、配置文件、env 文件、数据目录、反代入口和健康检查策略。
+- [ ] Uptime Kuma Provider：把已发现服务自动 upsert 到 Uptime Kuma，并绑定状态页分组；新增、变更、下线都写 audit。
+- [ ] 监控策略自动生成：根据服务类型选择 HTTP / keyword / TCP / ping 检查，避免把状态页自身或内部-only 服务错误公开。
+
+### 文档中心自动化
+
+- [ ] 服务部署文档自动填充：从 service registry 生成部署路径、systemd / compose、端口、域名、env、数据目录、依赖和启动/停止命令。
+- [ ] 服务维护文档自动生成：生成巡检、日志、重启、升级、备份、恢复、回滚、常见故障处理步骤。
+- [ ] 文档集中落地到文档中心：机器维度继续写 `/srv/files/docs/server/<host>/`，服务维度继续写 `/srv/files/service/<service>/`，不得分散写在各节点本地。
+- [ ] docs-sync 真实驱动：支持按节点、按服务和全量刷新，更新索引、域名索引、Runbook 索引，并记录同步结果。
+
+### 备份、恢复与迁移
+
+- [ ] 服务级备份策略：基于 service registry 自动生成 include/exclude、停机/热备要求、数据库 dump 策略、保留周期和校验策略。
+- [ ] 集中备份归档：备份产物、manifest、checksum、恢复说明集中保存到指定备份目录/文档中心，不散落在业务节点。
+- [ ] 自动生成迁移文档：为每个服务生成源节点、目标节点、依赖、数据目录、端口/域名、备份包、恢复步骤、验证步骤和回滚步骤。
+- [ ] 一键恢复 MVP：先支持显式审批后的单服务恢复；恢复前校验 checksum、目标路径、权限、端口冲突和运行时依赖。
+- [ ] 一键迁移 MVP：支持低风险/低停机服务迁移，流程为 plan → backup → transfer → restore → verify → switch traffic → rollback hint。
+- [ ] 低停机/无损迁移增强：对数据库和有状态服务引入维护窗口、增量同步、最终一致性校验、流量切换和失败回滚；不能默认承诺所有服务无损。
+
+### 一次部署与网内机器托管
+
+- [ ] 主控一次部署后批量接入网内机器：结合 Headscale/Tailscale preauth key、join token、worker installer 和 approval，完成批量 onboarding。
+- [ ] 网内节点能力盘点：接入后自动识别 full-worker / lite-worker / beacon-only / proxy-managed，以及可用的 service manager。
+- [ ] 跨节点迁移计划：根据目标节点能力、网络可达性、磁盘空间、服务依赖和已有备份，推荐迁移目标与迁移策略。
+- [ ] 迁移后自动收口：更新 Uptime Kuma、服务文档、机器文档、域名索引、Runbook、backup manifest 和 audit。
