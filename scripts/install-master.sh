@@ -427,10 +427,21 @@ EOF
 
 self_check() {
   echo "执行部署后自检..."
-  systemctl is-active --quiet hermes-managed-network.service
-  curl -fsS "http://127.0.0.1:${HMN_PORT}/healthz" >/dev/null
-  curl -fsS "http://127.0.0.1:${HMN_PORT}/api/v1/version" >/dev/null
-  "$HMN_HOME/.venv/bin/hmn" version
+  systemctl is-active --quiet hermes-managed-network.service || return 1
+  local ready=0
+  for _ in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:${HMN_PORT}/healthz" >/dev/null; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$ready" != "1" ]; then
+    echo "healthz 未就绪" >&2
+    return 1
+  fi
+  curl -fsS "http://127.0.0.1:${HMN_PORT}/api/v1/version" >/dev/null || return 1
+  "$HMN_HOME/.venv/bin/hmn" version || return 1
   echo "自检通过。"
 }
 

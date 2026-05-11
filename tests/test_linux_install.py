@@ -69,8 +69,9 @@ def test_master_installer_runs_post_deploy_self_check():
 
     assert "self_check" in script
     assert "systemctl is-active --quiet hermes-managed-network.service" in script
+    assert "for _ in $(seq 1 30)" in script
     assert "curl -fsS \"http://127.0.0.1:${HMN_PORT}/healthz\"" in script
-    assert "curl -fsS \"http://127.0.0.1:${HMN_PORT}/api/v1/version\"" in script
+    assert "curl -fsS \"http://127.0.0.1:${HMN_PORT}/api/v1/version\" >/dev/null || return 1" in script
     assert "journalctl -u hermes-managed-network.service" in script
 
 
