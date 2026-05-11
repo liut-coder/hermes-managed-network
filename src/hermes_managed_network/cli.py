@@ -16,7 +16,16 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
-from .docs import DEFAULT_DOCS_ROOT, generate_docs, write_server_doc, write_server_index
+from .docs import (
+    DEFAULT_DOCS_ROOT,
+    DEFAULT_SERVICE_ROOT,
+    ServiceDoc,
+    generate_docs,
+    write_server_doc,
+    write_server_index,
+    write_service_doc,
+    write_service_index,
+)
 from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_details_for_node, ssh_target_for_node
 from .inventory import NodeRegistry
 from .playbook import Playbook
@@ -1015,6 +1024,38 @@ def docs_generate(
     typer.echo(f"生成机器文档: {result.server_count}")
     for path in result.paths:
         typer.echo(str(path))
+
+
+@docs_app.command("service")
+def docs_service(
+    service_id: str = typer.Argument(..., help="服务 ID"),
+    service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
+    title: str | None = typer.Option(None, "--title", help="服务标题"),
+    node: str = typer.Option("", "--node", help="所属节点/机器"),
+    url: str = typer.Option("", "--url", help="对外 URL"),
+    port: str = typer.Option("", "--port", help="监听端口"),
+    summary: str = typer.Option("", "--summary", help="服务简介"),
+) -> None:
+    path = write_service_doc(
+        ServiceDoc(
+            service_id=service_id,
+            title=title or service_id,
+            node=node,
+            url=url,
+            port=port,
+            summary=summary,
+        ),
+        service_root,
+    )
+    typer.echo(str(path))
+
+
+@docs_app.command("service-index")
+def docs_service_index(
+    service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
+) -> None:
+    path = write_service_index(service_root)
+    typer.echo(str(path))
 
 
 @node_app.command("list")

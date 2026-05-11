@@ -9,12 +9,23 @@ from .storage import SQLiteStore
 
 
 DEFAULT_DOCS_ROOT = Path("/srv/files/docs")
+DEFAULT_SERVICE_ROOT = Path("/srv/files/service")
 
 
 @dataclass(frozen=True)
 class DocsGenerateResult:
     server_count: int
     paths: list[Path]
+
+
+@dataclass(frozen=True)
+class ServiceDoc:
+    service_id: str
+    title: str
+    node: str = ""
+    url: str = ""
+    port: str = ""
+    summary: str = ""
 
 
 def _safe_segment(value: str) -> str:
@@ -100,3 +111,65 @@ def generate_docs(store: SQLiteStore, output_root: Path = DEFAULT_DOCS_ROOT) -> 
     paths = [write_server_doc(store, node.node_id, output_root) for node in store.list_nodes()]
     paths.append(write_server_index(store, output_root))
     return DocsGenerateResult(server_count=len(paths) - 1, paths=paths)
+
+
+def _service_doc_dir(service_root: Path, service_id: str) -> Path:
+    return service_root / _safe_segment(service_id)
+
+
+def _render_service_doc(service: ServiceDoc) -> str:
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    title = service.title or service.service_id
+    return "\n".join(
+        [
+            f"# {title}",
+            "",
+            "## 基本信息",
+            f"- 服务 ID: `{service.service_id}`",
+            f"- 节点: `{service.node}`" if service.node else "- 节点: -",
+            f"- URL: `{service.url}`" if service.url else "- URL: -",
+            f"- 端口: `{service.port}`" if service.port else "- 端口: -",
+            "",
+            "## 简介",
+            service.summary or "待补充。",
+            "",
+            "## 运维记录",
+            "- 待补充：部署路径、systemd 服务名、环境变量、备份和恢复说明。",
+            "",
+            f"生成时间: `{generated_at}`",
+            "",
+        ]
+    )
+
+
+def write_service_doc(service: ServiceDoc, service_root: Path = DEFAULT_SERVICE_ROOT) -> Path:
+    doc_dir = _service_doc_dir(service_root, service.service_id)
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    doc_path = doc_dir / "README.md"
+    doc_path.write_text(_render_service_doc(service), encoding="utf-8")
+    return doc_path
+
+
+def _service_title_from_doc(path: Path) -> str:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+    except OSError:
+        return path.parent.name
+    return path.parent.name
+
+
+def write_service_index(service_root: Path = DEFAULT_SERVICE_ROOT) -> Path:
+    service_root.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for readme in sorted(service_root.glob("*/README.md")):
+        service_id = readme.parent.name
+        title = _service_title_from_doc(readme)
+        entries.append(f"- [{title}]({service_id}/README.md) — `{service_id}`")
+    lines = ["# HMN 服务索引", ""]
+    lines.extend(entries or ["暂无服务。"])
+    lines.append("")
+    index_path = service_root / "README.md"
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+    return index_path

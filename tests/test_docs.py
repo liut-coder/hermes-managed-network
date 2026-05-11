@@ -74,3 +74,59 @@ def test_docs_generate_runs_server_docs_and_index(tmp_path):
     assert (output_root / "server" / "docs-host" / "README.md").exists()
     assert (output_root / "server" / "README.md").exists()
     assert "生成机器文档: 1" in result.stdout
+
+
+def test_docs_service_generates_service_document(tmp_path):
+    service_root = tmp_path / "service"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "docs",
+            "service",
+            "codex-registrar2",
+            "--service-root",
+            str(service_root),
+            "--title",
+            "Codex Registrar 2",
+            "--node",
+            "docs-host",
+            "--url",
+            "https://example.invalid/codex",
+            "--port",
+            "8080",
+            "--summary",
+            "Temporary account registration service",
+        ],
+    )
+
+    assert result.exit_code == 0
+    doc_path = service_root / "codex-registrar2" / "README.md"
+    assert doc_path.exists()
+    content = doc_path.read_text(encoding="utf-8")
+    assert "# Codex Registrar 2" in content
+    assert "服务 ID: `codex-registrar2`" in content
+    assert "节点: `docs-host`" in content
+    assert "URL: `https://example.invalid/codex`" in content
+    assert "端口: `8080`" in content
+    assert "Temporary account registration service" in content
+    assert str(doc_path) in result.stdout
+
+
+def test_docs_service_index_tracks_generated_services(tmp_path):
+    service_root = tmp_path / "service"
+    runner = CliRunner()
+    created = runner.invoke(
+        app,
+        ["docs", "service", "mailgw", "--service-root", str(service_root), "--title", "Mail Gateway", "--node", "docs-host"],
+    )
+    assert created.exit_code == 0
+
+    result = runner.invoke(app, ["docs", "service-index", "--service-root", str(service_root)])
+
+    assert result.exit_code == 0
+    index_path = service_root / "README.md"
+    assert index_path.exists()
+    content = index_path.read_text(encoding="utf-8")
+    assert "# HMN 服务索引" in content
+    assert "- [Mail Gateway](mailgw/README.md) — `mailgw`" in content
