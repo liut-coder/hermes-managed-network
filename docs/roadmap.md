@@ -110,7 +110,7 @@
 - [ ] Telegram approval gateway 真实 bot 轮询与回调 smoke
 - [ ] Headscale bundled/external 接入真实网络 smoke
 - [ ] NAS / OpenWrt / IPv6-only lite-worker fallback 真实设备 smoke
-- [ ] 将真实试点脚本化为可重复运行的 `scripts/smoke-remote-e2e.sh`
+- [x] 将真实试点脚本化为可重复运行的 `scripts/smoke-remote-e2e.sh`
 
 ## v1.0：生产就绪
 

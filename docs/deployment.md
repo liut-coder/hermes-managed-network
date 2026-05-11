@@ -203,24 +203,41 @@ sudo systemctl enable --now hermes-managed-network-approval-gateway.service
 HMN_SMOKE_KEEP=1 ./scripts/smoke-local-e2e.sh
 ```
 
-## 真实双机部署 smoke 记录
+## 真实双机部署 smoke
 
-2026-05-11 已用两台 Debian 12 VPS 跑通一轮真实部署闭环。
+2026-05-11 已用两台 Debian 12 VPS 跑通一轮真实部署闭环。仓库内置可重复脚本，用于在两台一次性 Linux/systemd 主机上重跑同类 P1 gate：
+
+```bash
+HMN_MASTER_HOST=master.example.invalid \
+HMN_WORKER_HOST=worker.example.invalid \
+HMN_SSH_KEY=/path/to/ssh_key \
+HMN_PUBLIC_URL=http://master.example.invalid:8765 \
+./scripts/smoke-remote-e2e.sh
+```
+
+可选参数：
+
+- `HMN_REMOTE_USER=root`：SSH 用户
+- `HMN_REMOTE_PORT=8765`：Master 监听端口
+- `HMN_REMOTE_BRANCH=main`：远端安装分支
+- `HMN_SKIP_INSTALL=1`：复用已安装 Master，仅跑验证链
+- `HMN_SKIP_SSH_EXECUTOR=1`：目标未配置 SSH executor 密钥时跳过 SSH executor 验证
 
 覆盖内容：
 
-- Master 使用 `install.sh` 安装并以 systemd 启动 `hermes-managed-network`
-- 外部访问 `http://<master>:8765/healthz` 和 `/api/v1/version` 成功
+- Master 使用 `scripts/install-master.sh` 安装并以 systemd 启动 `hermes-managed-network`
+- `hmn doctor`、`/healthz`、`/api/v1/version` 均通过
 - Worker 通过 join token 接入，Master 侧 `hmn node confirm` 后进入 `managed`
 - Worker 安装 `full-worker` systemd timer，`HMN_ENABLE_EXEC=0` 保持安全默认值
 - `hmn node worker-status` 显示心跳、worker、协议均 OK
-- Master 下发低风险命令后，Worker 安全拒绝执行并回传 result：`failed` / `exit_code=126` / `execution disabled`
-- `hmn docs service` 与 `hmn docs generate` 生成机器文档、服务索引、域名索引和 Runbook 索引
+- Master 下发低风险 worker 任务后，Worker 安全拒绝执行并回传 result：`failed` / `exit_code=126` / `execution disabled`
+- 可选验证 `hmn task ssh-run-next` 的 SSH executor 路由
+- `hmn docs generate` 生成机器文档、服务索引、域名索引和 Runbook 索引
 
 注意事项：
 
 - join token、SSH 密码、私钥、Bot token 都是敏感信息，试点记录只写占位，不落明文
-- 当前真实 smoke 使用公网 HTTP `8765`，后续生产化应补 HTTPS / 反代 / 防火墙白名单
+- 当前真实 smoke 默认使用公网 HTTP `8765`，生产化应补 HTTPS / 反代 / 防火墙白名单
 - Worker 不需要公网入站，只需要能主动访问 Master
 - 默认 disabled-exec 是预期行为；只有明确需要时才在 Worker 侧设置 `HMN_ENABLE_EXEC=1`
 

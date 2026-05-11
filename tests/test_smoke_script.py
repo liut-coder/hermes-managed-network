@@ -27,3 +27,37 @@ def test_local_e2e_smoke_script_covers_real_deploy_closure():
     assert "print('TASK_EXIT', task.exit_code)" in script
     assert "execution disabled" in script
     assert "kill \"$SERVER_PID\"" in script
+
+
+def test_remote_e2e_smoke_script_documents_repeatable_p1_gate():
+    script_path = Path("scripts/smoke-remote-e2e.sh")
+
+    assert script_path.exists()
+    script = script_path.read_text(encoding="utf-8")
+
+    assert script.startswith("#!/usr/bin/env bash")
+    assert "set -euo pipefail" in script
+    assert "HMN_MASTER_HOST" in script
+    assert "HMN_WORKER_HOST" in script
+    assert "HMN_SSH_KEY" in script
+    assert "HMN_REMOTE_USER" in script
+    assert "HMN_PUBLIC_URL" in script
+    assert "scripts/install-master.sh" in script
+    assert "systemctl is-active --quiet hermes-managed-network.service" in script
+    assert "/healthz" in script
+    assert "/api/v1/version" in script
+    assert "hmn token create" in script
+    assert "hmn node confirm" in script
+    assert "hmn node install-heartbeat" in script
+    assert "systemctl is-active --quiet hermes-managed-network-heartbeat.timer" in script
+    assert "hmn node worker-status" in script
+    assert "hmn task run" in script
+    assert "hmn task ssh-run-next" in script
+    assert "execution disabled" in script
+    assert "hmn docs generate" in script
+    assert "hmn doctor" in script
+    assert "HMN_ENABLE_EXEC=0" in script
+    assert "?token=" not in script
+    assert "BOT_TOKEN" not in script
+    assert "example.invalid" in Path("docs/deployment.md").read_text(encoding="utf-8")
+    assert "scripts/smoke-remote-e2e.sh" in Path("docs/roadmap.md").read_text(encoding="utf-8")
