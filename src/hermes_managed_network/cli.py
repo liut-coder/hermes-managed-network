@@ -2843,7 +2843,21 @@ def apply_component(
         typer.echo(f"node: {node_id}")
         typer.echo("state: pending_approval")
         raise typer.Exit(1)
-    result = {"machine_changed": False, "state_closed_loop": True, "remote_execution": "not_enabled"}
+    monitor_snapshot = None
+    current_state = "planned"
+    extra_result: dict[str, object] = {}
+    if component.id == "monitor":
+        summary = _monitor_health_summary(store, node_id)
+        monitor_snapshot = _record_monitor_snapshot(store, node_id, summary)
+        current_state = monitor_snapshot.health
+        extra_result = {
+            "monitor_snapshot_id": monitor_snapshot.snapshot_id,
+            "monitor_health": monitor_snapshot.health,
+            "monitor_reason": monitor_snapshot.reason,
+            "heartbeat_seen": summary["heartbeat_seen"],
+            "worker_compatible": summary["worker_compatible"],
+        }
+    result = {"machine_changed": False, "state_closed_loop": True, "remote_execution": "not_enabled", **extra_result}
     run = store.record_component_run(
         component_id=component.id,
         node_id=node_id,
@@ -2857,7 +2871,7 @@ def apply_component(
         node_id=node_id,
         component_id=component.id,
         desired_state="enabled",
-        current_state="planned",
+        current_state=current_state,
         config=config,
         installed_version=component.version,
         driver=str(component.drivers.get("default", "")),
@@ -2867,7 +2881,11 @@ def apply_component(
     typer.echo(f"run: {run.run_id}")
     typer.echo(f"node: {node_id}")
     typer.echo("machine_changed: no")
-    typer.echo("state: enabled/planned")
+    typer.echo(f"state: enabled/{current_state}")
+    if monitor_snapshot is not None:
+        typer.echo(f"monitor_snapshot: {monitor_snapshot.snapshot_id}")
+        typer.echo(f"monitor_health: {monitor_snapshot.health}")
+        typer.echo(f"monitor_reason: {monitor_snapshot.reason}")
     typer.echo("说明: MVP 只闭环状态与审计，不真实改机器。")
 
 
@@ -2900,6 +2918,18 @@ def verify_component(
             action="verify",
             outcome=status,
             details={"node_id": node_id, "run_id": run.run_id, **result},
+        )
+        existing = next((item for item in store.list_node_components(node_id) if item.component_id == component.id), None)
+        store.set_node_component(
+            node_id=node_id,
+            component_id=component.id,
+            desired_state=existing.desired_state if existing else "enabled",
+            current_state=status,
+            config=existing.config if existing else {},
+            installed_version=existing.installed_version if existing else component.version,
+            driver=existing.driver if existing else str(component.drivers.get("default", "")),
+            last_run_id=run.run_id,
+            last_verified_at=datetime.now(timezone.utc),
         )
         typer.echo(f"verify: {component.id}")
         typer.echo(f"run: {run.run_id}")

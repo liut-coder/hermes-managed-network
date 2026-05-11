@@ -788,6 +788,40 @@ def test_monitor_component_verify_uses_heartbeat_audit_and_records_result(tmp_pa
     assert events[-1].event_type == "component.monitor"
     assert events[-1].action == "verify"
     assert events[-1].outcome == "ok"
+    component_state = store.list_node_components("node_monitor_verify")[-1]
+    assert component_state.component_id == "monitor"
+    assert component_state.desired_state == "enabled"
+    assert component_state.current_state == "ok"
+    assert component_state.last_verified_at is not None
+
+
+def test_monitor_component_apply_closes_state_with_snapshot(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _save_managed_node(store, "node_monitor_apply")
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_monitor_apply",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
+    )
+
+    result = runner.invoke(app, ["component", "apply", "monitor", "--node", "node_monitor_apply", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "apply: monitor" in result.stdout
+    assert "monitor_snapshot:" in result.stdout
+    snapshot = store.latest_monitor_snapshot("node_monitor_apply")
+    assert snapshot is not None
+    assert snapshot.health == "ok"
+    component_state = store.list_node_components("node_monitor_apply")[-1]
+    assert component_state.component_id == "monitor"
+    assert component_state.desired_state == "enabled"
+    assert component_state.current_state == "ok"
+    assert component_state.last_run_id
 
 
 def test_monitor_component_verify_warns_without_heartbeat(tmp_path):

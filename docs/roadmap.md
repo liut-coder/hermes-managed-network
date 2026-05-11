@@ -119,4 +119,4 @@
 - [x] installer upgrade / rollback 说明闭环
 - [x] 默认更新入口指向 main 分支 raw 安装脚本
 - [x] 生产 readiness checklist 文档化：`docs/production-readiness.md`
-- [ ] 真实组件驱动闭环：monitor / backup / docs-sync 之一先落地
+- [x] 真实组件驱动闭环：monitor 已先落地（heartbeat facts → component apply/verify/status → MonitorSnapshot / node_component / audit 闭环）
