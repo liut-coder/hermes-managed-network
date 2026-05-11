@@ -123,14 +123,34 @@
 
 ## v1.1：全托管自动化规划
 
-目标：让机器接入 HMN 后，逐步形成“服务发现 → 监控同步 → 文档中心 → 备份 → 迁移”的集中托管闭环。所有高风险变更仍必须走 approval / audit，不允许因为自动化而绕过安全边界。
+目标：让机器接入 HMN 后，逐步形成“服务发现 → 外部部署系统 → 监控同步 → 文档中心 → 备份 → 迁移”的集中托管闭环。HMN 不自研完整 CI/CD 流水线引擎，而是接入成熟工具；HMN 负责统一入口、service registry、provider 编排、approval、audit 和文档中心。所有高风险变更仍必须走 approval / audit，不允许因为自动化而绕过安全边界。
+
+### Provider 化托管控制面
+
+- [ ] Provider 接口契约：统一 `discover / plan / apply / verify / status / rollback`，所有 Provider 必须返回可审计 plan 和 sanitized result。
+- [ ] Deployment Provider：优先接入 Coolify，支持同步 apps、读取部署状态、触发 deploy、触发 rollback，并映射到 HMN service registry。
+- [ ] CI Provider：优先接入 GitHub Actions，支持读取 workflow/check 状态、触发 `workflow_dispatch`，HMN 不直接承担 build runner。
+- [ ] Monitor Provider：接入 Uptime Kuma，基于 service registry upsert monitor、状态页分组和服务健康状态。
+- [ ] Backup Provider：接入 restic / borgmatic / Kopia，HMN 管策略、审批、审计、verify 和恢复文档，底层备份交给成熟工具。
+- [ ] Config Provider：接入 Ansible/AWX，HMN 导出 inventory、审批 playbook、记录执行结果和 audit。
+- [ ] Docs Provider：保持文档中心落地，统一生成机器、服务、域名、Runbook、部署/恢复/迁移文档。
 
 ### 服务自动发现与状态页同步
 
 - [ ] 节点服务自动发现：识别 systemd unit、Docker / Compose、Caddy / Nginx 入口、监听端口、公开 URL 和本地健康检查路径。
 - [ ] 建立 service registry：服务绑定 node、runtime、端口、域名、部署路径、配置文件、env 文件、数据目录、反代入口和健康检查策略。
+- [ ] 从 Coolify 同步 service registry：把 Coolify app、domain、repo、deploy target、env 摘要和运行状态映射成 HMN service/service_instance。
 - [ ] Uptime Kuma Provider：把已发现服务自动 upsert 到 Uptime Kuma，并绑定状态页分组；新增、变更、下线都写 audit。
 - [ ] 监控策略自动生成：根据服务类型选择 HTTP / keyword / TCP / ping 检查，避免把状态页自身或内部-only 服务错误公开。
+
+### 部署与流水线编排
+
+- [ ] `hmn deploy plan <service>`：读取 service registry 和 Deployment/CI Provider，生成非变更部署计划、风险等级、验证步骤和 rollback hint。
+- [ ] `hmn deploy apply <service>`：按风险走 approval，触发 GitHub Actions / Coolify / SSH fallback，并写 deployment record 与 audit。
+- [ ] `hmn deploy status <service|run_id>`：聚合 GitHub Actions、Coolify、Uptime Kuma 和 HMN verify 结果。
+- [ ] `hmn deploy rollback <service|run_id>`：优先调用 Coolify rollback；高风险必须 approval，并在 rollback 后 verify/monitor/docs sync。
+- [ ] Webhook 接入：支持 GitHub/Coolify webhook 回写 deployment 状态，避免 HMN 长轮询成为唯一状态来源。
+- [ ] 不实现通用 DAG pipeline runner；如后续确需复杂 stage/dependency，再以外部 CI/CD Provider 或轻量 orchestrator adapter 方式接入。
 
 ### 文档中心自动化
 
