@@ -88,7 +88,8 @@
 - [x] component audit events
 - [x] reverse-proxy 内置组件 MVP
 - [x] forwarder 内置组件 MVP
-- [x] monitor 内置组件 MVP
+- [x] monitor 内置组件 MVP（facts 收集、threshold 判定）
+- [x] monitor heartbeat 闭环：`hmn monitor health / scan / snapshot` 基于心跳事件评估节点健康，自动记录 MonitorSnapshot，支持 stale/timeout/stale_heartbeat/missing/critical 分级
 - [x] headscale-server 内置组件 manifest（安装/verify playbook 后续补齐）
 - [ ] backup / docs-sync 组件
 

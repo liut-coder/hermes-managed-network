@@ -97,6 +97,7 @@ audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
+monitor_app = typer.Typer(help="监控节点健康闭环")
 network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
 approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
@@ -109,6 +110,7 @@ app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
+app.add_typer(monitor_app, name="monitor")
 app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
 app.add_typer(docs_app, name="docs")
@@ -1527,6 +1529,118 @@ def _monitor_summary(store: SQLiteStore, node_id: str) -> dict[str, object]:
     }
 
 
+def _facts_summary(facts: dict[str, object]) -> dict[str, object]:
+    summary: dict[str, object] = {}
+    load = facts.get("load_average")
+    if isinstance(load, dict):
+        if load.get("1m") is not None:
+            summary["load_1m"] = str(load.get("1m"))
+        if load.get("5m") is not None:
+            summary["load_5m"] = str(load.get("5m"))
+        if load.get("15m") is not None:
+            summary["load_15m"] = str(load.get("15m"))
+    memory = facts.get("memory")
+    if isinstance(memory, dict):
+        total = memory.get("total_kb")
+        available = memory.get("available_kb")
+        if isinstance(total, (int, float)) and total > 0 and isinstance(available, (int, float)):
+            summary["memory_used_percent"] = int(round(((total - available) / total) * 100))
+    disk = facts.get("disk")
+    if isinstance(disk, dict):
+        total = disk.get("total_bytes")
+        used = disk.get("used_bytes")
+        if isinstance(total, (int, float)) and total > 0 and isinstance(used, (int, float)):
+            summary["disk_used_percent"] = int(round((used / total) * 100))
+        if disk.get("path"):
+            summary["disk_path"] = str(disk.get("path"))
+    uptime = facts.get("uptime")
+    if isinstance(uptime, dict) and uptime.get("seconds") is not None:
+        summary["uptime_seconds"] = uptime.get("seconds")
+    return summary
+
+
+def _monitor_health_summary(store: SQLiteStore, node_id: str, *, now: datetime | None = None) -> dict[str, object]:
+    now = now or datetime.now(timezone.utc)
+    summary = _monitor_summary(store, node_id)
+    event = _latest_heartbeat_event(store, node_id)
+    age_seconds = int((now - event.created_at).total_seconds()) if event else None
+    if event is None:
+        health = "critical"
+        reason = "missing_heartbeat"
+    elif not summary["worker_compatible"]:
+        health = "critical"
+        reason = "worker_protocol_incompatible"
+    elif event.outcome != "ok":
+        health = "warn"
+        reason = "heartbeat_warn"
+    elif age_seconds is not None and age_seconds > 900:
+        health = "critical"
+        reason = "heartbeat_timeout"
+    elif age_seconds is not None and age_seconds > 300:
+        health = "warn"
+        reason = "stale_heartbeat"
+    else:
+        health = "ok"
+        reason = "fresh_heartbeat"
+    facts = summary.get("facts", {})
+    if not isinstance(facts, dict):
+        facts = {}
+    return {
+        **summary,
+        "health": health,
+        "reason": reason,
+        "age_seconds": age_seconds,
+        "heartbeat_datetime": event.created_at if event else None,
+        "facts_summary": _facts_summary(facts),
+    }
+
+
+def _record_monitor_snapshot(store: SQLiteStore, node_id: str, summary: dict[str, object]):
+    snapshot = store.record_monitor_snapshot(
+        node_id=node_id,
+        health=str(summary["health"]),
+        reason=str(summary["reason"]),
+        heartbeat_at=summary.get("heartbeat_datetime") if isinstance(summary.get("heartbeat_datetime"), datetime) else None,
+        age_seconds=summary.get("age_seconds") if isinstance(summary.get("age_seconds"), int) else None,
+        runtime_profile=str(summary.get("runtime_profile") or "unknown"),
+        service_manager=str(summary.get("service_manager") or "unknown"),
+        worker_protocol_version=str(summary.get("worker_protocol_version") or "unknown"),
+        worker_version=str(summary.get("worker_version") or "unknown"),
+        exec_mode=str(summary.get("exec_mode") or "SAFE"),
+        facts_summary=summary.get("facts_summary") if isinstance(summary.get("facts_summary"), dict) else {},
+    )
+    store.record_audit(
+        event_type="monitor",
+        subject_type="node",
+        subject_id=node_id,
+        action="run-once",
+        outcome=snapshot.health,
+        details={
+            "snapshot_id": snapshot.snapshot_id,
+            "node_id": node_id,
+            "health": snapshot.health,
+            "reason": snapshot.reason,
+            "heartbeat_at": snapshot.heartbeat_at.isoformat() if snapshot.heartbeat_at else "",
+            "age_seconds": snapshot.age_seconds,
+            "runtime_profile": snapshot.runtime_profile,
+            "service_manager": snapshot.service_manager,
+            "worker_protocol_version": snapshot.worker_protocol_version,
+            "worker_version": snapshot.worker_version,
+            "exec_mode": snapshot.exec_mode,
+            "facts_summary": snapshot.facts_summary,
+        },
+    )
+    return snapshot
+
+
+def _monitor_counts(snapshots) -> dict[str, int]:
+    return {
+        "ok": sum(1 for item in snapshots if item.health == "ok"),
+        "warn": sum(1 for item in snapshots if item.health == "warn"),
+        "critical": sum(1 for item in snapshots if item.health == "critical"),
+    }
+
+
 def _echo_monitor_summary(summary: dict[str, object]) -> None:
     if summary["heartbeat_seen"]:
         typer.echo(
@@ -1566,6 +1680,82 @@ def _echo_monitor_summary(summary: dict[str, object]) -> None:
             f"used={disk.get('used_bytes')} "
             f"free={disk.get('free_bytes')}"
         )
+
+
+@monitor_app.command("run-once")
+def monitor_run_once(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    now: str | None = typer.Option(None, "--now", help="测试/排障用：指定当前时间 ISO8601"),
+) -> None:
+    store = _store(db)
+    current_time = _parse_now(now)
+    nodes = [node for node in store.list_nodes() if node.status == "managed"]
+    snapshots = []
+    for node in nodes:
+        summary = _monitor_health_summary(store, node.node_id, now=current_time)
+        snapshot = _record_monitor_snapshot(store, node.node_id, summary)
+        snapshots.append(snapshot)
+    counts = _monitor_counts(snapshots)
+    typer.echo(f"monitor run: nodes={len(snapshots)} ok={counts['ok']} warn={counts['warn']} critical={counts['critical']}")
+    for snapshot in snapshots:
+        typer.echo(f"{snapshot.node_id}\t{snapshot.health}\t{snapshot.reason}")
+    if counts["warn"] or counts["critical"]:
+        raise typer.Exit(1)
+
+
+@monitor_app.command("status")
+def monitor_status(
+    node_id: str = typer.Option(..., "--node", help="节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    snapshot = store.latest_monitor_snapshot(node_id)
+    if snapshot is None:
+        node = store.load_node(node_id)
+        if node is None:
+            typer.echo("节点不存在。")
+            raise typer.Exit(1)
+        snapshot = _record_monitor_snapshot(store, node_id, _monitor_health_summary(store, node_id))
+    typer.echo(f"node: {snapshot.node_id}")
+    typer.echo(f"health: {snapshot.health}")
+    typer.echo(f"reason: {snapshot.reason}")
+    typer.echo(f"heartbeat_at: {snapshot.heartbeat_at.isoformat() if snapshot.heartbeat_at else '-'}")
+    typer.echo(f"age_seconds: {snapshot.age_seconds if snapshot.age_seconds is not None else '-'}")
+    typer.echo(f"runtime: {snapshot.runtime_profile}")
+    typer.echo(f"service_manager: {snapshot.service_manager}")
+    typer.echo(f"worker_protocol: {snapshot.worker_protocol_version}")
+    typer.echo(f"worker_version: {snapshot.worker_version}")
+    typer.echo(f"exec: {snapshot.exec_mode}")
+    for key in ("disk_used_percent", "memory_used_percent", "load_1m", "uptime_seconds"):
+        if key in snapshot.facts_summary:
+            typer.echo(f"{key}: {snapshot.facts_summary[key]}")
+    if snapshot.health == "critical":
+        raise typer.Exit(1)
+
+
+@monitor_app.command("report")
+def monitor_report(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    store = _store(db)
+    latest = []
+    seen: set[str] = set()
+    for snapshot in store.list_monitor_snapshots():
+        if snapshot.node_id in seen:
+            continue
+        seen.add(snapshot.node_id)
+        latest.append(snapshot)
+    counts = _monitor_counts(latest)
+    typer.echo(f"monitor report: nodes={len(latest)} ok={counts['ok']} warn={counts['warn']} critical={counts['critical']}")
+    for snapshot in sorted(latest, key=lambda item: item.node_id):
+        parts = [f"{snapshot.node_id} {snapshot.health}", f"reason={snapshot.reason}"]
+        if "disk_used_percent" in snapshot.facts_summary:
+            parts.append(f"disk={snapshot.facts_summary['disk_used_percent']}%")
+        if "memory_used_percent" in snapshot.facts_summary:
+            parts.append(f"mem={snapshot.facts_summary['memory_used_percent']}%")
+        if "load_1m" in snapshot.facts_summary:
+            parts.append(f"load={snapshot.facts_summary['load_1m']}")
+        typer.echo(" ".join(parts))
+    if counts["critical"]:
+        raise typer.Exit(1)
 
 
 @node_app.command("worker-status")
