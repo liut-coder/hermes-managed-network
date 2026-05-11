@@ -25,6 +25,7 @@ from .platforms import ServiceManager, classify_capabilities, probe_from_facts, 
 from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH
 from .storage import SQLiteStore
 from .tokens import JoinTokenStore
+from .uptime import render_uptime_plan_json
 from .version import current_version_info
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
@@ -72,6 +73,7 @@ component_app = typer.Typer(help="管理按需加载组件")
 inspect_app = typer.Typer(help="盘点节点资产")
 discover_app = typer.Typer(help="从盘点结果发现服务")
 docs_app = typer.Typer(help="从 service registry 生成服务文档")
+uptime_app = typer.Typer(help="从 service registry 生成 uptime 监控计划（dry-run）")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -82,6 +84,7 @@ app.add_typer(component_app, name="component")
 app.add_typer(inspect_app, name="inspect")
 app.add_typer(discover_app, name="discover")
 app.add_typer(docs_app, name="docs")
+app.add_typer(uptime_app, name="uptime")
 
 
 def _default_db() -> Path:
@@ -438,6 +441,22 @@ def generate_docs_command(
 ) -> None:
     generated_dir = load_registry_and_generate_docs(registry, output_dir)
     typer.echo(str(generated_dir))
+
+
+@uptime_app.command("plan")
+def uptime_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 dry-run 监控计划 JSON。"),
+) -> None:
+    rendered = render_uptime_plan_json(service_registry)
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
 
 
 @app.command("version")
