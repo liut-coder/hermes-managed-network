@@ -313,6 +313,44 @@ HMN_PUBLIC_URL=http://master.example.invalid:8765 \
 - 脚本示例使用 `example.invalid`，真实主机名、域名、token 不应提交到仓库。
 - 若是 bundled 模式，当前脚本验证 HMN installer/provider wiring 与真实 API；Headscale 服务自身安装、备份、升级仍按独立组件切片推进。
 
+
+## NAS / OpenWrt / IPv6-only lite-worker fallback 真实设备 smoke
+
+用于验证非标准 Linux / 无 systemd / IPv6-only 设备的真实接入路径。适用 Synology、QNAP、OpenWrt 或只有 POSIX `/bin/sh` 的轻量节点。默认仍保持 worker pull 模式，不开放设备入站端口。
+
+```bash
+HMN_MASTER_HOST=master.example.invalid \
+HMN_DEVICE_HOST=nas-or-openwrt.example.invalid \
+HMN_SSH_KEY=/path/to/ssh_key \
+HMN_IPV6_MASTER_URL='http://[2001:db8::10]:8765' \
+HMN_HEADSCALE_URL='http://headscale.internal:8765' \
+HMN_RELAY_URL='https://relay.example.invalid' \
+./scripts/smoke-nas-ipv6-lite-worker.sh
+```
+
+可选参数：
+
+- `HMN_DEVICE_KIND=Synology|QNAP|OpenWrt|auto`：用于记录/选择预期设备形态。
+- `HMN_SERVICE_MANAGER=auto|cron|procd|loop`：默认自动探测，NAS 通常走 `cron`，OpenWrt 优先走 `procd`。
+- `HMN_SKIP_INSTALL=1`：复用已安装 master，仅跑接入与验证链。
+
+覆盖内容：
+
+- `hmn token join-command ... --master-url 'http://[IPv6]:8765' --safe` 保留 IPv6 literal 中括号。
+- 真实设备执行 join，进入 pending 后由 master `hmn node confirm` 确认。
+- `hmn node install-heartbeat --runtime lite-worker` 渲染 `scripts/worker-lite.sh`。
+- `HMN_MASTER_URLS` 按 IPv6 master、Headscale/overlay、relay fallback 顺序写入。
+- cron / procd service manager adapter 至少选择一种真实安装路径。
+- lite-worker 使用 POSIX `sh -n` 验证，不依赖 Bash、Python、jq。
+- 默认 `HMN_ENABLE_EXEC=0`，低风险任务会被安全拒绝并回传 `execution disabled`。
+- `hmn node worker-status` 与 `hmn docs generate` 验证状态和资产文档闭环。
+
+注意事项：
+
+- 即使设备有公网 IPv6，也不要默认开放 NAS/OpenWrt 入站端口。
+- 优先使用 AAAA 域名或 Headscale/Tailscale overlay；裸 IPv6 URL 必须使用 `[addr]` 中括号格式。
+- token、SSH 密钥、真实主机名不写入文档或仓库。
+
 ## 更新已安装主控
 
 再次执行仓库短安装脚本即可：

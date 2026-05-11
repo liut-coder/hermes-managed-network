@@ -109,7 +109,7 @@
 - [x] 双 Debian VPS 真实部署 smoke：Master systemd、Worker join/confirm、full-worker timer、disabled-exec 安全拒绝、资产文档生成
 - [x] Telegram approval gateway 真实 bot 轮询与回调 smoke：`scripts/smoke-telegram-approval.sh`
 - [x] Headscale bundled/external 接入真实网络 smoke：`scripts/smoke-headscale-network.sh`
-- [ ] NAS / OpenWrt / IPv6-only lite-worker fallback 真实设备 smoke
+- [x] NAS / OpenWrt / IPv6-only lite-worker fallback 真实设备 smoke：`scripts/smoke-nas-ipv6-lite-worker.sh`
 - [x] 将真实试点脚本化为可重复运行的 `scripts/smoke-remote-e2e.sh`
 
 ## v1.0：生产就绪

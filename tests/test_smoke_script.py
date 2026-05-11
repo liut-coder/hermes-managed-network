@@ -129,3 +129,46 @@ def test_headscale_network_smoke_script_documents_bundled_and_external_real_over
     assert "scripts/smoke-headscale-network.sh" in deployment
     assert "Headscale bundled / external 真实网络 smoke" in deployment
     assert "scripts/smoke-headscale-network.sh" in roadmap
+
+
+def test_nas_ipv6_lite_worker_smoke_script_documents_real_device_fallback_gate():
+    script_path = Path("scripts/smoke-nas-ipv6-lite-worker.sh")
+
+    assert script_path.exists()
+    script = script_path.read_text(encoding="utf-8")
+    deployment = Path("docs/deployment.md").read_text(encoding="utf-8")
+    roadmap = Path("docs/roadmap.md").read_text(encoding="utf-8")
+
+    assert script.startswith("#!/usr/bin/env bash")
+    assert "set -euo pipefail" in script
+    assert "HMN_MASTER_HOST" in script
+    assert "HMN_DEVICE_HOST" in script
+    assert "HMN_SSH_KEY" in script
+    assert "HMN_IPV6_MASTER_URL" in script
+    assert "http://[2001:db8::10]:8765" in script
+    assert "HMN_HEADSCALE_URL" in script
+    assert "HMN_RELAY_URL" in script
+    assert "hmn token join-command" in script
+    assert "--master-url \\\"$HMN_IPV6_MASTER_URL\\\"" in script
+    assert "hmn node install-heartbeat" in script
+    assert "--runtime lite-worker" in script
+    assert "--service-manager cron" in script
+    assert "--service-manager procd" in script
+    assert "--endpoint \\\"$HMN_IPV6_MASTER_URL\\\"" in script
+    assert "HMN_MASTER_URLS" in script
+    assert "scripts/worker-lite.sh" in script
+    assert "sh -n" in script
+    assert "HMN_ENABLE_EXEC=0" in script
+    assert "hmn node worker-status" in script
+    assert "hmn task run" in script
+    assert "execution disabled" in script
+    assert "hmn docs generate" in script
+    assert "Synology" in script
+    assert "QNAP" in script
+    assert "OpenWrt" in script
+    assert "example.invalid" in script
+    assert "?token=" not in script
+    assert "BOT_TOKEN" not in script
+    assert "scripts/smoke-nas-ipv6-lite-worker.sh" in deployment
+    assert "NAS / OpenWrt / IPv6-only lite-worker fallback 真实设备 smoke" in deployment
+    assert "scripts/smoke-nas-ipv6-lite-worker.sh" in roadmap
