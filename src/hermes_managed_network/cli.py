@@ -16,6 +16,7 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
+from .docs import DEFAULT_DOCS_ROOT, generate_docs, write_server_doc, write_server_index
 from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_details_for_node, ssh_target_for_node
 from .inventory import NodeRegistry
 from .playbook import Playbook
@@ -85,6 +86,7 @@ component_app = typer.Typer(help="管理按需加载组件")
 network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
 approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
+docs_app = typer.Typer(help="生成机器/服务资产文档")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(network_app, name="network")
@@ -95,6 +97,7 @@ app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
 app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
+app.add_typer(docs_app, name="docs")
 
 
 def _default_db() -> Path:
@@ -978,6 +981,40 @@ def _record_liveness_audit(store: SQLiteStore, node_id: str, liveness: dict[str,
             "age_seconds": liveness["age_seconds"],
         },
     )
+
+
+@docs_app.command("server")
+def docs_server(
+    node_id: str = typer.Argument(..., help="节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    output_root: Path = typer.Option(DEFAULT_DOCS_ROOT, "--output-root", help="文档根目录"),
+) -> None:
+    try:
+        path = write_server_doc(_store(db), node_id, output_root)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    typer.echo(str(path))
+
+
+@docs_app.command("index")
+def docs_index(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    output_root: Path = typer.Option(DEFAULT_DOCS_ROOT, "--output-root", help="文档根目录"),
+) -> None:
+    path = write_server_index(_store(db), output_root)
+    typer.echo(str(path))
+
+
+@docs_app.command("generate")
+def docs_generate(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    output_root: Path = typer.Option(DEFAULT_DOCS_ROOT, "--output-root", help="文档根目录"),
+) -> None:
+    result = generate_docs(_store(db), output_root)
+    typer.echo(f"生成机器文档: {result.server_count}")
+    for path in result.paths:
+        typer.echo(str(path))
 
 
 @node_app.command("list")
