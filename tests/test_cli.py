@@ -501,6 +501,203 @@ def test_doctor_command_reports_full_production_readiness(tmp_path):
     assert "hmn update" in result.stdout
 
 
+def test_rollback_command_dry_run_prints_restore_plan(tmp_path):
+    runner = CliRunner()
+    etc_dir = tmp_path / "etc" / "hermes-managed-network"
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    etc_dir.mkdir(parents=True)
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    stamp = "20260101-010203"
+    db_backup = backup_dir / f"control-plane.{stamp}.db"
+    env_backup = backup_dir / f"master.{stamp}.env"
+    config_backup = backup_dir / f"config.{stamp}.yaml"
+    metadata_backup = backup_dir / f"metadata.{stamp}.env"
+    db_backup.write_text("old-db\n")
+    env_backup.write_text(f"HMN_DB={state_dir / 'control-plane.db'}\n")
+    config_backup.write_text("network:\n  provider: headscale\n")
+    metadata_backup.write_text("PREVIOUS_VERSION=0.9.0\n")
+    (etc_dir / "upgrade-manifest.env").write_text(
+        f"HMN_BACKUP_DIR={backup_dir}\n"
+        f"HMN_LAST_BACKUP_STAMP={stamp}\n"
+        f"BACKUP_DB={db_backup}\n"
+        f"BACKUP_ENV={env_backup}\n"
+        f"BACKUP_CONFIG={config_backup}\n"
+        f"BACKUP_METADATA={metadata_backup}\n"
+    )
+
+    result = runner.invoke(
+        app,
+        ["rollback", "--etc-dir", str(etc_dir), "--backup-dir", str(backup_dir), "--skip-systemd"],
+    )
+
+    assert result.exit_code == 0
+    assert "回滚计划" in result.stdout
+    assert "DRY RUN" in result.stdout
+    assert str(db_backup) in result.stdout
+    assert str(state_dir / "control-plane.db") in result.stdout
+    assert f"--etc-dir {etc_dir}" in result.stdout
+    assert f"--backup-dir {backup_dir}" in result.stdout
+    assert "--skip-systemd --yes" in result.stdout
+    assert not (state_dir / "control-plane.db").exists()
+
+
+def test_rollback_command_yes_restores_backup_files(tmp_path):
+    runner = CliRunner()
+    etc_dir = tmp_path / "etc" / "hermes-managed-network"
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    etc_dir.mkdir(parents=True)
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    stamp = "20260101-010203"
+    db_backup = backup_dir / f"control-plane.{stamp}.db"
+    env_backup = backup_dir / f"master.{stamp}.env"
+    config_backup = backup_dir / f"config.{stamp}.yaml"
+    metadata_backup = backup_dir / f"metadata.{stamp}.env"
+    db_backup.write_text("old-db\n")
+    env_backup.write_text(f"HMN_DB={state_dir / 'control-plane.db'}\nHMN_PORT=8765\n")
+    config_backup.write_text("network:\n  provider: headscale\n")
+    metadata_backup.write_text("PREVIOUS_VERSION=0.9.0\n")
+    (etc_dir / "master.env").write_text(f"HMN_DB={state_dir / 'control-plane.db'}\nHMN_PORT=9999\n")
+    (etc_dir / "config.yaml").write_text("network:\n  provider: disabled\n")
+    (etc_dir / "upgrade-manifest.env").write_text(
+        f"HMN_BACKUP_DIR={backup_dir}\n"
+        f"HMN_LAST_BACKUP_STAMP={stamp}\n"
+        f"BACKUP_DB={db_backup}\n"
+        f"BACKUP_ENV={env_backup}\n"
+        f"BACKUP_CONFIG={config_backup}\n"
+        f"BACKUP_METADATA={metadata_backup}\n"
+    )
+
+    result = runner.invoke(
+        app,
+        ["rollback", "--etc-dir", str(etc_dir), "--backup-dir", str(backup_dir), "--skip-systemd", "--yes"],
+    )
+
+    assert result.exit_code == 0
+    assert "已恢复备份" in result.stdout
+    assert (state_dir / "control-plane.db").read_text() == "old-db\n"
+    assert (etc_dir / "master.env").read_text() == f"HMN_DB={state_dir / 'control-plane.db'}\nHMN_PORT=8765\n"
+    assert (etc_dir / "config.yaml").read_text() == "network:\n  provider: headscale\n"
+    assert (etc_dir / f"metadata.{stamp}.env").read_text() == "PREVIOUS_VERSION=0.9.0\n"
+
+
+def test_rollback_command_rejects_symlink_and_unsafe_target_before_writes(tmp_path):
+    runner = CliRunner()
+    etc_dir = tmp_path / "etc" / "hermes-managed-network"
+    backup_dir = tmp_path / "backups"
+    safe_state = tmp_path / "state"
+    etc_dir.mkdir(parents=True)
+    backup_dir.mkdir()
+    safe_state.mkdir()
+    stamp = "20260101-010203"
+    db_backup = backup_dir / f"control-plane.{stamp}.db"
+    env_backup = backup_dir / f"master.{stamp}.env"
+    config_backup = backup_dir / f"config.{stamp}.yaml"
+    metadata_backup = backup_dir / f"metadata.{stamp}.env"
+    db_backup.write_text("old-db\n")
+    env_backup.write_text(f"HMN_DB={safe_state / 'control-plane.db'}\n")
+    config_backup.write_text("network:\n  provider: headscale\n")
+    metadata_backup.write_text("PREVIOUS_VERSION=0.9.0\n")
+    poisoned_target = tmp_path.parent / f"outside-{tmp_path.name}.db"
+    (etc_dir / "master.env").write_text(f"HMN_DB={poisoned_target}\n")
+    (etc_dir / "config.yaml").symlink_to(config_backup)
+    (etc_dir / "upgrade-manifest.env").write_text(
+        f"HMN_BACKUP_DIR={backup_dir}\n"
+        f"HMN_LAST_BACKUP_STAMP={stamp}\n"
+        f"BACKUP_DB={db_backup}\n"
+        f"BACKUP_ENV={env_backup}\n"
+        f"BACKUP_CONFIG={config_backup}\n"
+        f"BACKUP_METADATA={metadata_backup}\n"
+    )
+
+    result = runner.invoke(app, ["rollback", "--etc-dir", str(etc_dir), "--backup-dir", str(backup_dir), "--skip-systemd", "--yes"])
+
+    assert result.exit_code == 1
+    assert "回滚安全校验失败" in result.stdout
+    assert "target is symlink" in result.stdout
+    assert "target outside allowed data dirs" in result.stdout
+    assert not poisoned_target.exists()
+    assert (etc_dir / "master.env").read_text() == f"HMN_DB={poisoned_target}\n"
+
+
+def test_rollback_command_explicit_stamp_ignores_stale_manifest_paths(tmp_path):
+    runner = CliRunner()
+    etc_dir = tmp_path / "etc" / "hermes-managed-network"
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    stale_dir = tmp_path / "stale"
+    etc_dir.mkdir(parents=True)
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    stale_dir.mkdir()
+    requested_stamp = "20260101-010203"
+    stale_stamp = "20250101-010203"
+    for name, content in [
+        (f"control-plane.{requested_stamp}.db", "requested-db\n"),
+        (f"master.{requested_stamp}.env", f"HMN_DB={state_dir / 'control-plane.db'}\n"),
+        (f"config.{requested_stamp}.yaml", "requested-config\n"),
+        (f"metadata.{requested_stamp}.env", "requested-metadata\n"),
+    ]:
+        (backup_dir / name).write_text(content)
+    for name in [
+        f"control-plane.{stale_stamp}.db",
+        f"master.{stale_stamp}.env",
+        f"config.{stale_stamp}.yaml",
+        f"metadata.{stale_stamp}.env",
+    ]:
+        (stale_dir / name).write_text("stale\n")
+    (etc_dir / "upgrade-manifest.env").write_text(
+        f"HMN_BACKUP_DIR={stale_dir}\n"
+        f"HMN_LAST_BACKUP_STAMP={stale_stamp}\n"
+        f"BACKUP_DB={stale_dir / f'control-plane.{stale_stamp}.db'}\n"
+        f"BACKUP_ENV={stale_dir / f'master.{stale_stamp}.env'}\n"
+        f"BACKUP_CONFIG={stale_dir / f'config.{stale_stamp}.yaml'}\n"
+        f"BACKUP_METADATA={stale_dir / f'metadata.{stale_stamp}.env'}\n"
+    )
+
+    result = runner.invoke(app, ["rollback", "--stamp", requested_stamp, "--etc-dir", str(etc_dir), "--backup-dir", str(backup_dir), "--skip-systemd", "--yes"])
+
+    assert result.exit_code == 0
+    assert (state_dir / "control-plane.db").read_text() == "requested-db\n"
+    assert (etc_dir / "config.yaml").read_text() == "requested-config\n"
+    assert (etc_dir / f"metadata.{requested_stamp}.env").read_text() == "requested-metadata\n"
+
+
+def test_rollback_command_systemd_failures_abort(monkeypatch, tmp_path):
+    runner = CliRunner()
+    from hermes_managed_network import cli
+
+    etc_dir = tmp_path / "etc" / "hermes-managed-network"
+    backup_dir = tmp_path / "backups"
+    state_dir = tmp_path / "state"
+    etc_dir.mkdir(parents=True)
+    backup_dir.mkdir()
+    state_dir.mkdir()
+    stamp = "20260101-010203"
+    (backup_dir / f"control-plane.{stamp}.db").write_text("old-db\n")
+    (backup_dir / f"master.{stamp}.env").write_text(f"HMN_DB={state_dir / 'control-plane.db'}\n")
+    (backup_dir / f"config.{stamp}.yaml").write_text("config\n")
+    (backup_dir / f"metadata.{stamp}.env").write_text("metadata\n")
+    (etc_dir / "upgrade-manifest.env").write_text(f"HMN_BACKUP_DIR={backup_dir}\nHMN_LAST_BACKUP_STAMP={stamp}\n")
+    calls = []
+
+    def fake_run(args, check=False, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=9 if args[:2] == ["systemctl", "stop"] else 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    result = runner.invoke(app, ["rollback", "--etc-dir", str(etc_dir), "--backup-dir", str(backup_dir), "--yes"])
+
+    assert result.exit_code == 9
+    assert "停止服务失败" in result.stdout
+    assert not (state_dir / "control-plane.db").exists()
+    assert calls == [["systemctl", "stop", "hermes-managed-network.service"]]
+
+
 def test_doctor_command_reports_installer_readiness(tmp_path):
     runner = CliRunner()
     etc_dir = tmp_path / "etc" / "hermes-managed-network"

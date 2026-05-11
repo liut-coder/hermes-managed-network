@@ -72,6 +72,10 @@ def test_master_installer_detects_existing_version_policy_and_rollback_metadata(
     assert "BACKUP_CONFIG" in script
     assert "BACKUP_METADATA" in script
     assert "ROLLBACK_COMMAND" in script
+    assert "hmn rollback --stamp ${HMN_LAST_BACKUP_STAMP} --yes" in script
+    assert 'ROLLBACK_COMMAND="hmn rollback --stamp ${HMN_LAST_BACKUP_STAMP} --yes"' in script
+    assert 'install -d -m 0750 -o root -g "$HMN_USER" /etc/hermes-managed-network' in script
+    assert 'chown root:"$HMN_USER" /etc/hermes-managed-network/master.env' in script
     assert "metadata.${stamp}.env" in script
     assert "config.${stamp}.yaml" in script
     assert "hmn doctor" in script

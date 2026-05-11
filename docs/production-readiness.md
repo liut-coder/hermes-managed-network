@@ -44,11 +44,23 @@ sudo cat /etc/hermes-managed-network/upgrade-manifest.env
 ```
 
 2. 按 `HMN_BACKUP_DIR`、`HMN_LAST_BACKUP_STAMP`、`BACKUP_DB`、`BACKUP_ENV`、`BACKUP_CONFIG`、`BACKUP_METADATA` 确认备份存在。
-3. 执行 manifest 中的 `ROLLBACK_COMMAND` / rollback command 操作提示。
-4. 恢复 DB/env/config 后重启 systemd：
+3. 先 dry-run 查看恢复计划：
 
 ```bash
-sudo systemctl restart hermes-managed-network.service
+hmn rollback
+```
+
+4. 确认无误后执行 manifest 中的 `ROLLBACK_COMMAND`，通常是：
+
+```bash
+sudo hmn rollback --stamp <stamp> --yes
+```
+
+`hmn rollback` 会恢复 DB、`master.env`、`config.yaml` 和 metadata；默认会 stop/start `hermes-managed-network.service`。离线测试或手动控制 systemd 时可加 `--skip-systemd`。
+
+5. 回滚后巡检：
+
+```bash
 hmn doctor
 ```
 

@@ -265,7 +265,7 @@ PY
 }
 
 write_upgrade_manifest() {
-  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  install -d -m 0750 -o root -g "$HMN_USER" /etc/hermes-managed-network
   cat >/etc/hermes-managed-network/upgrade-manifest.env <<EOF
 PREVIOUS_VERSION=${EXISTING_VERSION}
 TARGET_VERSION=${CURRENT_VERSION}
@@ -276,15 +276,15 @@ BACKUP_DB=${HMN_BACKUP_DIR}/control-plane.${HMN_LAST_BACKUP_STAMP}.db
 BACKUP_ENV=${HMN_BACKUP_DIR}/master.${HMN_LAST_BACKUP_STAMP}.env
 BACKUP_CONFIG=${HMN_BACKUP_DIR}/config.${HMN_LAST_BACKUP_STAMP}.yaml
 BACKUP_METADATA=${HMN_BACKUP_DIR}/metadata.${HMN_LAST_BACKUP_STAMP}.env
-HMN_ROLLBACK_HINT=${HMN_ROLLBACK_HINT}
-ROLLBACK_COMMAND=${HMN_ROLLBACK_HINT}
+HMN_ROLLBACK_HINT="hmn rollback --stamp ${HMN_LAST_BACKUP_STAMP} --yes"
+ROLLBACK_COMMAND="hmn rollback --stamp ${HMN_LAST_BACKUP_STAMP} --yes"
 EOF
   chmod 0640 /etc/hermes-managed-network/upgrade-manifest.env
-  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/upgrade-manifest.env
+  chown root:"$HMN_USER" /etc/hermes-managed-network/upgrade-manifest.env
 }
 
 write_env() {
-  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  install -d -m 0750 -o root -g "$HMN_USER" /etc/hermes-managed-network
   cat >/etc/hermes-managed-network/master.env <<EOF
 HMN_DB=${HMN_DB}
 HMN_HOST=${HMN_HOST}
@@ -296,7 +296,7 @@ HMN_HEADSCALE_API_KEY=${HMN_HEADSCALE_API_KEY}
 HMN_HEADSCALE_NAMESPACE=${HMN_HEADSCALE_NAMESPACE}
 EOF
   chmod 0640 /etc/hermes-managed-network/master.env
-  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/master.env
+  chown root:"$HMN_USER" /etc/hermes-managed-network/master.env
 }
 
 write_approval_gateway_env() {
@@ -311,7 +311,7 @@ write_approval_gateway_env() {
     echo "HMN_ENABLE_TELEGRAM=1 但缺少 HMN_APPROVAL_GATEWAY_TARGET/HMN_TELEGRAM_CHAT_ID 或 HMN_APPROVAL_GATEWAY_TOKEN/HMN_TELEGRAM_BOT_TOKEN" >&2
     exit 1
   fi
-  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  install -d -m 0750 -o root -g "$HMN_USER" /etc/hermes-managed-network
   cat >/etc/hermes-managed-network/approval-gateway.env <<EOF
 HMN_API_URL=http://127.0.0.1:${HMN_PORT}
 HMN_APPROVAL_GATEWAY_CLIENT=${HMN_APPROVAL_GATEWAY_CLIENT}
@@ -321,12 +321,12 @@ HMN_TELEGRAM_CHAT_ID=${HMN_APPROVAL_GATEWAY_TARGET}
 HMN_TELEGRAM_BOT_TOKEN=${HMN_APPROVAL_GATEWAY_TOKEN}
 EOF
   chmod 0640 /etc/hermes-managed-network/approval-gateway.env
-  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/approval-gateway.env
+  chown root:"$HMN_USER" /etc/hermes-managed-network/approval-gateway.env
 
   # Backward-compatible env file for operators/scripts that still reference the old Telegram gateway name.
   cp -a /etc/hermes-managed-network/approval-gateway.env /etc/hermes-managed-network/telegram-gateway.env
   chmod 0640 /etc/hermes-managed-network/telegram-gateway.env
-  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/telegram-gateway.env
+  chown root:"$HMN_USER" /etc/hermes-managed-network/telegram-gateway.env
 }
 
 write_telegram_gateway_env() {
@@ -393,7 +393,7 @@ configure_headscale_provider() {
   if [ "$HMN_HEADSCALE_MODE" = "disabled" ]; then
     return
   fi
-  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  install -d -m 0750 -o root -g "$HMN_USER" /etc/hermes-managed-network
   cat >/etc/hermes-managed-network/headscale.env <<EOF
 HMN_HEADSCALE_MODE=${HMN_HEADSCALE_MODE}
 HMN_HEADSCALE_URL=${HMN_HEADSCALE_URL}
@@ -409,7 +409,7 @@ network:
     user: ${HMN_HEADSCALE_NAMESPACE}
 EOF
   chmod 0640 /etc/hermes-managed-network/headscale.env /etc/hermes-managed-network/config.yaml
-  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/headscale.env /etc/hermes-managed-network/config.yaml
+  chown root:"$HMN_USER" /etc/hermes-managed-network/headscale.env /etc/hermes-managed-network/config.yaml
 }
 
 install_headscale_bundled() {

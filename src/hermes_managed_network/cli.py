@@ -664,6 +664,193 @@ def doctor_install(
     typer.echo("- 回滚：执行 rollback command 指引，恢复 DB/env/config/metadata 后重启服务")
 
 
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_resolve(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def _rollback_plan_from_manifest(
+    manifest_values: dict[str, str],
+    etc_dir: Path,
+    backup_dir: Path,
+    stamp: str | None,
+) -> list[tuple[str, Path, Path]]:
+    selected_stamp = stamp or manifest_values.get("HMN_LAST_BACKUP_STAMP", "")
+    source_backup_dir = Path(manifest_values.get("HMN_BACKUP_DIR") or backup_dir).expanduser()
+    if stamp:
+        source_backup_dir = backup_dir.expanduser()
+    if not selected_stamp:
+        raise typer.BadParameter("缺少备份 stamp；请传 --stamp 或检查 upgrade-manifest.env")
+
+    current_env = _read_master_env(etc_dir / "master.env")
+    if stamp:
+        backup_env_path = source_backup_dir / f"master.{selected_stamp}.env"
+        backup_db_path = source_backup_dir / f"control-plane.{selected_stamp}.db"
+        backup_config_path = source_backup_dir / f"config.{selected_stamp}.yaml"
+        backup_metadata_path = source_backup_dir / f"metadata.{selected_stamp}.env"
+    else:
+        backup_env_path = Path(manifest_values.get("BACKUP_ENV") or source_backup_dir / f"master.{selected_stamp}.env")
+        backup_db_path = Path(manifest_values.get("BACKUP_DB") or source_backup_dir / f"control-plane.{selected_stamp}.db")
+        backup_config_path = Path(manifest_values.get("BACKUP_CONFIG") or source_backup_dir / f"config.{selected_stamp}.yaml")
+        backup_metadata_path = Path(manifest_values.get("BACKUP_METADATA") or source_backup_dir / f"metadata.{selected_stamp}.env")
+    backup_env = _read_master_env(backup_env_path) if backup_env_path.exists() else {}
+    db_target = Path(current_env.get("HMN_DB") or backup_env.get("HMN_DB") or "/var/lib/hermes-managed-network/control-plane.db")
+
+    return [
+        ("database", backup_db_path, db_target),
+        ("master.env", backup_env_path, etc_dir / "master.env"),
+        ("config.yaml", backup_config_path, etc_dir / "config.yaml"),
+        ("metadata", backup_metadata_path, etc_dir / f"metadata.{selected_stamp}.env"),
+    ]
+
+
+def _validate_rollback_plan(plan: list[tuple[str, Path, Path]], etc_dir: Path, backup_dir: Path) -> list[tuple[str, Path, Path]]:
+    raw_plan = [(label, source.expanduser(), target.expanduser()) for label, source, target in plan]
+    safe_plan = [(label, _safe_resolve(source), _safe_resolve(target)) for label, source, target in raw_plan]
+    safe_etc = _safe_resolve(etc_dir)
+    safe_backup = _safe_resolve(backup_dir)
+    db_roots = [_safe_resolve(Path("/var/lib/hermes-managed-network"))]
+    if safe_etc != _safe_resolve(Path("/etc/hermes-managed-network")):
+        db_roots.append(safe_etc.parent.parent)
+
+    errors: list[str] = []
+    for (label, raw_source, raw_target), (_, source, target) in zip(raw_plan, safe_plan):
+        if not raw_source.exists():
+            errors.append(f"{label}: source missing: {raw_source}")
+            continue
+        if raw_source.is_symlink():
+            errors.append(f"{label}: source is symlink: {raw_source}")
+        if not source.is_file():
+            errors.append(f"{label}: source is not a regular file: {source}")
+        if not _path_is_relative_to(source, safe_backup):
+            errors.append(f"{label}: source outside backup dir: {source}")
+        if raw_target.exists() and raw_target.is_symlink():
+            errors.append(f"{label}: target is symlink: {raw_target}")
+        if raw_target.parent.exists() and raw_target.parent.is_symlink():
+            errors.append(f"{label}: target parent is symlink: {raw_target.parent}")
+        if label == "database":
+            if not any(_path_is_relative_to(target, root) for root in db_roots):
+                roots = ", ".join(str(root) for root in db_roots)
+                errors.append(f"{label}: target outside allowed data dirs ({roots}): {target}")
+        elif not _path_is_relative_to(target, safe_etc):
+            errors.append(f"{label}: target outside etc dir: {target}")
+    if errors:
+        typer.echo("回滚安全校验失败：")
+        for error in errors:
+            typer.echo(f"- {error}")
+        raise typer.Exit(1)
+    return safe_plan
+
+
+def _copy_file_atomically(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        source_flags |= os.O_NOFOLLOW
+    dir_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        dir_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        dir_flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        dir_flags |= os.O_CLOEXEC
+    temp_name = f".{target.name}.hmn-rollback.{secrets.token_hex(8)}.tmp"
+    source_fd = os.open(source, source_flags)
+    dir_fd = os.open(target.parent, dir_flags)
+    temp_fd: int | None = None
+    try:
+        source_stat = os.fstat(source_fd)
+        temp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            temp_flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            temp_flags |= os.O_CLOEXEC
+        temp_fd = os.open(temp_name, temp_flags, source_stat.st_mode & 0o777, dir_fd=dir_fd)
+        with os.fdopen(source_fd, "rb", closefd=False) as source_file, os.fdopen(temp_fd, "wb", closefd=False) as temp_file:
+            shutil.copyfileobj(source_file, temp_file)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.fchmod(temp_fd, source_stat.st_mode & 0o777)
+        try:
+            os.fchown(temp_fd, source_stat.st_uid, source_stat.st_gid)
+        except PermissionError:
+            pass
+        os.rename(temp_name, target.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        os.fsync(dir_fd)
+    except Exception:
+        try:
+            os.unlink(temp_name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        os.close(dir_fd)
+        os.close(source_fd)
+
+
+def _render_rollback_confirm_command(stamp: str | None, etc_dir: Path, backup_dir: Path, skip_systemd: bool) -> str:
+    parts = ["hmn", "rollback"]
+    if stamp:
+        parts.extend(["--stamp", stamp])
+    parts.extend(["--etc-dir", str(etc_dir), "--backup-dir", str(backup_dir)])
+    if skip_systemd:
+        parts.append("--skip-systemd")
+    parts.append("--yes")
+    return " ".join(_shell_quote(part) for part in parts)
+
+
+@app.command("rollback")
+def rollback(
+    stamp: str | None = typer.Option(None, "--stamp", help="要恢复的备份 stamp；默认读取 upgrade-manifest.env。"),
+    etc_dir: Path = typer.Option(Path("/etc/hermes-managed-network"), "--etc-dir", help="HMN 配置目录"),
+    backup_dir: Path = typer.Option(Path("/var/backups/hermes-managed-network"), "--backup-dir", help="升级备份目录"),
+    yes: bool = typer.Option(False, "--yes", help="确认执行恢复。默认只打印计划。"),
+    skip_systemd: bool = typer.Option(False, "--skip-systemd", help="跳过 systemctl stop/start。"),
+) -> None:
+    """按 upgrade manifest 恢复升级前 DB/env/config/metadata。"""
+    manifest = etc_dir / "upgrade-manifest.env"
+    manifest_values = _read_master_env(manifest)
+    plan = _rollback_plan_from_manifest(manifest_values, etc_dir, backup_dir, stamp)
+    safe_plan = _validate_rollback_plan(plan, etc_dir, backup_dir)
+
+    typer.echo("回滚计划")
+    for label, source, target in safe_plan:
+        typer.echo(f"- {label}: {source} -> {target}")
+
+    if not yes:
+        typer.echo("DRY RUN：未修改任何文件。")
+        typer.echo("确认执行：" + _render_rollback_confirm_command(stamp, etc_dir, backup_dir, skip_systemd))
+        return
+
+    if not skip_systemd:
+        stop_result = subprocess.run(["systemctl", "stop", SERVICE_NAME], check=False)
+        if stop_result.returncode != 0:
+            typer.echo(f"停止服务失败，已中止回滚：systemctl stop {SERVICE_NAME}")
+            raise typer.Exit(stop_result.returncode)
+
+    for _, source, target in safe_plan:
+        _copy_file_atomically(source, target)
+
+    if not skip_systemd:
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+        start_result = subprocess.run(["systemctl", "start", SERVICE_NAME], check=False)
+        if start_result.returncode != 0:
+            typer.echo(f"启动服务失败，请手动排查：systemctl start {SERVICE_NAME}")
+            raise typer.Exit(start_result.returncode)
+
+    typer.echo("已恢复备份")
+    typer.echo("建议执行：hmn doctor")
+
+
 @app.command("uninstall")
 def uninstall(
     yes: bool = typer.Option(False, "--yes", help="确认执行卸载。默认只显示卸载命令。"),
