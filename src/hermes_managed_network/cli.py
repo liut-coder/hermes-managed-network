@@ -16,6 +16,7 @@ import typer
 
 from .components import ComponentManifest, load_builtin_components
 from .executor import PlaybookExecutor
+from .deploy import render_deploy_plan_json, render_deploy_status_json
 from .discovery import discover_services_from_file
 from .docs_generate import load_registry_and_generate_docs
 from .inspect import collect_local_inventory, inventory_to_json
@@ -74,6 +75,7 @@ inspect_app = typer.Typer(help="盘点节点资产")
 discover_app = typer.Typer(help="从盘点结果发现服务")
 docs_app = typer.Typer(help="从 service registry 生成服务文档")
 uptime_app = typer.Typer(help="从 service registry 生成 uptime 监控计划（dry-run）")
+deploy_app = typer.Typer(help="聚合 service registry 与 provider fixture 的 deploy plan/status（dry-run）")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -85,6 +87,7 @@ app.add_typer(inspect_app, name="inspect")
 app.add_typer(discover_app, name="discover")
 app.add_typer(docs_app, name="docs")
 app.add_typer(uptime_app, name="uptime")
+app.add_typer(deploy_app, name="deploy")
 
 
 def _default_db() -> Path:
@@ -453,6 +456,58 @@ def uptime_plan_command(
     as_json: bool = typer.Option(False, "--json", help="输出 dry-run 监控计划 JSON。"),
 ) -> None:
     rendered = render_uptime_plan_json(service_registry)
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
+@deploy_app.command("plan")
+def deploy_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    provider_fixture_dir: Path | None = typer.Option(
+        None,
+        "--provider-fixture-dir",
+        help="provider fixture 目录；不连接真实外部系统。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 deploy dry-run plan JSON。"),
+) -> None:
+    rendered = render_deploy_plan_json(
+        service_registry,
+        service_id=service_id,
+        provider_fixture_dir=provider_fixture_dir,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
+@deploy_app.command("status")
+def deploy_status_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    provider_fixture_dir: Path | None = typer.Option(
+        None,
+        "--provider-fixture-dir",
+        help="provider fixture 目录；不连接真实外部系统。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 deploy 聚合状态 JSON。"),
+) -> None:
+    rendered = render_deploy_status_json(
+        service_registry,
+        service_id=service_id,
+        provider_fixture_dir=provider_fixture_dir,
+    )
     if as_json:
         typer.echo(rendered)
         return
