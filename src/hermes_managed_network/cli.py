@@ -17,6 +17,7 @@ import typer
 from .components import ComponentManifest, load_builtin_components
 from .executor import PlaybookExecutor
 from .discovery import discover_services_from_file
+from .docs_generate import load_registry_and_generate_docs
 from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .playbook import Playbook
@@ -70,6 +71,7 @@ approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
 inspect_app = typer.Typer(help="盘点节点资产")
 discover_app = typer.Typer(help="从盘点结果发现服务")
+docs_app = typer.Typer(help="从 service registry 生成服务文档")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -79,6 +81,7 @@ app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
 app.add_typer(inspect_app, name="inspect")
 app.add_typer(discover_app, name="discover")
+app.add_typer(docs_app, name="docs")
 
 
 def _default_db() -> Path:
@@ -426,6 +429,15 @@ def discover_services_command(
     rendered = json.dumps(registry.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
     if as_json or not target:
         typer.echo(rendered)
+
+
+@docs_app.command("generate")
+def generate_docs_command(
+    registry: Path = typer.Option(DEFAULT_SERVICE_REGISTRY_PATH, "--registry", help="service registry JSON 路径。"),
+    output_dir: Path = typer.Option(Path("docs"), "--output-dir", help="文档输出目录。"),
+) -> None:
+    generated_dir = load_registry_and_generate_docs(registry, output_dir)
+    typer.echo(str(generated_dir))
 
 
 @app.command("version")
