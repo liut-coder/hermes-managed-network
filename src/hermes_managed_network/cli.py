@@ -19,6 +19,12 @@ from .executor import PlaybookExecutor
 from .deploy import render_deploy_plan_json, render_deploy_status_json
 from .discovery import discover_services_from_file
 from .docs_generate import load_registry_and_generate_docs
+from .docs_sync import (
+    DEFAULT_SERVER_DOC_ROOT,
+    DEFAULT_SERVICE_DOC_ROOT,
+    parse_rename_host_args,
+    render_docs_sync_plan_json,
+)
 from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .playbook import Playbook
@@ -74,6 +80,7 @@ component_app = typer.Typer(help="管理按需加载组件")
 inspect_app = typer.Typer(help="盘点节点资产")
 discover_app = typer.Typer(help="从盘点结果发现服务")
 docs_app = typer.Typer(help="从 service registry 生成服务文档")
+docs_sync_app = typer.Typer(help="生成集中 docs-sync dry-run 计划")
 uptime_app = typer.Typer(help="从 service registry 生成 uptime 监控计划（dry-run）")
 deploy_app = typer.Typer(help="聚合 service registry 与 provider fixture 的 deploy plan/status（dry-run）")
 app.add_typer(token_app, name="token")
@@ -86,6 +93,7 @@ app.add_typer(component_app, name="component")
 app.add_typer(inspect_app, name="inspect")
 app.add_typer(discover_app, name="discover")
 app.add_typer(docs_app, name="docs")
+docs_app.add_typer(docs_sync_app, name="sync")
 app.add_typer(uptime_app, name="uptime")
 app.add_typer(deploy_app, name="deploy")
 
@@ -444,6 +452,43 @@ def generate_docs_command(
 ) -> None:
     generated_dir = load_registry_and_generate_docs(registry, output_dir)
     typer.echo(str(generated_dir))
+
+
+@docs_sync_app.command("plan")
+def docs_sync_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    server_doc_root: Path = typer.Option(
+        DEFAULT_SERVER_DOC_ROOT,
+        "--server-doc-root",
+        help="机器级文档根目录（仅用于 dry-run 计划输出）。",
+    ),
+    service_doc_root: Path = typer.Option(
+        DEFAULT_SERVICE_DOC_ROOT,
+        "--service-doc-root",
+        help="服务级文档根目录（仅用于 dry-run 计划输出）。",
+    ),
+    rename_host: list[str] = typer.Option(
+        None,
+        "--rename-host",
+        help="hostname rename 计划，格式 OLD=NEW；可重复传入。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 docs-sync dry-run plan JSON。"),
+) -> None:
+    rename_mapping = parse_rename_host_args(rename_host)
+    rendered = render_docs_sync_plan_json(
+        service_registry,
+        server_doc_root=server_doc_root,
+        service_doc_root=service_doc_root,
+        rename_hosts=rename_mapping,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
 
 
 @uptime_app.command("plan")
