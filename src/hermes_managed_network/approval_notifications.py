@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+from .approval_gateway import ApprovalCard
 from .storage import ApprovalRequest
 
 
-@dataclass(frozen=True)
-class TelegramApprovalCard:
-    text: str
-    buttons: list[dict[str, str]]
+TelegramApprovalCard = ApprovalCard
 
 
 def _redact_command(command: str, *, max_length: int = 80) -> str:
@@ -25,7 +21,7 @@ def _redact_command(command: str, *, max_length: int = 80) -> str:
     return redacted
 
 
-def build_telegram_approval_card(approval: ApprovalRequest) -> TelegramApprovalCard:
+def build_approval_card(approval: ApprovalRequest) -> ApprovalCard:
     node_id = str(approval.details.get("node_id", "未知节点"))
     command = _redact_command(str(approval.details.get("command", "")))
     text = "\n".join(
@@ -38,7 +34,7 @@ def build_telegram_approval_card(approval: ApprovalRequest) -> TelegramApprovalC
             f"命令: `{command}`" if command else "命令: `(无)`",
         ]
     )
-    return TelegramApprovalCard(
+    return ApprovalCard(
         text=text,
         buttons=[
             {"text": "✅ 批准", "callback_data": f"hmn:approval:approve:{approval.approval_id}"},
@@ -47,7 +43,11 @@ def build_telegram_approval_card(approval: ApprovalRequest) -> TelegramApprovalC
     )
 
 
-def parse_telegram_approval_callback(callback_data: str) -> dict[str, str] | None:
+def build_telegram_approval_card(approval: ApprovalRequest) -> TelegramApprovalCard:
+    return build_approval_card(approval)
+
+
+def parse_approval_callback(callback_data: str) -> dict[str, str] | None:
     parts = callback_data.split(":")
     if len(parts) != 4:
         return None
@@ -57,3 +57,7 @@ def parse_telegram_approval_callback(callback_data: str) -> dict[str, str] | Non
     if not approval_id.startswith("appr_"):
         return None
     return {"decision": decision, "approval_id": approval_id}
+
+
+def parse_telegram_approval_callback(callback_data: str) -> dict[str, str] | None:
+    return parse_approval_callback(callback_data)

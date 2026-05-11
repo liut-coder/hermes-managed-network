@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .approval_notifications import (
-    TelegramApprovalCard,
-    build_telegram_approval_card,
-    parse_telegram_approval_callback,
-)
+from .approval_gateway import ApprovalCard
+from .approval_notifications import build_approval_card, parse_approval_callback
 from .storage import SQLiteStore
 
 
@@ -15,7 +12,7 @@ class PendingApprovalNotification:
     approval_id: str
     status: str
     delivery_hint: str
-    card: TelegramApprovalCard
+    card: ApprovalCard
 
 
 @dataclass(frozen=True)
@@ -35,7 +32,7 @@ def build_pending_approval_notification(store: SQLiteStore, approval_id: str) ->
         approval_id=approval.approval_id,
         status=approval.status,
         delivery_hint="telegram",
-        card=build_telegram_approval_card(approval),
+        card=build_approval_card(approval),
     )
 
 
@@ -45,7 +42,7 @@ def handle_telegram_approval_callback(
     *,
     decided_by: str,
 ) -> TelegramApprovalCallbackResult:
-    parsed = parse_telegram_approval_callback(callback_data)
+    parsed = parse_approval_callback(callback_data)
     if parsed is None:
         return TelegramApprovalCallbackResult(ok=False, message="无效的审批回调。")
 

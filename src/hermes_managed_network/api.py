@@ -120,6 +120,12 @@ class TelegramCallbackRequest(BaseModel):
     decided_by: str = "telegram"
 
 
+class ApprovalGatewayCallbackRequest(BaseModel):
+    client: str = "telegram"
+    callback_data: str
+    decided_by: str = "gateway"
+
+
 class TelegramCallbackResponse(BaseModel):
     ok: bool
     message: str
@@ -342,28 +348,22 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     def reject_approval(approval_id: str, request: ApprovalDecisionRequest) -> ApprovalDecisionResponse:
         return _resolve_approval(approval_id, status="rejected", request=request)
 
-    @app.get("/api/v1/gateway/telegram/notifications", response_model=NotificationListResponse)
-    def telegram_notifications() -> NotificationListResponse:
+    def _gateway_notifications(client: str) -> NotificationListResponse:
         notifications = [
             _notification_response(notification)
             for notification in store.list_notifications(status="pending")
-            if notification.channel == "telegram"
+            if notification.channel == client
         ]
         return NotificationListResponse(notifications=notifications)
 
-    @app.post(
-        "/api/v1/gateway/telegram/notifications/{notification_id}/delivered",
-        response_model=NotificationStatusResponse,
-    )
-    def telegram_notification_delivered(notification_id: str) -> NotificationStatusResponse:
+    def _gateway_notification_delivered(notification_id: str) -> NotificationStatusResponse:
         notification = store.mark_notification_delivered(notification_id)
         if notification is None:
             raise HTTPException(status_code=404, detail="notification not found")
         return NotificationStatusResponse(notification_id=notification.notification_id, status=notification.status)
 
-    @app.post("/api/v1/gateway/telegram/callback", response_model=TelegramCallbackResponse)
-    def telegram_callback(request: TelegramCallbackRequest) -> TelegramCallbackResponse:
-        result = handle_telegram_approval_callback(store, request.callback_data, decided_by=request.decided_by)
+    def _gateway_callback(callback_data: str, *, decided_by: str) -> TelegramCallbackResponse:
+        result = handle_telegram_approval_callback(store, callback_data, decided_by=decided_by)
         if not result.ok:
             status_code = 409 if result.status in {"approved", "rejected"} else 400
             raise HTTPException(
@@ -383,6 +383,38 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             status=result.status,
             dispatched_task_id=result.dispatched_task_id,
         )
+
+    @app.get("/api/v1/gateway/approval/notifications", response_model=NotificationListResponse)
+    def approval_gateway_notifications(client: str = "telegram") -> NotificationListResponse:
+        return _gateway_notifications(client)
+
+    @app.post(
+        "/api/v1/gateway/approval/notifications/{notification_id}/delivered",
+        response_model=NotificationStatusResponse,
+    )
+    def approval_gateway_notification_delivered(notification_id: str) -> NotificationStatusResponse:
+        return _gateway_notification_delivered(notification_id)
+
+    @app.post("/api/v1/gateway/approval/callback", response_model=TelegramCallbackResponse)
+    def approval_gateway_callback(request: ApprovalGatewayCallbackRequest) -> TelegramCallbackResponse:
+        if request.client != "telegram":
+            raise HTTPException(status_code=400, detail="unsupported approval gateway client")
+        return _gateway_callback(request.callback_data, decided_by=request.decided_by)
+
+    @app.get("/api/v1/gateway/telegram/notifications", response_model=NotificationListResponse)
+    def telegram_notifications() -> NotificationListResponse:
+        return _gateway_notifications("telegram")
+
+    @app.post(
+        "/api/v1/gateway/telegram/notifications/{notification_id}/delivered",
+        response_model=NotificationStatusResponse,
+    )
+    def telegram_notification_delivered(notification_id: str) -> NotificationStatusResponse:
+        return _gateway_notification_delivered(notification_id)
+
+    @app.post("/api/v1/gateway/telegram/callback", response_model=TelegramCallbackResponse)
+    def telegram_callback(request: TelegramCallbackRequest) -> TelegramCallbackResponse:
+        return _gateway_callback(request.callback_data, decided_by=request.decided_by)
 
     return app
 

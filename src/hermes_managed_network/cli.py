@@ -22,7 +22,8 @@ from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .storage import SQLiteStore
-from .telegram_gateway import HttpGatewayApiClient, TelegramBotApiClient, poll_once
+from .approval_gateway import ApprovalGatewayClientConfig, ApprovalGatewayHttpApiClient, TelegramApprovalGatewayClient, poll_once
+from .telegram_gateway import HttpGatewayApiClient, TelegramBotApiClient, poll_once as telegram_poll_once
 from .tokens import JoinTokenStore
 from .version import current_version_info
 
@@ -53,7 +54,7 @@ app = typer.Typer(
         "  hmn task list             查看任务队列\n"
         "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
         "  hmn approval list         查看待审批操作\n"
-        "  hmn telegram-gateway poll-once 发送一次 Telegram 审批通知\n"
+        "  hmn approval-gateway poll-once --client telegram 发送一次审批通知\n"
         "  hmn component list        查看可用组件\n"
         "  hmn component plan        生成组件执行计划\n"
         "  hmn component apply       记录组件期望状态\n"
@@ -75,7 +76,8 @@ task_app = typer.Typer(help="下发和查看节点任务")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
 network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
-telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关")
+approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
+telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(network_app, name="network")
@@ -84,6 +86,7 @@ app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
+app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
 
 
@@ -1716,21 +1719,77 @@ def reject_approval(
     typer.echo(f"rejected: {approval.approval_id}")
 
 
+def _approval_gateway_settings(
+    client: str,
+    api_url: str | None,
+    target: str | None,
+    token: str | None,
+) -> tuple[str, ApprovalGatewayClientConfig, str | None]:
+    resolved_client = client.lower()
+    resolved_api_url = (api_url or os.environ.get("HMN_API_URL") or _default_master_url()).rstrip("/")
+    if resolved_client != "telegram":
+        typer.echo(f"暂不支持审批客户端：{client}。当前可用：telegram。")
+        raise typer.Exit(1)
+    resolved_target = target or os.environ.get("HMN_APPROVAL_GATEWAY_TARGET") or os.environ.get("HMN_TELEGRAM_CHAT_ID")
+    resolved_token = token or os.environ.get("HMN_APPROVAL_GATEWAY_TOKEN") or os.environ.get("HMN_TELEGRAM_BOT_TOKEN")
+    if not resolved_target:
+        typer.echo("缺少审批目标：请传 --target/--chat-id 或设置 HMN_APPROVAL_GATEWAY_TARGET/HMN_TELEGRAM_CHAT_ID。")
+        raise typer.Exit(1)
+    if not resolved_token:
+        typer.echo("缺少审批客户端 token：请传 --token 或设置 HMN_APPROVAL_GATEWAY_TOKEN/HMN_TELEGRAM_BOT_TOKEN。")
+        raise typer.Exit(1)
+    return resolved_api_url, ApprovalGatewayClientConfig(client=resolved_client, target=resolved_target), resolved_token
+
+
 def _telegram_gateway_settings(
     api_url: str | None,
     chat_id: str | None,
     token: str | None,
 ) -> tuple[str, str, str]:
-    resolved_api_url = (api_url or os.environ.get("HMN_API_URL") or _default_master_url()).rstrip("/")
-    resolved_chat_id = chat_id or os.environ.get("HMN_TELEGRAM_CHAT_ID")
-    resolved_token = token or os.environ.get("HMN_TELEGRAM_BOT_TOKEN")
-    if not resolved_chat_id:
-        typer.echo("缺少 Telegram chat id：请传 --chat-id 或设置 HMN_TELEGRAM_CHAT_ID。")
+    resolved_api_url, config, resolved_token = _approval_gateway_settings("telegram", api_url, chat_id, token)
+    return resolved_api_url, config.target, str(resolved_token)
+
+
+@approval_gateway_app.command("poll-once")
+def approval_gateway_poll_once(
+    client: str = typer.Option("telegram", "--client", help="审批客户端，目前支持 telegram"),
+    api_url: str | None = typer.Option(None, "--api-url", help="HMN API 地址，默认 HMN_API_URL 或本机 master URL"),
+    target: str | None = typer.Option(None, "--target", help="客户端目标，例如 Telegram chat id"),
+    token: str | None = typer.Option(None, "--token", help="客户端 token，Telegram 默认 HMN_TELEGRAM_BOT_TOKEN"),
+) -> None:
+    """拉取一次 outbox，并向指定客户端发送审批通知。"""
+    resolved_api_url, config, resolved_token = _approval_gateway_settings(client, api_url, target, token)
+    result = poll_once(
+        ApprovalGatewayHttpApiClient(resolved_api_url, client=config.client),
+        TelegramApprovalGatewayClient(str(resolved_token)),
+        config,
+    )
+    typer.echo(f"sent={result.sent} failed={result.failed}")
+    if result.failed:
         raise typer.Exit(1)
-    if not resolved_token:
-        typer.echo("缺少 Telegram bot token：请传 --token 或设置 HMN_TELEGRAM_BOT_TOKEN。")
-        raise typer.Exit(1)
-    return resolved_api_url, resolved_chat_id, resolved_token
+
+
+@approval_gateway_app.command("run")
+def approval_gateway_run(
+    client: str = typer.Option("telegram", "--client", help="审批客户端，目前支持 telegram"),
+    api_url: str | None = typer.Option(None, "--api-url", help="HMN API 地址，默认 HMN_API_URL 或本机 master URL"),
+    target: str | None = typer.Option(None, "--target", help="客户端目标，例如 Telegram chat id"),
+    token: str | None = typer.Option(None, "--token", help="客户端 token，Telegram 默认 HMN_TELEGRAM_BOT_TOKEN"),
+    interval_seconds: int = typer.Option(10, "--interval", min=1, help="轮询间隔秒数"),
+    once: bool = typer.Option(False, "--once", help="只轮询一次后退出"),
+) -> None:
+    """持续轮询 outbox，并向指定客户端发送审批通知。"""
+    resolved_api_url, config, resolved_token = _approval_gateway_settings(client, api_url, target, token)
+    api_client = ApprovalGatewayHttpApiClient(resolved_api_url, client=config.client)
+    gateway_client = TelegramApprovalGatewayClient(str(resolved_token))
+    while True:
+        result = poll_once(api_client, gateway_client, config)
+        typer.echo(f"sent={result.sent} failed={result.failed}")
+        if once:
+            if result.failed:
+                raise typer.Exit(1)
+            return
+        time.sleep(interval_seconds)
 
 
 @telegram_gateway_app.command("poll-once")
@@ -1739,9 +1798,9 @@ def telegram_gateway_poll_once(
     chat_id: str | None = typer.Option(None, "--chat-id", help="Telegram 目标 chat id，默认 HMN_TELEGRAM_CHAT_ID"),
     token: str | None = typer.Option(None, "--token", help="Telegram Bot token，默认 HMN_TELEGRAM_BOT_TOKEN"),
 ) -> None:
-    """拉取一次 outbox，并向 Telegram 发送审批通知。"""
+    """兼容旧命令：拉取一次 outbox，并向 Telegram 发送审批通知。"""
     resolved_api_url, resolved_chat_id, resolved_token = _telegram_gateway_settings(api_url, chat_id, token)
-    result = poll_once(
+    result = telegram_poll_once(
         HttpGatewayApiClient(resolved_api_url),
         TelegramBotApiClient(resolved_token),
         chat_id=resolved_chat_id,
@@ -1759,12 +1818,12 @@ def telegram_gateway_run(
     interval_seconds: int = typer.Option(10, "--interval", min=1, help="轮询间隔秒数"),
     once: bool = typer.Option(False, "--once", help="只轮询一次后退出"),
 ) -> None:
-    """持续轮询 outbox，并向 Telegram 发送审批通知。"""
+    """兼容旧命令：持续轮询 outbox，并向 Telegram 发送审批通知。"""
     resolved_api_url, resolved_chat_id, resolved_token = _telegram_gateway_settings(api_url, chat_id, token)
     api_client = HttpGatewayApiClient(resolved_api_url)
     telegram_client = TelegramBotApiClient(resolved_token)
     while True:
-        result = poll_once(api_client, telegram_client, chat_id=resolved_chat_id)
+        result = telegram_poll_once(api_client, telegram_client, chat_id=resolved_chat_id)
         typer.echo(f"sent={result.sent} failed={result.failed}")
         if once:
             if result.failed:

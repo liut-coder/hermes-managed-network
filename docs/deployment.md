@@ -99,48 +99,60 @@ hmn task list
 - `stderr` 会说明 `execution disabled; set HMN_ENABLE_EXEC=1`
 - 任务状态会变成 `failed`，用于证明队列和 result 回传闭环可用
 
-## Telegram 审批网关
+## 审批网关
 
-高风险任务会进入 approval outbox。主控机可以运行 Telegram 网关，把审批卡片发送到指定 chat。
+高风险任务会进入 approval outbox。主控机优先运行通用 `approval-gateway`，当前客户端实现为 Telegram；旧的 `telegram-gateway` 命令和 systemd 单元仍保留兼容。
 
 一次性发送 pending 审批通知：
 
 ```bash
 HMN_API_URL='http://127.0.0.1:8765' \
-HMN_TELEGRAM_CHAT_ID='<chat-id>' \
-HMN_TELEGRAM_BOT_TOKEN='<bot-token>' \
-hmn telegram-gateway poll-once
+HMN_APPROVAL_GATEWAY_TARGET='<chat-id>' \
+HMN_APPROVAL_GATEWAY_TOKEN='<bot-token>' \
+hmn approval-gateway poll-once --client telegram
 ```
 
 持续运行：
 
 ```bash
 HMN_API_URL='http://127.0.0.1:8765' \
+HMN_APPROVAL_GATEWAY_TARGET='<chat-id>' \
+HMN_APPROVAL_GATEWAY_TOKEN='<bot-token>' \
+hmn approval-gateway run --client telegram --interval 10
+```
+
+兼容旧命令：
+
+```bash
 HMN_TELEGRAM_CHAT_ID='<chat-id>' \
 HMN_TELEGRAM_BOT_TOKEN='<bot-token>' \
-hmn telegram-gateway run --interval 10
+hmn telegram-gateway poll-once
 ```
 
 systemd 示例（token 建议写入 root-only env 文件，不要写入命令行历史）：
 
 ```ini
-# /etc/hermes-managed-network/telegram-gateway.env
+# /etc/hermes-managed-network/approval-gateway.env
 HMN_API_URL=http://127.0.0.1:8765
+HMN_APPROVAL_GATEWAY_CLIENT=telegram
+HMN_APPROVAL_GATEWAY_TARGET=<chat-id>
+HMN_APPROVAL_GATEWAY_TOKEN=<bot-token>
+# 兼容旧 telegram-gateway 命令/脚本
 HMN_TELEGRAM_CHAT_ID=<chat-id>
 HMN_TELEGRAM_BOT_TOKEN=<bot-token>
 ```
 
 ```ini
-# /etc/systemd/system/hermes-managed-network-telegram-gateway.service
+# /etc/systemd/system/hermes-managed-network-approval-gateway.service
 [Unit]
-Description=Hermes Managed Network Telegram approval gateway
+Description=Hermes Managed Network approval gateway
 After=network-online.target hermes-managed-network.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/hermes-managed-network/telegram-gateway.env
-ExecStart=/usr/local/bin/hmn telegram-gateway run --interval 10
+EnvironmentFile=/etc/hermes-managed-network/approval-gateway.env
+ExecStart=/usr/local/bin/hmn approval-gateway run --client telegram --target <chat-id> --interval 10
 Restart=always
 RestartSec=5
 User=root
@@ -153,9 +165,9 @@ WantedBy=multi-user.target
 
 ```bash
 sudo install -d -m 700 /etc/hermes-managed-network
-sudo chmod 600 /etc/hermes-managed-network/telegram-gateway.env
+sudo chmod 600 /etc/hermes-managed-network/approval-gateway.env
 sudo systemctl daemon-reload
-sudo systemctl enable --now hermes-managed-network-telegram-gateway.service
+sudo systemctl enable --now hermes-managed-network-approval-gateway.service
 ```
 
 ## 本地端到端 smoke test

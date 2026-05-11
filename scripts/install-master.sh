@@ -13,9 +13,13 @@ HMN_UPGRADE_POLICY="${HMN_UPGRADE_POLICY:-prompt}"
 HMN_BACKUP_DIR="${HMN_BACKUP_DIR:-/var/backups/hermes-managed-network}"
 HMN_PUBLIC_URL="${HMN_PUBLIC_URL:-http://127.0.0.1:${HMN_PORT}}"
 HMN_ENABLE_TELEGRAM="${HMN_ENABLE_TELEGRAM:-0}"
-HMN_TELEGRAM_CHAT_ID="${HMN_TELEGRAM_CHAT_ID:-}"
-HMN_TELEGRAM_BOT_TOKEN="${HMN_TELEGRAM_BOT_TOKEN:-}"
-HMN_TELEGRAM_INTERVAL="${HMN_TELEGRAM_INTERVAL:-10}"
+HMN_APPROVAL_GATEWAY_CLIENT="${HMN_APPROVAL_GATEWAY_CLIENT:-telegram}"
+HMN_APPROVAL_GATEWAY_TARGET="${HMN_APPROVAL_GATEWAY_TARGET:-${HMN_TELEGRAM_CHAT_ID:-}}"
+HMN_APPROVAL_GATEWAY_TOKEN="${HMN_APPROVAL_GATEWAY_TOKEN:-${HMN_TELEGRAM_BOT_TOKEN:-}}"
+HMN_APPROVAL_GATEWAY_INTERVAL="${HMN_APPROVAL_GATEWAY_INTERVAL:-${HMN_TELEGRAM_INTERVAL:-10}}"
+HMN_TELEGRAM_CHAT_ID="${HMN_TELEGRAM_CHAT_ID:-$HMN_APPROVAL_GATEWAY_TARGET}"
+HMN_TELEGRAM_BOT_TOKEN="${HMN_TELEGRAM_BOT_TOKEN:-$HMN_APPROVAL_GATEWAY_TOKEN}"
+HMN_TELEGRAM_INTERVAL="${HMN_TELEGRAM_INTERVAL:-$HMN_APPROVAL_GATEWAY_INTERVAL}"
 HMN_HEADSCALE_MODE="${HMN_HEADSCALE_MODE:-bundled}"
 HMN_HEADSCALE_URL="${HMN_HEADSCALE_URL:-}"
 HMN_HEADSCALE_API_KEY="${HMN_HEADSCALE_API_KEY:-}"
@@ -176,6 +180,9 @@ backup_existing_state() {
   if [ -f /etc/hermes-managed-network/master.env ]; then
     cp -a /etc/hermes-managed-network/master.env "$HMN_BACKUP_DIR/master.${stamp}.env"
   fi
+  if [ -f /etc/hermes-managed-network/approval-gateway.env ]; then
+    cp -a /etc/hermes-managed-network/approval-gateway.env "$HMN_BACKUP_DIR/approval-gateway.${stamp}.env"
+  fi
   if [ -f /etc/hermes-managed-network/telegram-gateway.env ]; then
     cp -a /etc/hermes-managed-network/telegram-gateway.env "$HMN_BACKUP_DIR/telegram-gateway.${stamp}.env"
   fi
@@ -262,31 +269,71 @@ EOF
   chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/master.env
 }
 
-write_telegram_gateway_env() {
+write_approval_gateway_env() {
   if [ "$HMN_ENABLE_TELEGRAM" != "1" ]; then
     return
   fi
-  if [ -z "$HMN_TELEGRAM_CHAT_ID" ] || [ -z "$HMN_TELEGRAM_BOT_TOKEN" ]; then
-    echo "HMN_ENABLE_TELEGRAM=1 但缺少 HMN_TELEGRAM_CHAT_ID 或 HMN_TELEGRAM_BOT_TOKEN" >&2
+  if [ "$HMN_APPROVAL_GATEWAY_CLIENT" != "telegram" ]; then
+    echo "暂不支持 HMN_APPROVAL_GATEWAY_CLIENT=${HMN_APPROVAL_GATEWAY_CLIENT}，当前可用：telegram" >&2
+    exit 1
+  fi
+  if [ -z "$HMN_APPROVAL_GATEWAY_TARGET" ] || [ -z "$HMN_APPROVAL_GATEWAY_TOKEN" ]; then
+    echo "HMN_ENABLE_TELEGRAM=1 但缺少 HMN_APPROVAL_GATEWAY_TARGET/HMN_TELEGRAM_CHAT_ID 或 HMN_APPROVAL_GATEWAY_TOKEN/HMN_TELEGRAM_BOT_TOKEN" >&2
     exit 1
   fi
   install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
-  cat >/etc/hermes-managed-network/telegram-gateway.env <<EOF
+  cat >/etc/hermes-managed-network/approval-gateway.env <<EOF
 HMN_API_URL=http://127.0.0.1:${HMN_PORT}
-HMN_TELEGRAM_CHAT_ID=${HMN_TELEGRAM_CHAT_ID}
-HMN_TELEGRAM_BOT_TOKEN=${HMN_TELEGRAM_BOT_TOKEN}
+HMN_APPROVAL_GATEWAY_CLIENT=${HMN_APPROVAL_GATEWAY_CLIENT}
+HMN_APPROVAL_GATEWAY_TARGET=${HMN_APPROVAL_GATEWAY_TARGET}
+HMN_APPROVAL_GATEWAY_TOKEN=${HMN_APPROVAL_GATEWAY_TOKEN}
+HMN_TELEGRAM_CHAT_ID=${HMN_APPROVAL_GATEWAY_TARGET}
+HMN_TELEGRAM_BOT_TOKEN=${HMN_APPROVAL_GATEWAY_TOKEN}
 EOF
+  chmod 0640 /etc/hermes-managed-network/approval-gateway.env
+  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/approval-gateway.env
+
+  # Backward-compatible env file for operators/scripts that still reference the old Telegram gateway name.
+  cp -a /etc/hermes-managed-network/approval-gateway.env /etc/hermes-managed-network/telegram-gateway.env
   chmod 0640 /etc/hermes-managed-network/telegram-gateway.env
   chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/telegram-gateway.env
 }
 
-write_telegram_gateway_service() {
+write_telegram_gateway_env() {
+  write_approval_gateway_env
+}
+
+write_approval_gateway_service() {
   if [ "$HMN_ENABLE_TELEGRAM" != "1" ]; then
     return
   fi
+  cat >/etc/systemd/system/hermes-managed-network-approval-gateway.service <<EOF
+[Unit]
+Description=Hermes Managed Network approval gateway
+After=network-online.target hermes-managed-network.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${HMN_USER}
+Group=${HMN_USER}
+EnvironmentFile=/etc/hermes-managed-network/approval-gateway.env
+ExecStart=/usr/local/bin/hmn approval-gateway run --client ${HMN_APPROVAL_GATEWAY_CLIENT} --target ${HMN_APPROVAL_GATEWAY_TARGET} --interval ${HMN_APPROVAL_GATEWAY_INTERVAL}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # Compatibility service: keep the legacy unit name available but route it through the generic gateway.
   cat >/etc/systemd/system/hermes-managed-network-telegram-gateway.service <<EOF
 [Unit]
-Description=Hermes Managed Network Telegram approval gateway
+Description=Hermes Managed Network Telegram approval gateway (legacy alias)
 After=network-online.target hermes-managed-network.service
 Wants=network-online.target
 
@@ -306,6 +353,10 @@ ProtectHome=true
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+write_telegram_gateway_service() {
+  write_approval_gateway_service
 }
 
 configure_headscale_provider() {
@@ -399,18 +450,18 @@ main() {
   install_package
   verify_install
   write_env
-  write_telegram_gateway_env
+  write_approval_gateway_env
   install_headscale_bundled
   if [ "$HMN_HEADSCALE_MODE" = "external" ]; then
     configure_headscale_provider
   fi
   install_cli_links
   write_service
-  write_telegram_gateway_service
+  write_approval_gateway_service
   systemctl daemon-reload
   systemctl enable --now hermes-managed-network.service
   if [ "$HMN_ENABLE_TELEGRAM" = "1" ]; then
-    systemctl enable --now hermes-managed-network-telegram-gateway.service
+    systemctl enable --now hermes-managed-network-approval-gateway.service
   fi
   if ! self_check; then
     print_failure_hint
@@ -418,7 +469,7 @@ main() {
   fi
   systemctl --no-pager --full status hermes-managed-network.service || true
   if [ "$HMN_ENABLE_TELEGRAM" = "1" ]; then
-    systemctl --no-pager --full status hermes-managed-network-telegram-gateway.service || true
+    systemctl --no-pager --full status hermes-managed-network-approval-gateway.service || true
   fi
 }
 

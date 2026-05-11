@@ -73,16 +73,24 @@ def test_master_installer_runs_post_deploy_self_check():
     assert "journalctl -u hermes-managed-network.service" in script
 
 
-def test_master_installer_can_enable_telegram_gateway_service():
+def test_master_installer_can_enable_approval_gateway_service_with_telegram_compatibility():
     script = (ROOT / "scripts/install-master.sh").read_text()
 
     assert "HMN_ENABLE_TELEGRAM" in script
+    assert "HMN_APPROVAL_GATEWAY_CLIENT" in script
+    assert "HMN_APPROVAL_GATEWAY_TARGET" in script
+    assert "HMN_APPROVAL_GATEWAY_TOKEN" in script
+    assert "approval-gateway.env" in script
+    assert "hermes-managed-network-approval-gateway.service" in script
+    assert "ExecStart=/usr/local/bin/hmn approval-gateway run --client" in script
+    assert "systemctl enable --now hermes-managed-network-approval-gateway.service" in script
+
+    # Backward compatibility for existing Telegram gateway deployments/scripts.
     assert "HMN_TELEGRAM_CHAT_ID" in script
     assert "HMN_TELEGRAM_BOT_TOKEN" in script
     assert "telegram-gateway.env" in script
     assert "hermes-managed-network-telegram-gateway.service" in script
     assert "ExecStart=/usr/local/bin/hmn telegram-gateway run --interval" in script
-    assert "systemctl enable --now hermes-managed-network-telegram-gateway.service" in script
 
 
 def test_master_installer_supports_headscale_bundled_and_external_modes():
