@@ -6,6 +6,7 @@ from hermes_managed_network.approval_gateway import (
     ApprovalGatewayHttpApiClient,
     InMemoryApprovalGatewayApiClient,
     RecordingApprovalGatewayClient,
+    process_telegram_callbacks,
     poll_once,
 )
 from hermes_managed_network.approval_notifications import (
@@ -38,6 +39,7 @@ def test_build_approval_card_is_client_neutral_and_telegram_wrapper_stays_compat
     assert card.channel == "approval"
     assert "高风险审批" in card.text
     assert "TOKEN=secret" not in card.text
+    assert card.buttons[0]["text"] == "✅ 批准"
     assert card.buttons[0]["callback_data"] == "hmn:approval:approve:appr_demo123"
     assert build_telegram_approval_card(_approval()).text == build_approval_card(_approval()).text
 
@@ -90,6 +92,47 @@ def test_http_gateway_client_uses_generic_approval_paths():
         "callback_data": "hmn:approval:approve:appr_1",
         "decided_by": "Misk",
     }
+
+
+class _FakeTelegramUpdateClient:
+    def __init__(self):
+        self.answered = []
+        self.cleared_keyboards = []
+
+    def get_updates(self, *, offset=None, timeout=0):
+        assert offset == 100
+        return [
+            {
+                "update_id": 101,
+                "callback_query": {
+                    "id": "cb_1",
+                    "data": "hmn:approval:approve:appr_1",
+                    "from": {"username": "Misk"},
+                    "message": {"message_id": 42, "chat": {"id": 7500615916}},
+                },
+            }
+        ]
+
+    def answer_callback_query(self, callback_query_id, *, text=None):
+        self.answered.append({"id": callback_query_id, "text": text})
+
+    def clear_inline_keyboard(self, *, chat_id, message_id):
+        self.cleared_keyboards.append({"chat_id": chat_id, "message_id": message_id})
+
+
+def test_process_telegram_callbacks_forwards_button_clicks_to_hmn_api():
+    api = InMemoryApprovalGatewayApiClient()
+    telegram = _FakeTelegramUpdateClient()
+
+    result = process_telegram_callbacks(api, telegram, offset=100)
+
+    assert result.processed == 1
+    assert result.approved == 0
+    assert result.failed == 0
+    assert result.next_offset == 102
+    assert api.callbacks == [{"callback_data": "hmn:approval:approve:appr_1", "decided_by": "telegram:Misk"}]
+    assert telegram.answered == [{"id": "cb_1", "text": "ok"}]
+    assert telegram.cleared_keyboards == [{"chat_id": 7500615916, "message_id": 42}]
 
 
 def test_approval_gateway_cli_exists_and_keeps_telegram_alias():

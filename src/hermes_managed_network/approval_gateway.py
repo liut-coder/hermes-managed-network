@@ -9,6 +9,15 @@ from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
+class TelegramUpdateResult:
+    processed: int = 0
+    approved: int = 0
+    rejected: int = 0
+    failed: int = 0
+    next_offset: int | None = None
+
+
+@dataclass(frozen=True)
 class ApprovalCard:
     text: str
     buttons: list[dict[str, str]]
@@ -134,6 +143,20 @@ class TelegramApprovalGatewayClient:
         self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
 
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        data = None
+        headers = {"Accept": "application/json"}
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                body = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"telegram request failed: HTTP {exc.code}") from exc
+        return json.loads(body) if body else {}
+
     def send_card(
         self,
         *,
@@ -147,18 +170,24 @@ class TelegramApprovalGatewayClient:
             "text": text,
             "reply_markup": {"inline_keyboard": keyboard},
         }
-        data = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            self.base_url + "/sendMessage",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                response.read()
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"telegram send failed: HTTP {exc.code}") from exc
+        self._request("POST", "/sendMessage", payload)
+
+    def get_updates(self, *, offset: int | None = None, timeout: int = 0) -> list[dict[str, Any]]:
+        query = {"timeout": timeout, "allowed_updates": json.dumps(["callback_query"])}
+        if offset is not None:
+            query["offset"] = offset
+        body = self._request("GET", "/getUpdates?" + urllib.parse.urlencode(query))
+        return list(body.get("result") or [])
+
+    def answer_callback_query(self, callback_query_id: str, *, text: str | None = None) -> None:
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        self._request("POST", "/answerCallbackQuery", payload)
+
+    def clear_inline_keyboard(self, *, chat_id: str | int, message_id: str | int) -> None:
+        payload = {"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}}
+        self._request("POST", "/editMessageReplyMarkup", payload)
 
 
 class TelegramBotApiClient(TelegramApprovalGatewayClient):
@@ -197,3 +226,57 @@ def poll_once(
         except Exception:
             failed += 1
     return PollResult(sent=sent, failed=failed)
+
+
+def process_telegram_callbacks(
+    api: ApprovalGatewayApiClient,
+    telegram: TelegramApprovalGatewayClient,
+    *,
+    offset: int | None = None,
+    decided_by_prefix: str = "telegram",
+) -> TelegramUpdateResult:
+    processed = approved = rejected = failed = 0
+    next_offset = offset
+    for update in telegram.get_updates(offset=offset):
+        update_id = int(update.get("update_id", 0))
+        next_offset = max(next_offset or 0, update_id + 1)
+        callback = update.get("callback_query") or {}
+        callback_data = str(callback.get("data") or "")
+        callback_id = str(callback.get("id") or "")
+        user = callback.get("from") or {}
+        username = user.get("username") or user.get("id") or "unknown"
+        if not callback_data.startswith("hmn:approval:"):
+            continue
+        processed += 1
+        try:
+            result = api.handle_callback(callback_data, decided_by=f"{decided_by_prefix}:{username}")
+            message = str(result.get("message") or "已处理。")
+            status = str(result.get("status") or "")
+            if status == "approved":
+                approved += 1
+            elif status == "rejected":
+                rejected += 1
+            telegram.answer_callback_query(callback_id, text=message[:180] if callback_id else None)
+            msg = callback.get("message") or {}
+            chat = msg.get("chat") or {}
+            chat_id = chat.get("id")
+            message_id = msg.get("message_id")
+            if chat_id is not None and message_id is not None:
+                try:
+                    telegram.clear_inline_keyboard(chat_id=chat_id, message_id=message_id)
+                except Exception:
+                    pass
+        except Exception:
+            failed += 1
+            if callback_id:
+                try:
+                    telegram.answer_callback_query(callback_id, text="审批处理失败，请查看 HMN 日志。")
+                except Exception:
+                    pass
+    return TelegramUpdateResult(
+        processed=processed,
+        approved=approved,
+        rejected=rejected,
+        failed=failed,
+        next_offset=next_offset,
+    )

@@ -22,7 +22,14 @@ from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .storage import SQLiteStore
-from .approval_gateway import ApprovalGatewayClientConfig, ApprovalGatewayHttpApiClient, TelegramApprovalGatewayClient, poll_once
+from .approval_gateway import (
+    ApprovalGatewayClientConfig,
+    ApprovalGatewayHttpApiClient,
+    TelegramApprovalGatewayClient,
+    poll_once,
+    process_telegram_callbacks,
+)
+from .approval_notifications import build_approval_card
 from .telegram_gateway import HttpGatewayApiClient, TelegramBotApiClient, poll_once as telegram_poll_once
 from .tokens import JoinTokenStore
 from .version import current_version_info
@@ -1547,7 +1554,15 @@ def create_task_command(
             requested_by="hmn",
             details={"node_id": node.node_id, "command": command, "risk": risk, "executor": executor, "created_by": "hmn"},
         )
+        card = build_approval_card(approval)
+        store.enqueue_notification(
+            channel="telegram",
+            subject_type="approval",
+            subject_id=approval.approval_id,
+            payload={"text": card.text, "buttons": card.buttons},
+        )
         typer.echo(f"需要审批: {approval.approval_id}")
+        typer.echo("已加入 approval gateway outbox: telegram")
         typer.echo(f"节点: {node.node_id}")
         typer.echo(f"命令: {command}")
         raise typer.Exit(1)
@@ -1750,6 +1765,28 @@ def _telegram_gateway_settings(
     return resolved_api_url, config.target, str(resolved_token)
 
 
+def _approval_gateway_offset_path(client: str) -> Path:
+    safe_client = "".join(ch for ch in client if ch.isalnum() or ch in {"-", "_"}) or "telegram"
+    return Path(f"/var/lib/hermes-managed-network/{safe_client}-gateway.update_offset")
+
+
+def _read_approval_gateway_offset(client: str) -> int | None:
+    path = _approval_gateway_offset_path(client)
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    return int(value) if value else None
+
+
+def _write_approval_gateway_offset(client: str, offset: int | None) -> None:
+    if offset is None:
+        return
+    path = _approval_gateway_offset_path(client)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(offset), encoding="utf-8")
+
+
 @approval_gateway_app.command("poll-once")
 def approval_gateway_poll_once(
     client: str = typer.Option("telegram", "--client", help="审批客户端，目前支持 telegram"),
@@ -1759,13 +1796,20 @@ def approval_gateway_poll_once(
 ) -> None:
     """拉取一次 outbox，并向指定客户端发送审批通知。"""
     resolved_api_url, config, resolved_token = _approval_gateway_settings(client, api_url, target, token)
-    result = poll_once(
-        ApprovalGatewayHttpApiClient(resolved_api_url, client=config.client),
-        TelegramApprovalGatewayClient(str(resolved_token)),
-        config,
+    api_client = ApprovalGatewayHttpApiClient(resolved_api_url, client=config.client)
+    gateway_client = TelegramApprovalGatewayClient(str(resolved_token))
+    result = poll_once(api_client, gateway_client, config)
+    callback_result = process_telegram_callbacks(
+        api_client,
+        gateway_client,
+        offset=_read_approval_gateway_offset(config.client),
     )
-    typer.echo(f"sent={result.sent} failed={result.failed}")
-    if result.failed:
+    _write_approval_gateway_offset(config.client, callback_result.next_offset)
+    typer.echo(
+        f"sent={result.sent} failed={result.failed} callbacks={callback_result.processed} "
+        f"approved={callback_result.approved} rejected={callback_result.rejected} callback_failed={callback_result.failed}"
+    )
+    if result.failed or callback_result.failed:
         raise typer.Exit(1)
 
 
@@ -1784,9 +1828,18 @@ def approval_gateway_run(
     gateway_client = TelegramApprovalGatewayClient(str(resolved_token))
     while True:
         result = poll_once(api_client, gateway_client, config)
-        typer.echo(f"sent={result.sent} failed={result.failed}")
+        callback_result = process_telegram_callbacks(
+            api_client,
+            gateway_client,
+            offset=_read_approval_gateway_offset(config.client),
+        )
+        _write_approval_gateway_offset(config.client, callback_result.next_offset)
+        typer.echo(
+            f"sent={result.sent} failed={result.failed} callbacks={callback_result.processed} "
+            f"approved={callback_result.approved} rejected={callback_result.rejected} callback_failed={callback_result.failed}"
+        )
         if once:
-            if result.failed:
+            if result.failed or callback_result.failed:
                 raise typer.Exit(1)
             return
         time.sleep(interval_seconds)
