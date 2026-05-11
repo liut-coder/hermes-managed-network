@@ -16,10 +16,12 @@ import typer
 
 from .components import ComponentManifest, load_builtin_components
 from .executor import PlaybookExecutor
+from .discovery import discover_services_from_file
 from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
+from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH
 from .storage import SQLiteStore
 from .tokens import JoinTokenStore
 from .version import current_version_info
@@ -67,6 +69,7 @@ task_app = typer.Typer(help="下发和查看节点任务")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
 inspect_app = typer.Typer(help="盘点节点资产")
+discover_app = typer.Typer(help="从盘点结果发现服务")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -75,6 +78,7 @@ app.add_typer(task_app, name="task")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
 app.add_typer(inspect_app, name="inspect")
+app.add_typer(discover_app, name="discover")
 
 
 def _default_db() -> Path:
@@ -404,6 +408,23 @@ def inspect_node(
         output.write_text(rendered + "\n")
         typer.echo(str(output))
     if as_json or not output:
+        typer.echo(rendered)
+
+
+@discover_app.command("services")
+def discover_services_command(
+    inventory: Path = typer.Option(..., "--inventory", help="inspect node 生成的 inventory JSON。"),
+    output: Path | None = typer.Option(None, "--output", help="写入 service registry JSON 文件。"),
+    as_json: bool = typer.Option(False, "--json", help="输出 registry JSON。"),
+) -> None:
+    registry = discover_services_from_file(inventory)
+    target = output
+    if target:
+        registry.save(target)
+        if not as_json:
+            typer.echo(str(target))
+    rendered = json.dumps(registry.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    if as_json or not target:
         typer.echo(rendered)
 
 
