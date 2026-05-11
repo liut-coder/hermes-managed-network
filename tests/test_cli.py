@@ -22,6 +22,63 @@ def _managed_node(node_id="node_worker", hostname="worker-node", fingerprint="sh
     )
 
 
+
+def test_backup_plan_run_status_dry_run_manifest_checksum(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.txt").write_text("hello backup\n")
+    out = tmp_path / "out"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_backup", hostname="backup-node"))
+
+    plan = runner.invoke(app, ["backup", "plan", "--db", str(db), "--node", "node_backup", "--include", str(source), "--output-dir", str(out)])
+
+    assert plan.exit_code == 0
+    assert "backup plan: dry-run" in plan.stdout
+    assert "restore: disabled" in plan.stdout
+
+    run = runner.invoke(app, ["backup", "run", "--db", str(db), "--node", "node_backup", "--include", str(source), "--output-dir", str(out)])
+
+    assert run.exit_code == 0
+    assert "backup run: dry-run succeeded" in run.stdout
+    assert "checksum:" in run.stdout
+    manifest_files = list(out.glob("*.manifest.json"))
+    assert len(manifest_files) == 1
+    manifest = json.loads(manifest_files[0].read_text())
+    assert manifest["dry_run"] is True
+    assert manifest["entries"][0]["type"] == "directory"
+    assert manifest["entries"][0]["file_count"] == 1
+    assert manifest["manifest_sha256"]
+
+    status = runner.invoke(app, ["backup", "status", "--db", str(db), "--node", "node_backup"])
+
+    assert status.exit_code == 0
+    assert "backup status: succeeded" in status.stdout
+    assert f"manifest: {manifest_files[0]}" in status.stdout
+    assert "restore: disabled" in status.stdout
+    runs = SQLiteStore(db).list_component_runs()
+    assert any(item.component_id == "backup" and item.action == "backup.run" for item in runs)
+
+
+def test_top_help_and_menu_show_monitor_and_backup_commands():
+    runner = CliRunner()
+
+    help_result = runner.invoke(app, ["--help"])
+    menu_result = runner.invoke(app, ["menu", "--plain"])
+
+    assert help_result.exit_code == 0
+    assert "hmn monitor status" in help_result.stdout
+    assert "hmn backup plan" in help_result.stdout
+    assert "hmn backup run" in help_result.stdout
+    assert "hmn backup status" in help_result.stdout
+    assert menu_result.exit_code == 0
+    assert "hmn monitor status" in menu_result.stdout
+    assert "hmn backup plan" in menu_result.stdout
+    assert "hmn backup run" in menu_result.stdout
+    assert "hmn backup status" in menu_result.stdout
+
 def test_cli_can_create_and_revoke_token(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"

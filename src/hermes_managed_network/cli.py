@@ -81,6 +81,10 @@ app = typer.Typer(
         "  hmn component apply       记录组件期望状态\n"
         "  hmn component verify      独立验证组件\n"
         "  hmn component uninstall   卸载组件\n"
+        "  hmn monitor status        查看节点监控闭环\n"
+        "  hmn backup plan           生成备份 dry-run 计划\n"
+        "  hmn backup run            生成 manifest/checksum\n"
+        "  hmn backup status         查看最近备份状态\n"
         "  hmn audit list            查看审计\n"
         "  hmn token create          创建 token\n"
         "  hmn version               查看版本\n"
@@ -97,6 +101,8 @@ audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
+monitor_app = typer.Typer(help="监控节点健康闭环")
+backup_app = typer.Typer(help="备份 dry-run/manifest/checksum 闭环")
 network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
 approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
@@ -109,6 +115,8 @@ app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
+app.add_typer(monitor_app, name="monitor")
+app.add_typer(backup_app, name="backup")
 app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
 app.add_typer(docs_app, name="docs")
@@ -316,12 +324,16 @@ def _show_menu() -> None:
     typer.echo("19. hmn component apply              记录组件状态")
     typer.echo("20. hmn component verify             独立验证组件")
     typer.echo("21. hmn component uninstall          卸载组件")
-    typer.echo("22. hmn audit list                   查看审计")
-    typer.echo("23. hmn token create                 创建 token")
+    typer.echo("22. hmn monitor status               查看监控闭环")
+    typer.echo("23. hmn backup plan                  生成备份 dry-run 计划")
+    typer.echo("24. hmn backup run                   生成 manifest/checksum")
+    typer.echo("25. hmn backup status                查看备份状态")
+    typer.echo("26. hmn audit list                   查看审计")
+    typer.echo("27. hmn token create                 创建 token")
     typer.echo("    hmn token list / expire / revoke 管理 token")
-    typer.echo("24. hmn version                      查看版本")
-    typer.echo("25. hmn update                       更新主控")
-    typer.echo("26. hmn uninstall                    卸载主控")
+    typer.echo("28. hmn version                      查看版本")
+    typer.echo("29. hmn update                       更新主控")
+    typer.echo("30. hmn uninstall                    卸载主控")
     typer.echo("")
     typer.echo("示例：")
     typer.echo("  hmn wake")
@@ -343,6 +355,10 @@ def _show_menu() -> None:
     typer.echo("  hmn component apply reverse-proxy --node node1 --set domain=example.com")
     typer.echo("  hmn component verify reverse-proxy --node node1")
     typer.echo("  hmn component uninstall reverse-proxy --node node1")
+    typer.echo("  hmn monitor status --node node1")
+    typer.echo("  hmn backup plan --node node1 --include /srv/app")
+    typer.echo("  hmn backup run --node node1 --include /srv/app --output-dir ./hmn-backups")
+    typer.echo("  hmn backup status --node node1")
     typer.echo("  hmn audit list")
     typer.echo("  hmn token list")
     typer.echo("  hmn token expire")
@@ -377,11 +393,15 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("18) hmn component verify 独立验证组件")
         typer.echo("19) hmn component uninstall 卸载组件")
         typer.echo("20) hmn audit list   查看审计")
-        typer.echo("21) hmn token create 创建 token")
+        typer.echo("21) hmn monitor status 查看监控闭环")
+        typer.echo("22) hmn backup plan   备份 dry-run 计划")
+        typer.echo("23) hmn backup run    生成 manifest/checksum")
+        typer.echo("24) hmn backup status 查看备份状态")
+        typer.echo("25) hmn token create 创建 token")
         typer.echo("    hmn token list / expire / revoke 管理 token")
-        typer.echo("22) hmn version      查看版本")
-        typer.echo("23) hmn update       更新主控")
-        typer.echo("24) hmn uninstall    卸载主控")
+        typer.echo("26) hmn version      查看版本")
+        typer.echo("27) hmn update       更新主控")
+        typer.echo("28) hmn uninstall    卸载主控")
         typer.echo("q) quit              退出")
         choice = typer.prompt("选择编号或命令", default="1")
         normalized = choice.strip().lower()
@@ -452,10 +472,26 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             node_id = typer.prompt("节点 ID", default="node1")
             uninstall_component(component_id=component, node_id=node_id, db=db)
             return
-        if normalized in {"16", "20", "audit", "audit list", "hmn audit list"}:
+        if normalized in {"20", "21", "monitor", "monitor status", "hmn monitor status"}:
+            monitor_status(node_id=None, db=db)
+            return
+        if normalized in {"22", "backup", "backup plan", "hmn backup plan"}:
+            node_id = typer.prompt("节点 ID", default="node1")
+            include_raw = typer.prompt("备份路径（逗号分隔）", default="/srv")
+            backup_plan(node_id=node_id, include=_parse_labels(include_raw), output_dir=Path("./hmn-backups"), db=db)
+            return
+        if normalized in {"23", "backup run", "hmn backup run"}:
+            node_id = typer.prompt("节点 ID", default="node1")
+            include_raw = typer.prompt("备份路径（逗号分隔）", default="/srv")
+            backup_run(node_id=node_id, include=_parse_labels(include_raw), output_dir=Path("./hmn-backups"), db=db)
+            return
+        if normalized in {"24", "backup status", "hmn backup status"}:
+            backup_status(node_id=None, db=db)
+            return
+        if normalized in {"16", "20", "26", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
             return
-        if normalized in {"17", "21", "token", "token create", "hmn token create"}:
+        if normalized in {"17", "21", "25", "token", "token create", "hmn token create"}:
             create_token(trust_level="B", label=[], ttl_minutes=30, db=db)
             return
         if normalized in {"token list", "hmn token list"}:
@@ -464,13 +500,13 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         if normalized in {"token expire", "hmn token expire"}:
             expire_tokens(db=db)
             return
-        if normalized in {"22", "version", "hmn version"}:
+        if normalized in {"22", "26", "version", "hmn version"}:
             version()
             return
-        if normalized in {"23", "update", "hmn update"}:
+        if normalized in {"23", "27", "update", "hmn update"}:
             update()
             return
-        if normalized in {"24", "uninstall", "hmn uninstall"}:
+        if normalized in {"24", "28", "uninstall", "hmn uninstall"}:
             uninstall()
             return
         if normalized in {"q", "quit", "exit"}:
@@ -1503,6 +1539,74 @@ def _runtime_summary_from_facts(facts: dict[str, object]) -> dict[str, object]:
     }
 
 
+
+def _backup_manifest_for_paths(paths: list[str]) -> dict[str, object]:
+    entries = []
+    total_bytes = 0
+    for raw in paths:
+        path = Path(raw).expanduser()
+        if path.is_file():
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            size = len(data)
+            total_bytes += size
+            entries.append({
+                "path": str(path),
+                "type": "file",
+                "size_bytes": size,
+                "sha256": digest,
+            })
+        elif path.is_dir():
+            count = 0
+            size_sum = 0
+            digest = hashlib.sha256()
+            for child in sorted(item for item in path.rglob("*") if item.is_file()):
+                rel = child.relative_to(path).as_posix()
+                data = child.read_bytes()
+                file_hash = hashlib.sha256(data).hexdigest()
+                digest.update(rel.encode("utf-8") + b"\0" + file_hash.encode("ascii") + b"\0")
+                count += 1
+                size_sum += len(data)
+            total_bytes += size_sum
+            entries.append({
+                "path": str(path),
+                "type": "directory",
+                "file_count": count,
+                "size_bytes": size_sum,
+                "tree_sha256": digest.hexdigest(),
+            })
+        else:
+            entries.append({"path": str(path), "type": "missing", "size_bytes": 0, "sha256": ""})
+    manifest = {
+        "schema": "hmn.backup.manifest.v1",
+        "dry_run": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "entries": entries,
+        "total_bytes": total_bytes,
+    }
+    manifest["manifest_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
+    return manifest
+
+def _backup_plan_payload(node_id: str, include: list[str], output_dir: Path, driver: str = "local-archive") -> dict[str, object]:
+    return {
+        "component_id": "backup",
+        "node_id": node_id,
+        "action": "backup.dry_run",
+        "driver": driver,
+        "dry_run": True,
+        "include": include,
+        "output_dir": str(output_dir),
+        "restore_enabled": False,
+        "next_action": "hmn backup run",
+    }
+
+def _latest_backup_run(store: SQLiteStore, node_id: str | None = None):
+    for run in store.list_component_runs():
+        if run.component_id == "backup" and run.action in {"backup.plan", "backup.run"}:
+            if node_id is None or run.node_id == node_id:
+                return run
+    return None
+
 def _monitor_summary(store: SQLiteStore, node_id: str) -> dict[str, object]:
     event = _latest_heartbeat_event(store, node_id)
     facts = event.details.get("facts", {}) if event else {}
@@ -1524,6 +1628,118 @@ def _monitor_summary(store: SQLiteStore, node_id: str) -> dict[str, object]:
         "exec_mode": "ENABLED" if exec_enabled else "SAFE",
         "facts": facts,
         **runtime,
+    }
+
+
+def _facts_summary(facts: dict[str, object]) -> dict[str, object]:
+    summary: dict[str, object] = {}
+    load = facts.get("load_average")
+    if isinstance(load, dict):
+        if load.get("1m") is not None:
+            summary["load_1m"] = str(load.get("1m"))
+        if load.get("5m") is not None:
+            summary["load_5m"] = str(load.get("5m"))
+        if load.get("15m") is not None:
+            summary["load_15m"] = str(load.get("15m"))
+    memory = facts.get("memory")
+    if isinstance(memory, dict):
+        total = memory.get("total_kb")
+        available = memory.get("available_kb")
+        if isinstance(total, (int, float)) and total > 0 and isinstance(available, (int, float)):
+            summary["memory_used_percent"] = int(round(((total - available) / total) * 100))
+    disk = facts.get("disk")
+    if isinstance(disk, dict):
+        total = disk.get("total_bytes")
+        used = disk.get("used_bytes")
+        if isinstance(total, (int, float)) and total > 0 and isinstance(used, (int, float)):
+            summary["disk_used_percent"] = int(round((used / total) * 100))
+        if disk.get("path"):
+            summary["disk_path"] = str(disk.get("path"))
+    uptime = facts.get("uptime")
+    if isinstance(uptime, dict) and uptime.get("seconds") is not None:
+        summary["uptime_seconds"] = uptime.get("seconds")
+    return summary
+
+
+def _monitor_health_summary(store: SQLiteStore, node_id: str, *, now: datetime | None = None) -> dict[str, object]:
+    now = now or datetime.now(timezone.utc)
+    summary = _monitor_summary(store, node_id)
+    event = _latest_heartbeat_event(store, node_id)
+    age_seconds = int((now - event.created_at).total_seconds()) if event else None
+    if event is None:
+        health = "critical"
+        reason = "missing_heartbeat"
+    elif not summary["worker_compatible"]:
+        health = "critical"
+        reason = "worker_protocol_incompatible"
+    elif event.outcome != "ok":
+        health = "warn"
+        reason = "heartbeat_warn"
+    elif age_seconds is not None and age_seconds > 900:
+        health = "critical"
+        reason = "heartbeat_timeout"
+    elif age_seconds is not None and age_seconds > 300:
+        health = "warn"
+        reason = "stale_heartbeat"
+    else:
+        health = "ok"
+        reason = "fresh_heartbeat"
+    facts = summary.get("facts", {})
+    if not isinstance(facts, dict):
+        facts = {}
+    return {
+        **summary,
+        "health": health,
+        "reason": reason,
+        "age_seconds": age_seconds,
+        "heartbeat_datetime": event.created_at if event else None,
+        "facts_summary": _facts_summary(facts),
+    }
+
+
+def _record_monitor_snapshot(store: SQLiteStore, node_id: str, summary: dict[str, object]):
+    snapshot = store.record_monitor_snapshot(
+        node_id=node_id,
+        health=str(summary["health"]),
+        reason=str(summary["reason"]),
+        heartbeat_at=summary.get("heartbeat_datetime") if isinstance(summary.get("heartbeat_datetime"), datetime) else None,
+        age_seconds=summary.get("age_seconds") if isinstance(summary.get("age_seconds"), int) else None,
+        runtime_profile=str(summary.get("runtime_profile") or "unknown"),
+        service_manager=str(summary.get("service_manager") or "unknown"),
+        worker_protocol_version=str(summary.get("worker_protocol_version") or "unknown"),
+        worker_version=str(summary.get("worker_version") or "unknown"),
+        exec_mode=str(summary.get("exec_mode") or "SAFE"),
+        facts_summary=summary.get("facts_summary") if isinstance(summary.get("facts_summary"), dict) else {},
+    )
+    store.record_audit(
+        event_type="monitor",
+        subject_type="node",
+        subject_id=node_id,
+        action="run-once",
+        outcome=snapshot.health,
+        details={
+            "snapshot_id": snapshot.snapshot_id,
+            "node_id": node_id,
+            "health": snapshot.health,
+            "reason": snapshot.reason,
+            "heartbeat_at": snapshot.heartbeat_at.isoformat() if snapshot.heartbeat_at else "",
+            "age_seconds": snapshot.age_seconds,
+            "runtime_profile": snapshot.runtime_profile,
+            "service_manager": snapshot.service_manager,
+            "worker_protocol_version": snapshot.worker_protocol_version,
+            "worker_version": snapshot.worker_version,
+            "exec_mode": snapshot.exec_mode,
+            "facts_summary": snapshot.facts_summary,
+        },
+    )
+    return snapshot
+
+
+def _monitor_counts(snapshots) -> dict[str, int]:
+    return {
+        "ok": sum(1 for item in snapshots if item.health == "ok"),
+        "warn": sum(1 for item in snapshots if item.health == "warn"),
+        "critical": sum(1 for item in snapshots if item.health == "critical"),
     }
 
 
@@ -1566,6 +1782,82 @@ def _echo_monitor_summary(summary: dict[str, object]) -> None:
             f"used={disk.get('used_bytes')} "
             f"free={disk.get('free_bytes')}"
         )
+
+
+@monitor_app.command("run-once")
+def monitor_run_once(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    now: str | None = typer.Option(None, "--now", help="测试/排障用：指定当前时间 ISO8601"),
+) -> None:
+    store = _store(db)
+    current_time = _parse_now(now)
+    nodes = [node for node in store.list_nodes() if node.status == "managed"]
+    snapshots = []
+    for node in nodes:
+        summary = _monitor_health_summary(store, node.node_id, now=current_time)
+        snapshot = _record_monitor_snapshot(store, node.node_id, summary)
+        snapshots.append(snapshot)
+    counts = _monitor_counts(snapshots)
+    typer.echo(f"monitor run: nodes={len(snapshots)} ok={counts['ok']} warn={counts['warn']} critical={counts['critical']}")
+    for snapshot in snapshots:
+        typer.echo(f"{snapshot.node_id}\t{snapshot.health}\t{snapshot.reason}")
+    if counts["warn"] or counts["critical"]:
+        raise typer.Exit(1)
+
+
+@monitor_app.command("status")
+def monitor_status(
+    node_id: str = typer.Option(..., "--node", help="节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    snapshot = store.latest_monitor_snapshot(node_id)
+    if snapshot is None:
+        node = store.load_node(node_id)
+        if node is None:
+            typer.echo("节点不存在。")
+            raise typer.Exit(1)
+        snapshot = _record_monitor_snapshot(store, node_id, _monitor_health_summary(store, node_id))
+    typer.echo(f"node: {snapshot.node_id}")
+    typer.echo(f"health: {snapshot.health}")
+    typer.echo(f"reason: {snapshot.reason}")
+    typer.echo(f"heartbeat_at: {snapshot.heartbeat_at.isoformat() if snapshot.heartbeat_at else '-'}")
+    typer.echo(f"age_seconds: {snapshot.age_seconds if snapshot.age_seconds is not None else '-'}")
+    typer.echo(f"runtime: {snapshot.runtime_profile}")
+    typer.echo(f"service_manager: {snapshot.service_manager}")
+    typer.echo(f"worker_protocol: {snapshot.worker_protocol_version}")
+    typer.echo(f"worker_version: {snapshot.worker_version}")
+    typer.echo(f"exec: {snapshot.exec_mode}")
+    for key in ("disk_used_percent", "memory_used_percent", "load_1m", "uptime_seconds"):
+        if key in snapshot.facts_summary:
+            typer.echo(f"{key}: {snapshot.facts_summary[key]}")
+    if snapshot.health == "critical":
+        raise typer.Exit(1)
+
+
+@monitor_app.command("report")
+def monitor_report(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    store = _store(db)
+    latest = []
+    seen: set[str] = set()
+    for snapshot in store.list_monitor_snapshots():
+        if snapshot.node_id in seen:
+            continue
+        seen.add(snapshot.node_id)
+        latest.append(snapshot)
+    counts = _monitor_counts(latest)
+    typer.echo(f"monitor report: nodes={len(latest)} ok={counts['ok']} warn={counts['warn']} critical={counts['critical']}")
+    for snapshot in sorted(latest, key=lambda item: item.node_id):
+        parts = [f"{snapshot.node_id} {snapshot.health}", f"reason={snapshot.reason}"]
+        if "disk_used_percent" in snapshot.facts_summary:
+            parts.append(f"disk={snapshot.facts_summary['disk_used_percent']}%")
+        if "memory_used_percent" in snapshot.facts_summary:
+            parts.append(f"mem={snapshot.facts_summary['memory_used_percent']}%")
+        if "load_1m" in snapshot.facts_summary:
+            parts.append(f"load={snapshot.facts_summary['load_1m']}")
+        typer.echo(" ".join(parts))
+    if counts["critical"]:
+        raise typer.Exit(1)
 
 
 @node_app.command("worker-status")
@@ -2130,6 +2422,80 @@ def telegram_gateway_run(
                 raise typer.Exit(1)
             return
         time.sleep(interval_seconds)
+
+
+@backup_app.command("plan")
+def backup_plan(
+    node_id: str = typer.Option(..., "--node", help="目标节点 ID"),
+    include: list[str] = typer.Option(..., "--include", help="本地路径，可重复"),
+    output_dir: Path = typer.Option(Path("./hmn-backups"), "--output-dir", help="manifest 输出目录"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    component, _node = _load_component_for_node(store, "backup", node_id)
+    plan = _backup_plan_payload(node_id, include, output_dir, str(component.drivers.get("default", "local-archive")))
+    run = store.record_component_run(component_id="backup", node_id=node_id, action="backup.plan", risk=component.risk, status="planned", plan=plan)
+    typer.echo("backup plan: dry-run")
+    typer.echo(f"run: {run.run_id}")
+    typer.echo(f"node: {node_id}")
+    typer.echo("restore: disabled")
+    for item in include:
+        typer.echo(f"include: {item}")
+    typer.echo(f"output_dir: {output_dir}")
+
+
+@backup_app.command("run")
+def backup_run(
+    node_id: str = typer.Option(..., "--node", help="目标节点 ID"),
+    include: list[str] = typer.Option(..., "--include", help="本地路径，可重复"),
+    output_dir: Path = typer.Option(Path("./hmn-backups"), "--output-dir", help="manifest 输出目录"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    component, _node = _load_component_for_node(store, "backup", node_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _backup_manifest_for_paths(include)
+    plan = _backup_plan_payload(node_id, include, output_dir, str(component.drivers.get("default", "local-archive")))
+    manifest_path = output_dir / f"hmn-backup-{node_id}-{int(time.time())}.manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    result = {
+        "dry_run": True,
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": manifest["manifest_sha256"],
+        "entries": len(manifest["entries"]),
+        "total_bytes": manifest["total_bytes"],
+        "restore_enabled": False,
+        "machine_changed": False,
+    }
+    run = store.record_component_run(component_id="backup", node_id=node_id, action="backup.run", risk=component.risk, status="succeeded", plan=plan, result=result)
+    store.record_audit(event_type="component.backup", subject_type="component", subject_id="backup", action="run", outcome="succeeded", details={"node_id": node_id, "run_id": run.run_id, **result})
+    typer.echo("backup run: dry-run succeeded")
+    typer.echo(f"run: {run.run_id}")
+    typer.echo(f"manifest: {manifest_path}")
+    typer.echo(f"checksum: {manifest['manifest_sha256']}")
+    typer.echo("restore: disabled")
+
+
+@backup_app.command("status")
+def backup_status(
+    node_id: str | None = typer.Option(None, "--node", help="目标节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    run = _latest_backup_run(store, node_id)
+    if run is None:
+        typer.echo("backup status: missing")
+        raise typer.Exit(1)
+    typer.echo(f"backup status: {run.status}")
+    typer.echo(f"run: {run.run_id}")
+    typer.echo(f"node: {run.node_id}")
+    typer.echo(f"action: {run.action}")
+    typer.echo(f"dry_run: {bool(run.plan.get('dry_run') or run.result.get('dry_run'))}")
+    if run.result.get("manifest_path"):
+        typer.echo(f"manifest: {run.result['manifest_path']}")
+    if run.result.get("manifest_sha256"):
+        typer.echo(f"checksum: {run.result['manifest_sha256']}")
+    typer.echo("restore: disabled")
 
 
 @component_app.command("list")

@@ -44,6 +44,23 @@ class ComponentRun:
 
 
 @dataclass
+class MonitorSnapshot:
+    snapshot_id: str
+    node_id: str
+    health: str
+    reason: str
+    heartbeat_at: datetime | None
+    age_seconds: int | None
+    runtime_profile: str
+    service_manager: str
+    worker_protocol_version: str
+    worker_version: str
+    exec_mode: str
+    facts_summary: dict[str, Any]
+    created_at: datetime
+
+
+@dataclass
 class Task:
     task_id: str
     node_id: str
@@ -248,6 +265,22 @@ class SQLiteStore:
                     created_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     completed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS monitor_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL,
+                    health TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    heartbeat_at TEXT,
+                    age_seconds INTEGER,
+                    runtime_profile TEXT NOT NULL,
+                    service_manager TEXT NOT NULL,
+                    worker_protocol_version TEXT NOT NULL,
+                    worker_version TEXT NOT NULL,
+                    exec_mode TEXT NOT NULL,
+                    facts_summary_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -1241,6 +1274,100 @@ class SQLiteStore:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM component_runs ORDER BY created_at DESC").fetchall()
         return [self._component_run_from_row(row) for row in rows]
+
+    def record_monitor_snapshot(
+        self,
+        *,
+        node_id: str,
+        health: str,
+        reason: str,
+        heartbeat_at: datetime | None,
+        age_seconds: int | None,
+        runtime_profile: str,
+        service_manager: str,
+        worker_protocol_version: str,
+        worker_version: str,
+        exec_mode: str,
+        facts_summary: dict[str, Any] | None = None,
+    ) -> MonitorSnapshot:
+        snapshot = MonitorSnapshot(
+            snapshot_id="mon_" + uuid4().hex[:12],
+            node_id=node_id,
+            health=health,
+            reason=reason,
+            heartbeat_at=heartbeat_at,
+            age_seconds=age_seconds,
+            runtime_profile=runtime_profile,
+            service_manager=service_manager,
+            worker_protocol_version=worker_protocol_version,
+            worker_version=worker_version,
+            exec_mode=exec_mode,
+            facts_summary=facts_summary or {},
+            created_at=datetime.now(timezone.utc),
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO monitor_snapshots (
+                    snapshot_id, node_id, health, reason, heartbeat_at,
+                    age_seconds, runtime_profile, service_manager,
+                    worker_protocol_version, worker_version, exec_mode,
+                    facts_summary_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.snapshot_id,
+                    snapshot.node_id,
+                    snapshot.health,
+                    snapshot.reason,
+                    _dt(snapshot.heartbeat_at),
+                    snapshot.age_seconds,
+                    snapshot.runtime_profile,
+                    snapshot.service_manager,
+                    snapshot.worker_protocol_version,
+                    snapshot.worker_version,
+                    snapshot.exec_mode,
+                    json.dumps(snapshot.facts_summary, sort_keys=True),
+                    _dt(snapshot.created_at),
+                ),
+            )
+        return snapshot
+
+    def _monitor_snapshot_from_row(self, row) -> MonitorSnapshot:
+        return MonitorSnapshot(
+            snapshot_id=row["snapshot_id"],
+            node_id=row["node_id"],
+            health=row["health"],
+            reason=row["reason"],
+            heartbeat_at=_parse_dt(row["heartbeat_at"]),
+            age_seconds=row["age_seconds"],
+            runtime_profile=row["runtime_profile"],
+            service_manager=row["service_manager"],
+            worker_protocol_version=row["worker_protocol_version"],
+            worker_version=row["worker_version"],
+            exec_mode=row["exec_mode"],
+            facts_summary=json.loads(row["facts_summary_json"]),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    def latest_monitor_snapshot(self, node_id: str) -> MonitorSnapshot | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM monitor_snapshots WHERE node_id = ? ORDER BY created_at DESC LIMIT 1",
+                (node_id,),
+            ).fetchone()
+        return self._monitor_snapshot_from_row(row) if row else None
+
+    def list_monitor_snapshots(self, node_id: str | None = None) -> list[MonitorSnapshot]:
+        with self.connect() as conn:
+            if node_id:
+                rows = conn.execute(
+                    "SELECT * FROM monitor_snapshots WHERE node_id = ? ORDER BY created_at DESC",
+                    (node_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM monitor_snapshots ORDER BY created_at DESC").fetchall()
+        return [self._monitor_snapshot_from_row(row) for row in rows]
 
     def save_token(self, token: JoinToken) -> None:
         with self.connect() as conn:
