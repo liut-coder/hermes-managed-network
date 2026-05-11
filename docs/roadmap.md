@@ -99,3 +99,12 @@
 - [x] POSIX lite-worker 按 `HMN_MASTER_URLS` 顺序尝试 endpoint fallback
 - [x] lite-worker / cron installer 覆盖群晖、QNAP、OpenWrt 常见无 systemd 环境
 - [x] docs 增加 NAS IPv6 接入示例
+
+## v0.9：真实部署稳定化
+
+- [x] 本地 E2E smoke：controller 启动、join、confirm、worker disabled task、heartbeat、worker-status、docs generate
+- [x] 双 Debian VPS 真实部署 smoke：Master systemd、Worker join/confirm、full-worker timer、disabled-exec 安全拒绝、资产文档生成
+- [ ] Telegram approval gateway 真实 bot 轮询与回调 smoke
+- [ ] Headscale bundled/external 接入真实网络 smoke
+- [ ] NAS / OpenWrt / IPv6-only lite-worker fallback 真实设备 smoke
+- [ ] 将真实试点脚本化为可重复运行的 `scripts/smoke-remote-e2e.sh`
