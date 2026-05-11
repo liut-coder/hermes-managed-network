@@ -42,24 +42,43 @@ def test_backup_plan_run_status_dry_run_manifest_checksum(tmp_path):
     run = runner.invoke(app, ["backup", "run", "--db", str(db), "--node", "node_backup", "--include", str(source), "--output-dir", str(out)])
 
     assert run.exit_code == 0
-    assert "backup run: dry-run succeeded" in run.stdout
+    assert "backup run: succeeded" in run.stdout
+    assert "archive_checksum:" in run.stdout
     assert "checksum:" in run.stdout
     manifest_files = list(out.glob("*.manifest.json"))
+    archive_files = list(out.glob("*.tar.gz"))
     assert len(manifest_files) == 1
+    assert len(archive_files) == 1
     manifest = json.loads(manifest_files[0].read_text())
-    assert manifest["dry_run"] is True
+    assert manifest["dry_run"] is False
+    assert manifest["archive_path"] == str(archive_files[0])
+    assert manifest["archive_sha256"]
     assert manifest["entries"][0]["type"] == "directory"
     assert manifest["entries"][0]["file_count"] == 1
     assert manifest["manifest_sha256"]
+
+    verify = runner.invoke(app, ["backup", "verify", "--db", str(db), "--node", "node_backup"])
+
+    assert verify.exit_code == 0
+    assert "backup verify: ok" in verify.stdout
+    assert f"archive: {archive_files[0]}" in verify.stdout
+
+    archive_files[0].unlink()
+    failed_verify = runner.invoke(app, ["backup", "verify", "--db", str(db), "--node", "node_backup"])
+    assert failed_verify.exit_code == 1
+    assert "backup verify: missing archive" in failed_verify.stdout
+    assert "run:" in failed_verify.stdout
 
     status = runner.invoke(app, ["backup", "status", "--db", str(db), "--node", "node_backup"])
 
     assert status.exit_code == 0
     assert "backup status: succeeded" in status.stdout
+    assert f"archive: {archive_files[0]}" in status.stdout
     assert f"manifest: {manifest_files[0]}" in status.stdout
     assert "restore: disabled" in status.stdout
     runs = SQLiteStore(db).list_component_runs()
     assert any(item.component_id == "backup" and item.action == "backup.run" for item in runs)
+    assert any(item.component_id == "backup" and item.action == "backup.verify" for item in runs)
 
 
 def test_top_help_and_menu_show_monitor_and_backup_commands():
@@ -72,11 +91,13 @@ def test_top_help_and_menu_show_monitor_and_backup_commands():
     assert "hmn monitor status" in help_result.stdout
     assert "hmn backup plan" in help_result.stdout
     assert "hmn backup run" in help_result.stdout
+    assert "hmn backup verify" in help_result.stdout
     assert "hmn backup status" in help_result.stdout
     assert menu_result.exit_code == 0
     assert "hmn monitor status" in menu_result.stdout
     assert "hmn backup plan" in menu_result.stdout
     assert "hmn backup run" in menu_result.stdout
+    assert "hmn backup verify" in menu_result.stdout
     assert "hmn backup status" in menu_result.stdout
 
 def test_cli_can_create_and_revoke_token(tmp_path):

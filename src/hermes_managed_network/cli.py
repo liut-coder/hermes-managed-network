@@ -11,6 +11,7 @@ import shutil
 import shlex
 import socket
 import subprocess
+import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -83,7 +84,8 @@ app = typer.Typer(
         "  hmn component uninstall   卸载组件\n"
         "  hmn monitor status        查看节点监控闭环\n"
         "  hmn backup plan           生成备份 dry-run 计划\n"
-        "  hmn backup run            生成 manifest/checksum\n"
+        "  hmn backup run            创建本地归档和 checksum\n"
+        "  hmn backup verify         验证备份归档 checksum\n"
         "  hmn backup status         查看最近备份状态\n"
         "  hmn audit list            查看审计\n"
         "  hmn token create          创建 token\n"
@@ -326,7 +328,8 @@ def _show_menu() -> None:
     typer.echo("21. hmn component uninstall          卸载组件")
     typer.echo("22. hmn monitor status               查看监控闭环")
     typer.echo("23. hmn backup plan                  生成备份 dry-run 计划")
-    typer.echo("24. hmn backup run                   生成 manifest/checksum")
+    typer.echo("24. hmn backup run                   创建本地归档/checksum")
+    typer.echo("    hmn backup verify                验证备份归档")
     typer.echo("25. hmn backup status                查看备份状态")
     typer.echo("26. hmn audit list                   查看审计")
     typer.echo("27. hmn token create                 创建 token")
@@ -358,6 +361,7 @@ def _show_menu() -> None:
     typer.echo("  hmn monitor status --node node1")
     typer.echo("  hmn backup plan --node node1 --include /srv/app")
     typer.echo("  hmn backup run --node node1 --include /srv/app --output-dir ./hmn-backups")
+    typer.echo("  hmn backup verify --node node1")
     typer.echo("  hmn backup status --node node1")
     typer.echo("  hmn audit list")
     typer.echo("  hmn token list")
@@ -395,7 +399,8 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("20) hmn audit list   查看审计")
         typer.echo("21) hmn monitor status 查看监控闭环")
         typer.echo("22) hmn backup plan   备份 dry-run 计划")
-        typer.echo("23) hmn backup run    生成 manifest/checksum")
+        typer.echo("23) hmn backup run    创建本地归档/checksum")
+        typer.echo("    hmn backup verify 验证备份归档")
         typer.echo("24) hmn backup status 查看备份状态")
         typer.echo("25) hmn token create 创建 token")
         typer.echo("    hmn token list / expire / revoke 管理 token")
@@ -487,6 +492,9 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             return
         if normalized in {"24", "backup status", "hmn backup status"}:
             backup_status(node_id=None, db=db)
+            return
+        if normalized in {"backup verify", "hmn backup verify"}:
+            backup_verify(node_id=None, manifest_path=None, db=db)
             return
         if normalized in {"16", "20", "26", "audit", "audit list", "hmn audit list"}:
             list_audit_events(limit=50, json_output=False, db=db)
@@ -1794,7 +1802,7 @@ def _runtime_summary_from_facts(facts: dict[str, object]) -> dict[str, object]:
 
 
 
-def _backup_manifest_for_paths(paths: list[str]) -> dict[str, object]:
+def _backup_manifest_for_paths(paths: list[str], *, dry_run: bool = True) -> dict[str, object]:
     entries = []
     total_bytes = 0
     for raw in paths:
@@ -1814,7 +1822,7 @@ def _backup_manifest_for_paths(paths: list[str]) -> dict[str, object]:
             count = 0
             size_sum = 0
             digest = hashlib.sha256()
-            for child in sorted(item for item in path.rglob("*") if item.is_file()):
+            for child in sorted(item for item in path.rglob("*") if item.is_file() and not item.is_symlink()):
                 rel = child.relative_to(path).as_posix()
                 data = child.read_bytes()
                 file_hash = hashlib.sha256(data).hexdigest()
@@ -1833,13 +1841,68 @@ def _backup_manifest_for_paths(paths: list[str]) -> dict[str, object]:
             entries.append({"path": str(path), "type": "missing", "size_bytes": 0, "sha256": ""})
     manifest = {
         "schema": "hmn.backup.manifest.v1",
-        "dry_run": True,
+        "dry_run": dry_run,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "entries": entries,
         "total_bytes": total_bytes,
+        "restore_enabled": False,
     }
     manifest["manifest_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
     return manifest
+
+
+def _backup_archive_paths(output_dir: Path, node_id: str) -> tuple[Path, Path]:
+    stamp = int(time.time())
+    return (
+        output_dir / f"hmn-backup-{node_id}-{stamp}.tar.gz",
+        output_dir / f"hmn-backup-{node_id}-{stamp}.manifest.json",
+    )
+
+
+def _record_backup_verify_result(
+    store: SQLiteStore,
+    *,
+    node_id: str,
+    result: dict[str, object],
+    ok: bool,
+):
+    component = load_builtin_components()["backup"]
+    status = "ok" if ok else "failed"
+    recorded = store.record_component_run(
+        component_id="backup",
+        node_id=node_id,
+        action="backup.verify",
+        risk=component.risk,
+        status=status,
+        result=result,
+    )
+    store.record_audit(
+        event_type="component.backup",
+        subject_type="component",
+        subject_id="backup",
+        action="verify",
+        outcome=status,
+        details={"node_id": node_id, "run_id": recorded.run_id, **result},
+    )
+    return recorded
+
+
+def _archive_backup_paths(paths: list[str], archive_path: Path) -> None:
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for raw in paths:
+            path = Path(raw).expanduser()
+            if not path.exists():
+                continue
+            arcname = path.name or "backup-item"
+            tar.add(path, arcname=arcname, recursive=True, filter=lambda info: None if info.issym() or info.islnk() else info)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 def _backup_plan_payload(node_id: str, include: list[str], output_dir: Path, driver: str = "local-archive") -> dict[str, object]:
     return {
@@ -2708,23 +2771,39 @@ def backup_run(
     store = _store(db)
     component, _node = _load_component_for_node(store, "backup", node_id)
     output_dir.mkdir(parents=True, exist_ok=True)
-    manifest = _backup_manifest_for_paths(include)
+    manifest = _backup_manifest_for_paths(include, dry_run=False)
     plan = _backup_plan_payload(node_id, include, output_dir, str(component.drivers.get("default", "local-archive")))
-    manifest_path = output_dir / f"hmn-backup-{node_id}-{int(time.time())}.manifest.json"
+    archive_path, manifest_path = _backup_archive_paths(output_dir, node_id)
+    _archive_backup_paths(include, archive_path)
+    archive_sha256 = _sha256_file(archive_path)
+    manifest.update(
+        {
+            "node_id": node_id,
+            "archive_path": str(archive_path),
+            "archive_sha256": archive_sha256,
+            "archive_size_bytes": archive_path.stat().st_size,
+        }
+    )
+    manifest["manifest_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     result = {
-        "dry_run": True,
+        "dry_run": False,
+        "archive_path": str(archive_path),
+        "archive_sha256": archive_sha256,
+        "archive_size_bytes": archive_path.stat().st_size,
         "manifest_path": str(manifest_path),
         "manifest_sha256": manifest["manifest_sha256"],
         "entries": len(manifest["entries"]),
         "total_bytes": manifest["total_bytes"],
         "restore_enabled": False,
-        "machine_changed": False,
+        "machine_changed": True,
     }
     run = store.record_component_run(component_id="backup", node_id=node_id, action="backup.run", risk=component.risk, status="succeeded", plan=plan, result=result)
     store.record_audit(event_type="component.backup", subject_type="component", subject_id="backup", action="run", outcome="succeeded", details={"node_id": node_id, "run_id": run.run_id, **result})
-    typer.echo("backup run: dry-run succeeded")
+    typer.echo("backup run: succeeded")
     typer.echo(f"run: {run.run_id}")
+    typer.echo(f"archive: {archive_path}")
+    typer.echo(f"archive_checksum: {archive_sha256}")
     typer.echo(f"manifest: {manifest_path}")
     typer.echo(f"checksum: {manifest['manifest_sha256']}")
     typer.echo("restore: disabled")
@@ -2745,11 +2824,89 @@ def backup_status(
     typer.echo(f"node: {run.node_id}")
     typer.echo(f"action: {run.action}")
     typer.echo(f"dry_run: {bool(run.plan.get('dry_run') or run.result.get('dry_run'))}")
+    if run.result.get("archive_path"):
+        typer.echo(f"archive: {run.result['archive_path']}")
+    if run.result.get("archive_sha256"):
+        typer.echo(f"archive_checksum: {run.result['archive_sha256']}")
     if run.result.get("manifest_path"):
         typer.echo(f"manifest: {run.result['manifest_path']}")
     if run.result.get("manifest_sha256"):
         typer.echo(f"checksum: {run.result['manifest_sha256']}")
     typer.echo("restore: disabled")
+
+
+@backup_app.command("verify")
+def backup_verify(
+    node_id: str | None = typer.Option(None, "--node", help="目标节点 ID"),
+    manifest_path: Path | None = typer.Option(None, "--manifest", help="要验证的 manifest；默认使用最近一次 backup run"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    run = _latest_backup_run(store, node_id) if manifest_path is None else None
+    resolved_manifest = manifest_path or (Path(str(run.result.get("manifest_path"))) if run and run.result.get("manifest_path") else None)
+    effective_node = node_id or (run.node_id if run else "unknown")
+    if resolved_manifest is None:
+        result = {"manifest_path": None, "error": "missing_manifest", "restore_enabled": False}
+        recorded = _record_backup_verify_result(store, node_id=effective_node, result=result, ok=False)
+        typer.echo("backup verify: missing manifest")
+        typer.echo(f"run: {recorded.run_id}")
+        typer.echo("restore: disabled")
+        raise typer.Exit(1)
+    try:
+        manifest = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        result = {"manifest_path": str(resolved_manifest), "error": "missing_manifest", "restore_enabled": False}
+        recorded = _record_backup_verify_result(store, node_id=effective_node, result=result, ok=False)
+        typer.echo(f"backup verify: missing manifest {resolved_manifest}")
+        typer.echo(f"run: {recorded.run_id}")
+        typer.echo("restore: disabled")
+        raise typer.Exit(1)
+    effective_node = node_id or (run.node_id if run else str(manifest.get("node_id") or "unknown"))
+    archive_value = manifest.get("archive_path")
+    archive_sha = manifest.get("archive_sha256")
+    if not archive_value or not archive_sha:
+        result = {"manifest_path": str(resolved_manifest), "error": "missing_archive_metadata", "restore_enabled": False}
+        recorded = _record_backup_verify_result(store, node_id=effective_node, result=result, ok=False)
+        typer.echo("backup verify: missing archive metadata")
+        typer.echo(f"run: {recorded.run_id}")
+        typer.echo("restore: disabled")
+        raise typer.Exit(1)
+    archive_path = Path(str(archive_value))
+    if not archive_path.is_file():
+        result = {
+            "manifest_path": str(resolved_manifest),
+            "archive_path": str(archive_path),
+            "archive_sha256": archive_sha,
+            "archive_exists": False,
+            "checksum_match": False,
+            "error": "missing_archive",
+            "restore_enabled": False,
+        }
+        recorded = _record_backup_verify_result(store, node_id=effective_node, result=result, ok=False)
+        typer.echo(f"backup verify: missing archive {archive_path}")
+        typer.echo(f"run: {recorded.run_id}")
+        typer.echo("restore: disabled")
+        raise typer.Exit(1)
+    actual_sha = _sha256_file(archive_path)
+    ok = actual_sha == archive_sha
+    result = {
+        "manifest_path": str(resolved_manifest),
+        "archive_path": str(archive_path),
+        "archive_sha256": archive_sha,
+        "actual_archive_sha256": actual_sha,
+        "archive_exists": archive_path.is_file(),
+        "checksum_match": ok,
+        "restore_enabled": False,
+    }
+    recorded = _record_backup_verify_result(store, node_id=effective_node, result=result, ok=ok)
+    typer.echo("backup verify: ok" if ok else "backup verify: failed")
+    typer.echo(f"run: {recorded.run_id}")
+    typer.echo(f"archive: {archive_path}")
+    typer.echo(f"archive_checksum: {archive_sha}")
+    typer.echo(f"actual_checksum: {actual_sha}")
+    typer.echo("restore: disabled")
+    if not ok:
+        raise typer.Exit(1)
 
 
 @component_app.command("list")
