@@ -52,7 +52,7 @@ def test_master_installer_prompts_for_optional_values_with_defaults():
     assert "当前默认值" in script
 
 
-def test_master_installer_detects_existing_version_and_policy():
+def test_master_installer_detects_existing_version_policy_and_rollback_metadata():
     script = (ROOT / "scripts/install-master.sh").read_text()
 
     assert "detect_existing_version" in script
@@ -67,6 +67,13 @@ def test_master_installer_detects_existing_version_and_policy():
     assert "HMN_ROLLBACK_HINT" in script
     assert "PREVIOUS_VERSION" in script
     assert "TARGET_VERSION" in script
+    assert "BACKUP_DB" in script
+    assert "BACKUP_ENV" in script
+    assert "BACKUP_CONFIG" in script
+    assert "BACKUP_METADATA" in script
+    assert "ROLLBACK_COMMAND" in script
+    assert "metadata.${stamp}.env" in script
+    assert "config.${stamp}.yaml" in script
     assert "hmn doctor" in script
 
 

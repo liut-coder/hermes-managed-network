@@ -7,7 +7,7 @@
 使用仓库提供的短安装脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/main/install.sh | sudo bash
 ```
 
 安装完成后执行：
@@ -356,7 +356,7 @@ HMN_RELAY_URL='https://relay.example.invalid' \
 再次执行仓库短安装脚本即可：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/main/install.sh | sudo bash
 ```
 
 验证：

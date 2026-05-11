@@ -420,6 +420,87 @@ def test_update_command_prints_raw_github_update_command():
     assert "install.sh | sudo bash" in result.stdout
 
 
+def test_doctor_command_reports_full_production_readiness(tmp_path):
+    runner = CliRunner()
+    etc_dir = tmp_path / "etc" / "hermes-managed-network"
+    service_dir = tmp_path / "systemd"
+    backup_dir = tmp_path / "backups"
+    db = tmp_path / "state" / "control-plane.db"
+    log_file = tmp_path / "hmn.log"
+    etc_dir.mkdir(parents=True)
+    service_dir.mkdir()
+    backup_dir.mkdir()
+    db.parent.mkdir()
+    db.write_text("")
+    log_file.write_text("started\nready\n")
+    (etc_dir / "master.env").write_text(
+        f"HMN_DB={db}\nHMN_HOST=127.0.0.1\nHMN_PORT=8765\nHMN_PUBLIC_URL=https://hmn.example\n"
+    )
+    (etc_dir / "approval-gateway.env").write_text("HMN_APPROVAL_GATEWAY_CLIENT=telegram\n")
+    (etc_dir / "headscale.env").write_text("HMN_HEADSCALE_MODE=bundled\n")
+    (etc_dir / "config.yaml").write_text("network:\n  provider: headscale\n")
+    (service_dir / "hermes-managed-network.service").write_text("[Service]\nExecStart=/opt/hmn/.venv/bin/python\n")
+    (service_dir / "hermes-managed-network-approval-gateway.service").write_text(
+        "[Service]\nExecStart=/usr/local/bin/hmn approval-gateway run\n"
+    )
+    stamp = "20260101-010203"
+    for name in [
+        "control-plane.20260101-010203.db",
+        "master.20260101-010203.env",
+        "config.20260101-010203.yaml",
+        "metadata.20260101-010203.env",
+    ]:
+        (backup_dir / name).write_text("backup\n")
+    (etc_dir / "upgrade-manifest.env").write_text(
+        f"PREVIOUS_VERSION=0.9.0\n"
+        f"TARGET_VERSION=1.0.0\n"
+        f"VERSION_POLICY=upgrade\n"
+        f"HMN_BACKUP_DIR={backup_dir}\n"
+        f"HMN_LAST_BACKUP_STAMP={stamp}\n"
+        f"BACKUP_DB={backup_dir / 'control-plane.20260101-010203.db'}\n"
+        f"BACKUP_ENV={backup_dir / 'master.20260101-010203.env'}\n"
+        f"BACKUP_CONFIG={backup_dir / 'config.20260101-010203.yaml'}\n"
+        f"BACKUP_METADATA={backup_dir / 'metadata.20260101-010203.env'}\n"
+        f"ROLLBACK_COMMAND=hmn rollback --stamp {stamp}\n"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--etc-dir",
+            str(etc_dir),
+            "--service-dir",
+            str(service_dir),
+            "--backup-dir",
+            str(backup_dir),
+            "--skip-systemd",
+            "--health-url",
+            "skip",
+            "--version-url",
+            "skip",
+            "--log-file",
+            str(log_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "生产巡检" in result.stdout
+    assert "master.env: OK" in result.stdout
+    assert "database path: OK" in result.stdout
+    assert "database file: OK" in result.stdout
+    assert "control plane service: OK" in result.stdout
+    assert "approval gateway service: OK" in result.stdout
+    assert "headscale config: OK" in result.stdout
+    assert "healthz: SKIP" in result.stdout
+    assert "api version: SKIP" in result.stdout
+    assert "upgrade backup: OK" in result.stdout
+    assert "rollback command: hmn rollback --stamp 20260101-010203" in result.stdout
+    assert "最近日志提示" in result.stdout
+    assert "ready" in result.stdout
+    assert "hmn update" in result.stdout
+
+
 def test_doctor_command_reports_installer_readiness(tmp_path):
     runner = CliRunner()
     etc_dir = tmp_path / "etc" / "hermes-managed-network"
@@ -445,13 +526,14 @@ def test_doctor_command_reports_installer_readiness(tmp_path):
     )
 
     assert result.exit_code == 0
-    assert "安装巡检" in result.stdout
+    assert "生产巡检" in result.stdout
     assert "master.env: OK" in result.stdout
     assert "database path: OK" in result.stdout
     assert "control plane service: OK" in result.stdout
     assert "approval gateway service: OK" in result.stdout
     assert "headscale config: OK" in result.stdout
-    assert "upgrade backup: /var/backups/hermes-managed-network" in result.stdout
+    assert "upgrade backup: WARN" in result.stdout
+    assert "/var/backups/hermes-managed-network" in result.stdout
     assert "hmn update" in result.stdout
 
 

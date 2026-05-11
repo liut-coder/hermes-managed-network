@@ -40,7 +40,7 @@ sudo env \
   HMN_HEADSCALE_MODE='bundled' \
   HMN_HEADSCALE_URL='https://hs.example.com' \
   HMN_HEADSCALE_NAMESPACE='misk' \
-  bash -c "$(curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh)"
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/main/install.sh)"
 ```
 
 外部 Headscale：
@@ -51,7 +51,7 @@ sudo env \
   HMN_HEADSCALE_URL='https://hs.example.com' \
   HMN_HEADSCALE_API_KEY='<headscale-api-key>' \
   HMN_HEADSCALE_NAMESPACE='misk' \
-  bash -c "$(curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh)"
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/main/install.sh)"
 ```
 
 敏感值只写入 root/服务用户可读的 env/config 文件，不进入审计和公开文档。

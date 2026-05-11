@@ -189,9 +189,17 @@ backup_existing_state() {
   if [ -f /etc/hermes-managed-network/telegram-gateway.env ]; then
     cp -a /etc/hermes-managed-network/telegram-gateway.env "$HMN_BACKUP_DIR/telegram-gateway.${stamp}.env"
   fi
-  if [ -f /etc/hermes-managed-network/headscale.env ]; then
-    cp -a /etc/hermes-managed-network/headscale.env "$HMN_BACKUP_DIR/headscale.${stamp}.env"
+  if [ -f /etc/hermes-managed-network/config.yaml ]; then
+    cp -a /etc/hermes-managed-network/config.yaml "$HMN_BACKUP_DIR/config.${stamp}.yaml"
   fi
+  cat >"$HMN_BACKUP_DIR/metadata.${stamp}.env" <<EOF
+BACKUP_STAMP=${stamp}
+PREVIOUS_VERSION=${EXISTING_VERSION}
+BACKUP_DB=${HMN_BACKUP_DIR}/control-plane.${stamp}.db
+BACKUP_ENV=${HMN_BACKUP_DIR}/master.${stamp}.env
+BACKUP_CONFIG=${HMN_BACKUP_DIR}/config.${stamp}.yaml
+BACKUP_METADATA=${HMN_BACKUP_DIR}/metadata.${stamp}.env
+EOF
 }
 
 version_policy() {
@@ -264,7 +272,12 @@ TARGET_VERSION=${CURRENT_VERSION}
 VERSION_POLICY=${VERSION_POLICY}
 HMN_BACKUP_DIR=${HMN_BACKUP_DIR}
 HMN_LAST_BACKUP_STAMP=${HMN_LAST_BACKUP_STAMP}
+BACKUP_DB=${HMN_BACKUP_DIR}/control-plane.${HMN_LAST_BACKUP_STAMP}.db
+BACKUP_ENV=${HMN_BACKUP_DIR}/master.${HMN_LAST_BACKUP_STAMP}.env
+BACKUP_CONFIG=${HMN_BACKUP_DIR}/config.${HMN_LAST_BACKUP_STAMP}.yaml
+BACKUP_METADATA=${HMN_BACKUP_DIR}/metadata.${HMN_LAST_BACKUP_STAMP}.env
 HMN_ROLLBACK_HINT=${HMN_ROLLBACK_HINT}
+ROLLBACK_COMMAND=${HMN_ROLLBACK_HINT}
 EOF
   chmod 0640 /etc/hermes-managed-network/upgrade-manifest.env
   chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/upgrade-manifest.env

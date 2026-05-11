@@ -118,5 +118,5 @@
 - [ ] installer 写入 upgrade manifest / backup metadata
 - [ ] installer upgrade / rollback 说明闭环
 - [ ] 默认更新入口指向 main 分支 raw 安装脚本
-- [ ] 生产 readiness checklist 文档化
+- [x] 生产 readiness checklist 文档化：`docs/production-readiness.md`
 - [ ] 真实组件驱动闭环：monitor / backup / docs-sync 之一先落地

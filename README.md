@@ -207,7 +207,7 @@ HMN_DB=/tmp/hmn-demo.db hmn audit list
 在 Linux/systemd 主控机上：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/main/install.sh | sudo bash
 ```
 
 更新已安装主控同样执行上面的命令。
@@ -257,6 +257,10 @@ curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/f
 4. 所有动作必须审计
 5. 所有资产必须可反查
 6. 节点接入凭证必须短期、一次性、可撤销
+
+## 生产就绪
+
+- [Production Readiness Checklist](docs/production-readiness.md)
 
 ## License
 
