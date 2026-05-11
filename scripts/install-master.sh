@@ -459,9 +459,11 @@ main() {
   write_service
   write_approval_gateway_service
   systemctl daemon-reload
-  systemctl enable --now hermes-managed-network.service
+  systemctl enable hermes-managed-network.service
+  systemctl restart hermes-managed-network.service
   if [ "$HMN_ENABLE_TELEGRAM" = "1" ]; then
-    systemctl enable --now hermes-managed-network-approval-gateway.service
+    systemctl enable hermes-managed-network-approval-gateway.service
+    systemctl restart hermes-managed-network-approval-gateway.service
   fi
   if ! self_check; then
     print_failure_hint

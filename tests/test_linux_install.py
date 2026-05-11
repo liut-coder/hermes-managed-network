@@ -26,7 +26,8 @@ def test_master_installer_writes_systemd_service_and_cli_links():
     assert "ExecStart=${HMN_HOME}/.venv/bin/python -m hermes_managed_network.server" in script
     assert "ln -sf \"$HMN_HOME/.venv/bin/hmn\" /usr/local/bin/hmn" in script
     assert "ln -sf \"$HMN_HOME/.venv/bin/hmn-server\" /usr/local/bin/hmn-server" in script
-    assert "systemctl enable --now hermes-managed-network.service" in script
+    assert "systemctl enable hermes-managed-network.service" in script
+    assert "systemctl restart hermes-managed-network.service" in script
 
 
 def test_master_installer_has_linux_dependency_detection():
@@ -83,7 +84,8 @@ def test_master_installer_can_enable_approval_gateway_service_with_telegram_comp
     assert "approval-gateway.env" in script
     assert "hermes-managed-network-approval-gateway.service" in script
     assert "ExecStart=/usr/local/bin/hmn approval-gateway run --client" in script
-    assert "systemctl enable --now hermes-managed-network-approval-gateway.service" in script
+    assert "systemctl enable hermes-managed-network-approval-gateway.service" in script
+    assert "systemctl restart hermes-managed-network-approval-gateway.service" in script
 
     # Backward compatibility for existing Telegram gateway deployments/scripts.
     assert "HMN_TELEGRAM_CHAT_ID" in script
