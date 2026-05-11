@@ -1,7 +1,13 @@
+import json
+
+from typer.testing import CliRunner
+
+from hermes_managed_network.cli import app
 from hermes_managed_network.inspect import (
     ContainerRecord,
     NodeInventory,
     SystemdServiceRecord,
+    collect_local_inventory,
     parse_docker_ps_json_lines,
     parse_ss_listening_ports,
 )
@@ -71,6 +77,85 @@ def test_run_returns_warning_style_status_for_missing_command():
     assert code == 127
     assert stdout == ""
     assert "command not found" in stderr
+
+
+def test_collect_local_inventory_uses_runner_and_records_warnings(monkeypatch, tmp_path):
+    caddyfile = tmp_path / "Caddyfile"
+    caddyfile.write_text("example.com {\n  reverse_proxy 127.0.0.1:5001\n}\n")
+
+    def fake_runner(command):
+        if command == ["hostname"]:
+            return 0, "demo-node\n", ""
+        if command == ["ss", "-ltnp"]:
+            return 0, "LISTEN 0 4096 127.0.0.1:5001 0.0.0.0:* users:((\"python\",pid=1,fd=1))\n", ""
+        if command[:2] == ["docker", "ps"]:
+            return 127, "", "docker missing"
+        if command[:2] == ["systemctl", "list-units"]:
+            return 0, "demo.service loaded active running Demo Service\n", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr("hermes_managed_network.inspect.shutil.which", lambda name: f"/usr/bin/{name}")
+    inventory = collect_local_inventory(node="local", runner=fake_runner, proxy_config_paths=[caddyfile])
+
+    assert inventory.hostname == "demo-node"
+    assert inventory.ports[0].port == 5001
+    assert inventory.systemd_services[0].name == "demo.service"
+    assert inventory.reverse_proxy_domains == ["example.com"]
+    assert inventory.reverse_proxy_mappings == {"example.com": 5001}
+    assert "docker unavailable or not installed" in inventory.warnings
+    assert "docker missing" in inventory.warnings
+
+
+def test_cli_inspect_node_outputs_json(monkeypatch, tmp_path):
+    inventory = NodeInventory(
+        node="local",
+        hostname="demo-node",
+        os_release="Debian",
+        ports=[],
+        containers=[],
+        systemd_services=[],
+        reverse_proxy_domains=[],
+        reverse_proxy_mappings={},
+        paths=[],
+        warnings=["docker unavailable or not installed"],
+    )
+    monkeypatch.setattr("hermes_managed_network.cli.collect_local_inventory", lambda node="local": inventory)
+
+    result = CliRunner().invoke(app, ["inspect", "node", "--local", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["hostname"] == "demo-node"
+    assert payload["warnings"] == ["docker unavailable or not installed"]
+
+
+def test_cli_inspect_node_writes_output_file(monkeypatch, tmp_path):
+    inventory = NodeInventory(
+        node="local",
+        hostname="demo-node",
+        os_release="Debian",
+        ports=[],
+        containers=[],
+        systemd_services=[],
+        reverse_proxy_domains=[],
+        reverse_proxy_mappings={},
+        paths=[],
+        warnings=[],
+    )
+    monkeypatch.setattr("hermes_managed_network.cli.collect_local_inventory", lambda node="local": inventory)
+    output = tmp_path / "inventory.json"
+
+    result = CliRunner().invoke(app, ["inspect", "node", "--local", "--output", str(output)])
+
+    assert result.exit_code == 0
+    assert json.loads(output.read_text())["hostname"] == "demo-node"
+
+
+def test_cli_inspect_node_remote_is_explicitly_unavailable():
+    result = CliRunner().invoke(app, ["inspect", "node", "--node", "worker-1", "--json"])
+
+    assert result.exit_code != 0
+    assert "remote inspect is reserved" in result.stdout
 
 
 def test_node_inventory_round_trips_stable_json_shape():

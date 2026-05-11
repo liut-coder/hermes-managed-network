@@ -16,6 +16,7 @@ import typer
 
 from .components import ComponentManifest, load_builtin_components
 from .executor import PlaybookExecutor
+from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .playbook import Playbook
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
@@ -65,6 +66,7 @@ audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
+inspect_app = typer.Typer(help="盘点节点资产")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -72,6 +74,7 @@ app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
+app.add_typer(inspect_app, name="inspect")
 
 
 def _default_db() -> Path:
@@ -380,6 +383,28 @@ def menu(plain: bool = typer.Option(False, "--plain", help="只打印快捷命�
         _show_menu()
     else:
         _show_interactive_menu()
+
+
+@inspect_app.command("node")
+def inspect_node(
+    local: bool = typer.Option(False, "--local", help="盘点本机资产。"),
+    node: str | None = typer.Option(None, "--node", help="预留远程节点 ID；当前 MVP 不执行远程 SSH。"),
+    as_json: bool = typer.Option(False, "--json", help="输出 JSON。"),
+    output: Path | None = typer.Option(None, "--output", help="写入 inventory JSON 文件。"),
+) -> None:
+    if node and not local:
+        typer.echo("remote inspect is reserved for a future SSH/worker provider; use --local for this MVP")
+        raise typer.Exit(2)
+    if not local:
+        raise typer.BadParameter("当前 MVP 需要显式传入 --local")
+    inventory = collect_local_inventory(node=node or "local")
+    rendered = inventory_to_json(inventory)
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered + "\n")
+        typer.echo(str(output))
+    if as_json or not output:
+        typer.echo(rendered)
 
 
 @app.command("version")
