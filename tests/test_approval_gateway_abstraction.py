@@ -1,3 +1,5 @@
+import re
+
 from typer.testing import CliRunner
 
 from hermes_managed_network.approval_gateway import (
@@ -16,6 +18,10 @@ from hermes_managed_network.approval_notifications import (
 )
 from hermes_managed_network.cli import app
 from hermes_managed_network.storage import ApprovalRequest
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _approval(**details):
@@ -145,7 +151,8 @@ def test_approval_gateway_cli_exists_and_keeps_telegram_alias():
     poll_help = runner.invoke(app, ["approval-gateway", "poll-once", "--help"])
 
     assert poll_help.exit_code == 0
-    assert "--client" in poll_help.stdout
+    poll_help_text = _strip_ansi(poll_help.stdout)
+    assert "--client" in poll_help_text
     assert "poll-once" in generic.stdout
     assert legacy.exit_code == 0
     assert "poll-once" in legacy.stdout
