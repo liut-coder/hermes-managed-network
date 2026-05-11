@@ -274,6 +274,45 @@ HMN_APPROVAL_GATEWAY_TARGET=<chat-id> \
 - Bot token 和 chat id 只通过环境变量提供，不写入文档、脚本或 shell 历史示例。
 - 该 bot token 不应和主 Hermes Telegram gateway 共用，避免多个 `getUpdates` consumer 抢更新。
 
+
+## Headscale bundled / external 真实网络 smoke
+
+用于验证 Headscale/Tailscale overlay network 的真实接入和执行路由。脚本支持 `HMN_HEADSCALE_MODE=bundled|external`，会在主控写入 Headscale provider 配置、创建 preauth key，并让 worker 加入 overlay。
+
+```bash
+HMN_MASTER_HOST=master.example.invalid \
+HMN_WORKER_HOST=worker.example.invalid \
+HMN_SSH_KEY=/path/to/ssh_key \
+HMN_HEADSCALE_MODE=external \
+HMN_HEADSCALE_URL=https://hs.example.invalid \
+HMN_HEADSCALE_API_KEY=<headscale-api-key> \
+HMN_HEADSCALE_NAMESPACE=misk \
+HMN_PUBLIC_URL=http://master.example.invalid:8765 \
+./scripts/smoke-headscale-network.sh
+```
+
+可选参数：
+
+- `HMN_HEADSCALE_MODE=bundled|external`：bundled 使用 HMN installer 写入本机 Headscale 配置入口；external 指向既有 Headscale API。
+- `HMN_HEADSCALE_TAG=tag:hmn-smoke`：preauth key / tag gate 验证使用的 ACL tag。
+- `HMN_SKIP_INSTALL=1`：复用已安装 master，仅跑验证链。
+- `HMN_SKIP_TAILSCALE_UP=1`：worker 已加入 overlay 时跳过 `tailscale up`。
+
+覆盖内容：
+
+- `hmn network preauth-key create` 创建真实 Headscale preauth key。
+- worker 节点执行 `tailscale up --login-server ... --authkey ...` 加入 overlay。
+- `hmn network status` / `hmn network sync` 同步 provider node。
+- node record 保存 `network_provider`、`network_node_id`、`network_ip`、`network_tags`、`network_online`。
+- `hmn node doctor`、SSH executor、`hmn component verify reverse-proxy` 均验证 `target_source: network_ip` / `remote_check: overlay_network`。
+- `hmn network node tags set` 与 `hmn network acl plan` 仍生成审批，不能绕过 approval gate。
+
+注意事项：
+
+- Headscale API key 和 preauth key 只通过环境变量/临时变量传入，不写入文档或长期文件。
+- 脚本示例使用 `example.invalid`，真实主机名、域名、token 不应提交到仓库。
+- 若是 bundled 模式，当前脚本验证 HMN installer/provider wiring 与真实 API；Headscale 服务自身安装、备份、升级仍按独立组件切片推进。
+
 ## 更新已安装主控
 
 再次执行仓库短安装脚本即可：

@@ -92,3 +92,40 @@ def test_telegram_approval_smoke_script_documents_real_bot_callback_gate():
     assert "BOT_TOKEN=" not in script
     assert "<bot-token>" in Path("docs/deployment.md").read_text(encoding="utf-8")
     assert "scripts/smoke-telegram-approval.sh" in Path("docs/roadmap.md").read_text(encoding="utf-8")
+
+
+def test_headscale_network_smoke_script_documents_bundled_and_external_real_overlay_gate():
+    script_path = Path("scripts/smoke-headscale-network.sh")
+
+    assert script_path.exists()
+    script = script_path.read_text(encoding="utf-8")
+    deployment = Path("docs/deployment.md").read_text(encoding="utf-8")
+    roadmap = Path("docs/roadmap.md").read_text(encoding="utf-8")
+
+    assert script.startswith("#!/usr/bin/env bash")
+    assert "set -euo pipefail" in script
+    assert "HMN_HEADSCALE_MODE" in script
+    assert "bundled|external" in script
+    assert "HMN_HEADSCALE_URL" in script
+    assert "HMN_HEADSCALE_API_KEY" in script
+    assert "HMN_HEADSCALE_NAMESPACE" in script
+    assert "tailscale up" in script
+    assert "hmn network preauth-key create" in script
+    assert "hmn network status" in script
+    assert "hmn network sync" in script
+    assert "network_provider: headscale" in script
+    assert "network_ip:" in script
+    assert "hmn node doctor" in script
+    assert "target_source: network_ip" in script
+    assert "hmn component verify reverse-proxy" in script
+    assert "remote_check: overlay_network" in script
+    assert "hmn network node tags set" in script
+    assert "hmn network acl plan" in script
+    assert "需要审批" in script
+    assert "HMN_SSH_KEY" in script
+    assert "example.invalid" in script
+    assert "<headscale-api-key>" in deployment
+    assert "?token=" not in script
+    assert "scripts/smoke-headscale-network.sh" in deployment
+    assert "Headscale bundled / external 真实网络 smoke" in deployment
+    assert "scripts/smoke-headscale-network.sh" in roadmap
