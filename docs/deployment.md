@@ -172,48 +172,36 @@ sudo systemctl enable --now hermes-managed-network-approval-gateway.service
 
 ## 本地端到端 smoke test
 
-下面命令会使用临时数据库，本机启动 controller，模拟节点 join/confirm，运行 worker，并下发一条 disabled-exec 任务：
+仓库内置一条 v0.9 本地部署闭环脚本。它会使用临时数据库和临时文档目录，本机启动 controller，模拟节点 join/confirm，运行 worker，验证 disabled-exec 安全拒绝、heartbeat/worker-status，并刷新资产文档：
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
-
-DB=$(mktemp /tmp/hmn-smoke.XXXXXX.db)
-HMN_DB="$DB" uvicorn 'hermes_managed_network.api:create_app' --factory --host 127.0.0.1 --port 8765 &
-SERVER_PID=$!
-trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -f "$DB"' EXIT
-
-curl -fsS http://127.0.0.1:8765/healthz
-TOKEN=$(HMN_DB="$DB" hmn token create --trust B --label worker)
-
-curl -fsS -X POST http://127.0.0.1:8765/api/v1/join \
-  -H 'Content-Type: application/json' \
-  --data "{\"token\":\"$TOKEN\",\"fingerprint\":\"sha256:smoke\",\"hostname\":\"smoke-node\",\"addresses\":[\"127.0.0.1\"]}"
-
-HMN_DB="$DB" hmn node confirm
-HMN_DB="$DB" hmn task run 'echo smoke-disabled'
-
-NODE_ID=$(HMN_DB="$DB" hmn node list | awk '{print $1; exit}')
-sudo install -d -m 0700 /etc/hermes-managed-network
-sudo tee /etc/hermes-managed-network/node.env >/dev/null <<EOF
-HERMES_MASTER_URL=http://127.0.0.1:8765
-HERMES_NODE_ID=$NODE_ID
-HERMES_NODE_FINGERPRINT=sha256:smoke
-HMN_ENABLE_EXEC=0
-EOF
-sudo chmod 0600 /etc/hermes-managed-network/node.env
-HMN_ENABLE_EXEC=0 bash src/hermes_managed_network/assets/worker.sh || true
-HMN_DB="$DB" hmn task list
+./scripts/smoke-local-e2e.sh
 ```
+
+覆盖内容：
+
+- `hmn-server` 使用显式 `HMN_DB` / `HMN_HOST` / `HMN_PORT` 启动
+- `/healthz` 和 `/api/v1/version` 就绪检查
+- join token 创建与 `/api/v1/join`
+- `hmn node confirm`
+- worker heartbeat + task poll + disabled-exec result
+- `hmn node worker-status`
+- `hmn docs service` 与 `hmn docs generate`
 
 预期结果：
 
-- `/healthz` 返回 `{"status":"ok"}`
 - join 返回 `pending` 节点
 - `hmn node confirm` 把节点变成 `managed`
+- `hmn node worker-status` 显示 heartbeat / worker / protocol OK
 - `hmn task list` 里任务状态为 `failed`
 - result stderr 为 disabled-exec 提示，证明 worker 安全拒绝并完成回传
+- 机器文档、服务索引、域名索引、Runbook 索引均生成成功
+
+默认会删除临时目录；排障时可保留现场：
+
+```bash
+HMN_SMOKE_KEEP=1 ./scripts/smoke-local-e2e.sh
+```
 
 ## 更新已安装主控
 
