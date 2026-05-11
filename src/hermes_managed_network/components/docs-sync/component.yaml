@@ -1,0 +1,85 @@
+id: docs-sync
+name: Docs Sync
+version: 0.1.0
+api_version: 1
+summary: Asset documentation sync component for machine docs, service docs, domain index, and runbooks
+risk: low
+
+requires:
+  runtime_profiles:
+    - full-worker
+    - proxy-managed
+  service_managers:
+    - systemd
+    - cron
+    - none
+  capabilities:
+    - docs.write
+    - docs.index
+  ports: []
+
+provides:
+  services:
+    - docs-sync
+  commands:
+    - docs.generate
+    - docs.server
+    - docs.service-index
+    - docs.domain-index
+    - docs.runbook-index
+
+permissions:
+  observe:
+    - component.status
+    - component.verify
+    - docs.read
+  operate:
+    - docs.generate
+    - docs.sync
+  admin:
+    - component.install
+    - component.uninstall
+
+config_schema:
+  type: object
+  required: []
+  properties:
+    server_root:
+      type: string
+      default: /srv/files/docs/server
+      description: Machine-level documentation root
+    service_root:
+      type: string
+      default: /srv/files/service
+      description: Service-level documentation root
+    redact_secrets:
+      type: boolean
+      default: true
+      description: Keep secrets redacted from generated public docs
+    publish_target:
+      type: string
+      default: file-center
+      description: Publishing target name for generated docs
+
+drivers:
+  default: file-center
+  options:
+    - file-center
+    - git
+    - local
+
+playbooks:
+  install: playbooks/install.yaml
+  configure: playbooks/configure.yaml
+  verify: playbooks/verify.yaml
+  uninstall: playbooks/uninstall.yaml
+
+health:
+  checks:
+    - type: docs_index
+      required: true
+    - type: secret_redaction
+      required: true
+
+audit:
+  category: component.docs-sync

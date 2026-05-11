@@ -1,0 +1,93 @@
+id: backup
+name: Backup
+version: 0.1.0
+api_version: 1
+summary: Directory/database backup component with dry-run sizing, checksum recording, and docs handoff
+risk: medium
+
+requires:
+  runtime_profiles:
+    - full-worker
+    - lite-worker
+  service_managers:
+    - systemd
+    - cron
+    - loop
+  capabilities:
+    - filesystem.read
+    - archive.write
+    - checksum.write
+  ports: []
+
+provides:
+  services:
+    - backup
+  commands:
+    - backup.plan
+    - backup.run
+    - backup.verify
+    - backup.report
+
+permissions:
+  observe:
+    - component.status
+    - component.verify
+    - backup.plan
+  operate:
+    - backup.run
+  admin:
+    - component.install
+    - component.uninstall
+    - backup.restore
+
+config_schema:
+  type: object
+  required:
+    - include
+  properties:
+    include:
+      type: array
+      items:
+        type: string
+      description: Directories or files to include in backup scope
+    exclude:
+      type: array
+      items:
+        type: string
+      default: []
+      description: Paths/globs to exclude from backup archives
+    destination:
+      type: string
+      default: /var/backups/hermes-managed-network
+      description: Local staging destination or mounted backup target
+    checksum:
+      type: string
+      default: sha256
+      description: Checksum algorithm for generated artifacts
+    dry_run_first:
+      type: boolean
+      default: true
+      description: Require a sizing/dry-run plan before mutating backup action
+
+drivers:
+  default: local-archive
+  options:
+    - local-archive
+    - restic
+    - rclone
+
+playbooks:
+  install: playbooks/install.yaml
+  configure: playbooks/configure.yaml
+  verify: playbooks/verify.yaml
+  uninstall: playbooks/uninstall.yaml
+
+health:
+  checks:
+    - type: last_backup
+      max_age_seconds: 86400
+    - type: checksum_manifest
+      required: true
+
+audit:
+  category: component.backup

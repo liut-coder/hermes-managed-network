@@ -62,7 +62,6 @@ def test_load_builtin_monitor_manifest():
     components = load_builtin_components()
 
     monitor = components["monitor"]
-
     assert monitor.id == "monitor"
     assert monitor.version == "0.1.0"
     assert monitor.api_version == 1
@@ -74,6 +73,42 @@ def test_load_builtin_monitor_manifest():
     assert monitor.config_schema["required"] == []
     assert monitor.health["checks"][0]["type"] == "heartbeat"
     assert monitor.audit["category"] == "component.monitor"
+
+
+def test_load_builtin_backup_manifest():
+    components = load_builtin_components()
+
+    backup = components["backup"]
+    assert backup.id == "backup"
+    assert backup.version == "0.1.0"
+    assert backup.api_version == 1
+    assert backup.risk == "medium"
+    assert "filesystem.read" in backup.requires["capabilities"]
+    assert "backup" in backup.provides["services"]
+    assert backup.drivers["default"] == "local-archive"
+    assert set(backup.drivers["options"]) >= {"local-archive", "restic", "rclone"}
+    assert backup.config_schema["required"] == ["include"]
+    assert "exclude" in backup.config_schema["properties"]
+    assert backup.health["checks"][0]["type"] == "last_backup"
+    assert backup.audit["category"] == "component.backup"
+
+
+def test_load_builtin_docs_sync_manifest():
+    components = load_builtin_components()
+
+    docs_sync = components["docs-sync"]
+    assert docs_sync.id == "docs-sync"
+    assert docs_sync.version == "0.1.0"
+    assert docs_sync.api_version == 1
+    assert docs_sync.risk == "low"
+    assert "docs.write" in docs_sync.requires["capabilities"]
+    assert "docs-sync" in docs_sync.provides["services"]
+    assert docs_sync.drivers["default"] == "file-center"
+    assert set(docs_sync.drivers["options"]) >= {"file-center", "git", "local"}
+    assert docs_sync.config_schema["required"] == []
+    assert docs_sync.health["checks"][0]["type"] == "docs_index"
+    assert docs_sync.audit["category"] == "component.docs-sync"
+
 
 
 def test_load_component_manifest_validates_required_fields(tmp_path):
@@ -159,7 +194,11 @@ def test_component_registry_lists_gets_and_validates_builtin_components():
     listed = registry.list()
     reverse_proxy = registry.get("reverse-proxy")
 
-    assert [component.id for component in listed] == ["forwarder", "headscale-server", "monitor", "reverse-proxy"]
+    assert [component.id for component in listed] == ["backup", "docs-sync", "forwarder", "headscale-server", "monitor", "reverse-proxy"]
+    backup = registry.get("backup")
+    assert backup.name == "Backup"
+    docs_sync = registry.get("docs-sync")
+    assert docs_sync.name == "Docs Sync"
     assert reverse_proxy.name == "Reverse Proxy"
     forwarder = registry.get("forwarder")
     assert forwarder.name == "Forwarder"
@@ -167,6 +206,8 @@ def test_component_registry_lists_gets_and_validates_builtin_components():
     assert headscale_server.name == "Headscale Server"
     monitor = registry.get("monitor")
     assert monitor.name == "Monitor"
+    assert registry.validate("backup") is backup
+    assert registry.validate("docs-sync") is docs_sync
     assert registry.validate("reverse-proxy") is reverse_proxy
     assert registry.validate("forwarder") is forwarder
     assert registry.validate("headscale-server") is headscale_server
@@ -182,13 +223,18 @@ def test_component_registry_lists_gets_and_validates_builtin_components():
 def test_builtin_component_manifests_are_package_data():
     from importlib import resources
 
-    reverse_proxy_manifest = resources.files("hermes_managed_network").joinpath("components", "reverse-proxy", "component.yaml")
-    forwarder_manifest = resources.files("hermes_managed_network").joinpath("components", "forwarder", "component.yaml")
-    monitor_manifest = resources.files("hermes_managed_network").joinpath("components", "monitor", "component.yaml")
+    root = resources.files("hermes_managed_network").joinpath("components")
+    reverse_proxy_manifest = root.joinpath("reverse-proxy", "component.yaml")
+    forwarder_manifest = root.joinpath("forwarder", "component.yaml")
+    monitor_manifest = root.joinpath("monitor", "component.yaml")
+    backup_manifest = root.joinpath("backup", "component.yaml")
+    docs_sync_manifest = root.joinpath("docs-sync", "component.yaml")
 
     assert reverse_proxy_manifest.is_file()
     assert forwarder_manifest.is_file()
     assert monitor_manifest.is_file()
+    assert backup_manifest.is_file()
+    assert docs_sync_manifest.is_file()
 
 
 def test_store_can_register_components_and_node_status(tmp_path):
