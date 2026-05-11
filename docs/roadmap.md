@@ -30,7 +30,7 @@
 - [x] join token 撤销 / 过期 UX
 - [x] node registry
 - [x] SQLite 存储
-- [ ] SSH executor
+- [x] SSH executor（阶段性完成：显式 `executor=ssh` 路由、worker poll 隔离、`ssh-run-next`、网络 IP 目标解析与审计已闭环；后续生产增强另列）
 - [x] audit log
 - [x] Approval 数据模型和 CLI 骨架
 - [x] Approval -> Task dispatch 闭环
