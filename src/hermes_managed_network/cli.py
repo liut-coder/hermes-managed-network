@@ -28,6 +28,7 @@ from .docs_sync import (
 from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .playbook import Playbook
+from .backup_provider import render_backup_plan_json
 from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH
 from .storage import SQLiteStore
@@ -83,6 +84,7 @@ docs_app = typer.Typer(help="从 service registry 生成服务文档")
 docs_sync_app = typer.Typer(help="生成集中 docs-sync dry-run 计划")
 uptime_app = typer.Typer(help="从 service registry 生成 uptime 监控计划（dry-run）")
 deploy_app = typer.Typer(help="聚合 service registry 与 provider fixture 的 deploy plan/status（dry-run）")
+backup_app = typer.Typer(help="从 service registry 生成服务级 backup plan（dry-run）")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(playbook_app, name="playbook")
@@ -96,6 +98,7 @@ app.add_typer(docs_app, name="docs")
 docs_app.add_typer(docs_sync_app, name="sync")
 app.add_typer(uptime_app, name="uptime")
 app.add_typer(deploy_app, name="deploy")
+app.add_typer(backup_app, name="backup")
 
 
 def _default_db() -> Path:
@@ -552,6 +555,32 @@ def deploy_status_command(
         service_registry,
         service_id=service_id,
         provider_fixture_dir=provider_fixture_dir,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
+@backup_app.command("plan")
+def backup_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    adapter: str | None = typer.Option(
+        None,
+        "--adapter",
+        help="只输出指定 backup adapter（restic|borgmatic|kopia）。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 backup dry-run plan JSON。"),
+) -> None:
+    rendered = render_backup_plan_json(
+        service_registry,
+        service_id=service_id,
+        adapter=adapter,
     )
     if as_json:
         typer.echo(rendered)
