@@ -10,7 +10,7 @@ def test_install_entry_uses_raw_master_installer_and_git_package():
     script = (ROOT / "install.sh").read_text()
 
     assert "HMN_PACKAGE" in script
-    assert "git+https://github.com/liut-coder/hermes-managed-network.git@feat/control-plane-mvp" in script
+    assert "git+https://github.com/liut-coder/hermes-managed-network.git@main" in script
     assert "scripts/install-master.sh" in script
     assert "HMN_HOST=\"${HMN_HOST:-0.0.0.0}\"" in script
 
@@ -62,6 +62,12 @@ def test_master_installer_detects_existing_version_and_policy():
     assert "HMN_UPGRADE_POLICY" in script
     assert "backup_existing_state" in script
     assert "HMN_BACKUP_DIR" in script
+    assert "write_upgrade_manifest" in script
+    assert "upgrade-manifest.env" in script
+    assert "HMN_ROLLBACK_HINT" in script
+    assert "PREVIOUS_VERSION" in script
+    assert "TARGET_VERSION" in script
+    assert "hmn doctor" in script
 
 
 def test_master_installer_runs_post_deploy_self_check():

@@ -363,6 +363,41 @@ def test_update_command_prints_raw_github_update_command():
     assert "install.sh | sudo bash" in result.stdout
 
 
+def test_doctor_command_reports_installer_readiness(tmp_path):
+    runner = CliRunner()
+    etc_dir = tmp_path / "etc" / "hermes-managed-network"
+    service_dir = tmp_path / "systemd"
+    db = tmp_path / "state" / "control-plane.db"
+    etc_dir.mkdir(parents=True)
+    service_dir.mkdir()
+    db.parent.mkdir()
+    db.write_text("")
+    (etc_dir / "master.env").write_text(
+        f"HMN_DB={db}\nHMN_HOST=127.0.0.1\nHMN_PORT=8765\nHMN_PUBLIC_URL=https://hmn.example\n"
+    )
+    (etc_dir / "approval-gateway.env").write_text("HMN_APPROVAL_GATEWAY_CLIENT=telegram\n")
+    (etc_dir / "headscale.env").write_text("HMN_HEADSCALE_MODE=bundled\n")
+    (service_dir / "hermes-managed-network.service").write_text("[Service]\nExecStart=/opt/hmn/.venv/bin/python\n")
+    (service_dir / "hermes-managed-network-approval-gateway.service").write_text(
+        "[Service]\nExecStart=/usr/local/bin/hmn approval-gateway run\n"
+    )
+
+    result = runner.invoke(
+        app,
+        ["doctor", "--etc-dir", str(etc_dir), "--service-dir", str(service_dir), "--skip-systemd"],
+    )
+
+    assert result.exit_code == 0
+    assert "安装巡检" in result.stdout
+    assert "master.env: OK" in result.stdout
+    assert "database path: OK" in result.stdout
+    assert "control plane service: OK" in result.stdout
+    assert "approval gateway service: OK" in result.stdout
+    assert "headscale config: OK" in result.stdout
+    assert "upgrade backup: /var/backups/hermes-managed-network" in result.stdout
+    assert "hmn update" in result.stdout
+
+
 def test_uninstall_without_yes_prints_safe_command_only():
     runner = CliRunner()
 
