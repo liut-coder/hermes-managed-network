@@ -73,10 +73,11 @@
 
 ## v0.6：资产文档自动化
 
-- [ ] server docs 生成
-- [ ] service docs 生成
-- [ ] domain index 生成
-- [ ] runbook index 生成
+- [x] server docs 生成：`hmn docs server <node_id>`、`hmn docs index`
+- [x] service docs 生成：`hmn docs service <service_id>`、`hmn docs service-index`
+- [x] 一键刷新资产入口：`hmn docs generate` 同步机器文档、机器索引、服务索引、域名索引和 Runbook 索引
+- [x] domain index 生成：`hmn docs domain-index`
+- [x] runbook index 生成：`hmn docs runbook-index`
 
 ## v0.7：插件化组件架构
 

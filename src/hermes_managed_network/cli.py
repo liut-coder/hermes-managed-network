@@ -23,6 +23,8 @@ from .docs import (
     generate_docs,
     write_server_doc,
     write_server_index,
+    write_domain_index,
+    write_runbook_index,
     write_service_doc,
     write_service_index,
 )
@@ -1018,10 +1020,18 @@ def docs_index(
 @docs_app.command("generate")
 def docs_generate(
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
-    output_root: Path = typer.Option(DEFAULT_DOCS_ROOT, "--output-root", help="文档根目录"),
+    output_root: Path = typer.Option(DEFAULT_DOCS_ROOT, "--output-root", help="机器文档根目录"),
+    service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
+    runbook_root: Path | None = typer.Option(None, "--runbook-root", help="Runbook 源目录"),
 ) -> None:
-    result = generate_docs(_store(db), output_root)
+    result = generate_docs(_store(db), output_root, service_root, runbook_root)
     typer.echo(f"生成机器文档: {result.server_count}")
+    if result.service_index:
+        typer.echo(f"已刷新服务索引: {result.service_index}")
+    if result.domain_index:
+        typer.echo(f"已刷新域名索引: {result.domain_index}")
+    if result.runbook_index:
+        typer.echo(f"已刷新 Runbook 索引: {result.runbook_index}")
     for path in result.paths:
         typer.echo(str(path))
 
@@ -1055,6 +1065,23 @@ def docs_service_index(
     service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
 ) -> None:
     path = write_service_index(service_root)
+    typer.echo(str(path))
+
+
+@docs_app.command("domain-index")
+def docs_domain_index(
+    service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
+) -> None:
+    path = write_domain_index(service_root)
+    typer.echo(str(path))
+
+
+@docs_app.command("runbook-index")
+def docs_runbook_index(
+    service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
+    runbook_root: Path | None = typer.Option(None, "--runbook-root", help="Runbook 源目录"),
+) -> None:
+    path = write_runbook_index(service_root, runbook_root)
     typer.echo(str(path))
 
 

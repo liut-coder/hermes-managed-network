@@ -63,17 +63,60 @@ def test_docs_index_generates_machine_index(tmp_path):
     assert "- [docs-host](docs-host/README.md) — `managed` — `100.64.0.5`" in content
 
 
-def test_docs_generate_runs_server_docs_and_index(tmp_path):
+def test_docs_generate_runs_all_asset_indexes(tmp_path):
     db = tmp_path / "hmn.db"
     output_root = tmp_path / "docs"
+    service_root = tmp_path / "service"
+    runbook_root = tmp_path / "runbooks"
+    runbook_root.mkdir()
+    (runbook_root / "restore-mail.md").write_text("# Restore Mail\n", encoding="utf-8")
     SQLiteStore(db).save_node(_managed_node())
+    CliRunner().invoke(
+        app,
+        [
+            "docs",
+            "service",
+            "mailgw",
+            "--service-root",
+            str(service_root),
+            "--title",
+            "Mail Gateway",
+            "--node",
+            "docs-host",
+            "--url",
+            "https://mail.example.invalid",
+        ],
+    )
 
-    result = CliRunner().invoke(app, ["docs", "generate", "--db", str(db), "--output-root", str(output_root)])
+    result = CliRunner().invoke(
+        app,
+        [
+            "docs",
+            "generate",
+            "--db",
+            str(db),
+            "--output-root",
+            str(output_root),
+            "--service-root",
+            str(service_root),
+            "--runbook-root",
+            str(runbook_root),
+        ],
+    )
 
     assert result.exit_code == 0
     assert (output_root / "server" / "docs-host" / "README.md").exists()
     assert (output_root / "server" / "README.md").exists()
+    assert (service_root / "README.md").exists()
+    assert (service_root / "domains.md").exists()
+    assert (service_root / "runbooks.md").exists()
+    assert "- [Mail Gateway](mailgw/README.md) — `mailgw`" in (service_root / "README.md").read_text(encoding="utf-8")
+    assert "- `mail.example.invalid` → [Mail Gateway](mailgw/README.md)" in (service_root / "domains.md").read_text(encoding="utf-8")
+    assert "- [Restore Mail]" in (service_root / "runbooks.md").read_text(encoding="utf-8")
     assert "生成机器文档: 1" in result.stdout
+    assert "已刷新服务索引" in result.stdout
+    assert "已刷新域名索引" in result.stdout
+    assert "已刷新 Runbook 索引" in result.stdout
 
 
 def test_docs_service_generates_service_document(tmp_path):
@@ -130,3 +173,48 @@ def test_docs_service_index_tracks_generated_services(tmp_path):
     content = index_path.read_text(encoding="utf-8")
     assert "# HMN 服务索引" in content
     assert "- [Mail Gateway](mailgw/README.md) — `mailgw`" in content
+
+
+def test_docs_domain_index_collects_service_urls(tmp_path):
+    service_root = tmp_path / "service"
+    runner = CliRunner()
+    created = runner.invoke(
+        app,
+        [
+            "docs",
+            "service",
+            "mailgw",
+            "--service-root",
+            str(service_root),
+            "--title",
+            "Mail Gateway",
+            "--url",
+            "https://mail.example.invalid/login",
+        ],
+    )
+    assert created.exit_code == 0
+
+    result = runner.invoke(app, ["docs", "domain-index", "--service-root", str(service_root)])
+
+    assert result.exit_code == 0
+    index_path = service_root / "domains.md"
+    assert index_path.exists()
+    content = index_path.read_text(encoding="utf-8")
+    assert "# HMN 域名索引" in content
+    assert "- `mail.example.invalid` → [Mail Gateway](mailgw/README.md)" in content
+
+
+def test_docs_runbook_index_collects_markdown_titles(tmp_path):
+    service_root = tmp_path / "service"
+    runbook_root = tmp_path / "runbooks"
+    runbook_root.mkdir()
+    (runbook_root / "restore-mail.md").write_text("# Restore Mail\n", encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["docs", "runbook-index", "--service-root", str(service_root), "--runbook-root", str(runbook_root)])
+
+    assert result.exit_code == 0
+    index_path = service_root / "runbooks.md"
+    assert index_path.exists()
+    content = index_path.read_text(encoding="utf-8")
+    assert "# HMN Runbook 索引" in content
+    assert "- [Restore Mail]" in content

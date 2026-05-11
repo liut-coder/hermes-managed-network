@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .inventory import Node
 from .storage import SQLiteStore
@@ -16,6 +17,9 @@ DEFAULT_SERVICE_ROOT = Path("/srv/files/service")
 class DocsGenerateResult:
     server_count: int
     paths: list[Path]
+    service_index: Path | None = None
+    domain_index: Path | None = None
+    runbook_index: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -107,10 +111,6 @@ def write_server_index(store: SQLiteStore, output_root: Path = DEFAULT_DOCS_ROOT
     return index_path
 
 
-def generate_docs(store: SQLiteStore, output_root: Path = DEFAULT_DOCS_ROOT) -> DocsGenerateResult:
-    paths = [write_server_doc(store, node.node_id, output_root) for node in store.list_nodes()]
-    paths.append(write_server_index(store, output_root))
-    return DocsGenerateResult(server_count=len(paths) - 1, paths=paths)
 
 
 def _service_doc_dir(service_root: Path, service_id: str) -> Path:
@@ -173,3 +173,79 @@ def write_service_index(service_root: Path = DEFAULT_SERVICE_ROOT) -> Path:
     index_path = service_root / "README.md"
     index_path.write_text("\n".join(lines), encoding="utf-8")
     return index_path
+
+
+def _service_url_from_doc(path: Path) -> str:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("- URL: `") and line.endswith("`"):
+                return line.removeprefix("- URL: `").removesuffix("`")
+    except OSError:
+        return ""
+    return ""
+
+
+def write_domain_index(service_root: Path = DEFAULT_SERVICE_ROOT) -> Path:
+    service_root.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for readme in sorted(service_root.glob("*/README.md")):
+        url = _service_url_from_doc(readme)
+        host = urlparse(url).hostname if url and url != "-" else None
+        if not host:
+            continue
+        service_id = readme.parent.name
+        title = _service_title_from_doc(readme)
+        entries.append(f"- `{host}` → [{title}]({service_id}/README.md)")
+    lines = ["# HMN 域名索引", ""]
+    lines.extend(entries or ["暂无域名。"])
+    lines.append("")
+    index_path = service_root / "domains.md"
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+    return index_path
+
+
+def _markdown_title(path: Path) -> str:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+    except OSError:
+        return path.stem
+    return path.stem.replace("-", " ").title()
+
+
+def write_runbook_index(service_root: Path = DEFAULT_SERVICE_ROOT, runbook_root: Path | None = None) -> Path:
+    service_root.mkdir(parents=True, exist_ok=True)
+    root = runbook_root or (service_root / "runbooks")
+    entries = []
+    if root.exists():
+        for runbook in sorted(root.glob("*.md")):
+            title = _markdown_title(runbook)
+            entries.append(f"- [{title}]({runbook.as_posix()})")
+    lines = ["# HMN Runbook 索引", ""]
+    lines.extend(entries or ["暂无 Runbook。"])
+    lines.append("")
+    index_path = service_root / "runbooks.md"
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+    return index_path
+
+
+def generate_docs(
+    store: SQLiteStore,
+    output_root: Path = DEFAULT_DOCS_ROOT,
+    service_root: Path = DEFAULT_SERVICE_ROOT,
+    runbook_root: Path | None = None,
+) -> DocsGenerateResult:
+    paths = [write_server_doc(store, node.node_id, output_root) for node in store.list_nodes()]
+    paths.append(write_server_index(store, output_root))
+    service_index = write_service_index(service_root)
+    domain_index = write_domain_index(service_root)
+    runbook_index = write_runbook_index(service_root, runbook_root)
+    paths.extend([service_index, domain_index, runbook_index])
+    return DocsGenerateResult(
+        server_count=len(paths) - 4,
+        paths=paths,
+        service_index=service_index,
+        domain_index=domain_index,
+        runbook_index=runbook_index,
+    )
