@@ -1,5 +1,7 @@
 # Roadmap
 
+架构剩余待办清单见：[Architecture Backlog](architecture-backlog.md)。
+
 ## v0.1：文档型 MVP
 
 - [x] README
