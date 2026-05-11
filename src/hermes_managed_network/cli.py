@@ -50,7 +50,7 @@ from .version import current_version_info
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_PLAYBOOK_DIR = Path("playbooks")
-INSTALL_URL = "https://raw.githubusercontent.com/liut-coder/hermes-managed-network/feat/control-plane-mvp/install.sh"
+INSTALL_URL = "https://raw.githubusercontent.com/liut-coder/hermes-managed-network/main/install.sh"
 SERVICE_NAME = "hermes-managed-network.service"
 
 app = typer.Typer(
@@ -85,6 +85,7 @@ app = typer.Typer(
         "  hmn token create          创建 token\n"
         "  hmn version               查看版本\n"
         "  hmn update                输出更新命令\n"
+        "  hmn doctor                巡检主控安装状态\n"
         "  hmn uninstall             查看卸载命令"
     ),
     invoke_without_command=True,
@@ -507,6 +508,57 @@ def update() -> None:
     """输出主控更新命令。"""
     typer.echo("更新命令：")
     typer.echo(f"curl -fsSL {INSTALL_URL} | sudo bash")
+
+
+def _status_line(label: str, ok: bool, detail: str = "") -> str:
+    status = "OK" if ok else "WARN"
+    suffix = f" - {detail}" if detail else ""
+    return f"{label}: {status}{suffix}"
+
+
+@app.command("doctor")
+def doctor_install(
+    etc_dir: Path = typer.Option(Path("/etc/hermes-managed-network"), "--etc-dir", help="HMN 配置目录"),
+    service_dir: Path = typer.Option(Path("/etc/systemd/system"), "--service-dir", help="systemd unit 目录"),
+    backup_dir: Path = typer.Option(Path("/var/backups/hermes-managed-network"), "--backup-dir", help="升级备份目录"),
+    skip_systemd: bool = typer.Option(False, "--skip-systemd", help="跳过 systemctl 在线状态检查。"),
+) -> None:
+    """巡检主控安装、升级和回滚 readiness。"""
+    typer.echo("安装巡检")
+    master_env_path = etc_dir / "master.env"
+    master_env = _read_master_env(master_env_path)
+    typer.echo(_status_line("master.env", bool(master_env), str(master_env_path)))
+
+    db_path = Path(master_env.get("HMN_DB", "/var/lib/hermes-managed-network/control-plane.db"))
+    typer.echo(_status_line("database path", db_path.parent.exists(), str(db_path)))
+
+    control_service = service_dir / SERVICE_NAME
+    typer.echo(_status_line("control plane service", control_service.exists(), str(control_service)))
+
+    approval_env = etc_dir / "approval-gateway.env"
+    approval_service = service_dir / "hermes-managed-network-approval-gateway.service"
+    approval_configured = approval_env.exists() or approval_service.exists()
+    typer.echo(_status_line("approval gateway service", not approval_configured or approval_service.exists(), str(approval_service)))
+
+    headscale_env = etc_dir / "headscale.env"
+    config_yaml = etc_dir / "config.yaml"
+    typer.echo(_status_line("headscale config", headscale_env.exists() or config_yaml.exists(), str(headscale_env)))
+
+    manifest = etc_dir / "upgrade-manifest.env"
+    typer.echo(_status_line("upgrade manifest", manifest.exists(), str(manifest) if manifest.exists() else "will be created by installer upgrade"))
+    typer.echo(f"upgrade backup: {backup_dir}")
+
+    if not skip_systemd:
+        for unit in [SERVICE_NAME, "hermes-managed-network-approval-gateway.service"]:
+            if unit == "hermes-managed-network-approval-gateway.service" and not approval_configured:
+                continue
+            result = subprocess.run(["systemctl", "is-active", "--quiet", unit], check=False)
+            typer.echo(_status_line(f"systemd {unit}", result.returncode == 0))
+
+    typer.echo("修复建议：")
+    typer.echo("- 升级：hmn update")
+    typer.echo("- 失败后查看：journalctl -u hermes-managed-network.service -n 80 --no-pager")
+    typer.echo("- 回滚：按 upgrade-manifest.env 中 HMN_LAST_BACKUP_STAMP 恢复 DB/env 后重启服务")
 
 
 @app.command("uninstall")

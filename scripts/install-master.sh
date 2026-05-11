@@ -11,6 +11,8 @@ HMN_PACKAGE="${HMN_PACKAGE:-hermes-managed-network}"
 HMN_ASSUME_YES="${HMN_ASSUME_YES:-0}"
 HMN_UPGRADE_POLICY="${HMN_UPGRADE_POLICY:-prompt}"
 HMN_BACKUP_DIR="${HMN_BACKUP_DIR:-/var/backups/hermes-managed-network}"
+HMN_LAST_BACKUP_STAMP="${HMN_LAST_BACKUP_STAMP:-}"
+HMN_ROLLBACK_HINT="${HMN_ROLLBACK_HINT:-restore DB/env from HMN_BACKUP_DIR using HMN_LAST_BACKUP_STAMP, then restart services and run hmn doctor}"
 HMN_PUBLIC_URL="${HMN_PUBLIC_URL:-http://127.0.0.1:${HMN_PORT}}"
 HMN_ENABLE_TELEGRAM="${HMN_ENABLE_TELEGRAM:-0}"
 HMN_APPROVAL_GATEWAY_CLIENT="${HMN_APPROVAL_GATEWAY_CLIENT:-telegram}"
@@ -174,6 +176,7 @@ backup_existing_state() {
   install -d -m 0750 "$HMN_BACKUP_DIR"
   local stamp
   stamp="$(date +%Y%m%d-%H%M%S)"
+  HMN_LAST_BACKUP_STAMP="$stamp"
   if [ -f "$HMN_DB" ]; then
     cp -a "$HMN_DB" "$HMN_BACKUP_DIR/control-plane.${stamp}.db"
   fi
@@ -251,6 +254,20 @@ from hermes_managed_network.api import create_app
 app = create_app('/tmp/hmn-install-smoke.db')
 assert app.title == 'Hermes Managed Network'
 PY
+}
+
+write_upgrade_manifest() {
+  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  cat >/etc/hermes-managed-network/upgrade-manifest.env <<EOF
+PREVIOUS_VERSION=${EXISTING_VERSION}
+TARGET_VERSION=${CURRENT_VERSION}
+VERSION_POLICY=${VERSION_POLICY}
+HMN_BACKUP_DIR=${HMN_BACKUP_DIR}
+HMN_LAST_BACKUP_STAMP=${HMN_LAST_BACKUP_STAMP}
+HMN_ROLLBACK_HINT=${HMN_ROLLBACK_HINT}
+EOF
+  chmod 0640 /etc/hermes-managed-network/upgrade-manifest.env
+  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/upgrade-manifest.env
 }
 
 write_env() {
@@ -442,6 +459,7 @@ self_check() {
   fi
   curl -fsS "http://127.0.0.1:${HMN_PORT}/api/v1/version" >/dev/null || return 1
   "$HMN_HOME/.venv/bin/hmn" version || return 1
+  "$HMN_HOME/.venv/bin/hmn" doctor --skip-systemd || true
   echo "自检通过。"
 }
 
@@ -460,6 +478,7 @@ main() {
   version_policy
   install_package
   verify_install
+  write_upgrade_manifest
   write_env
   write_approval_gateway_env
   install_headscale_bundled
