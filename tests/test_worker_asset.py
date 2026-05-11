@@ -286,3 +286,53 @@ def test_worker_applies_signed_fingerprint_rotation_task(tmp_path):
     assert result_payload["fingerprint"] == new_fp
     assert result_payload["exit_code"] == 0
     assert result_payload["stdout"] == "fingerprint rotated"
+
+
+def test_worker_lite_tries_master_url_fallbacks_in_order(tmp_path):
+    env_file = tmp_path / "node.env"
+    curl_log = tmp_path / "curl.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/bin/sh\n"
+        "log=${HMN_CURL_LOG:?}\n"
+        "url=\"\"\n"
+        "data=\"\"\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    --data) shift; data=\"$1\" ;;\n"
+        "    http://*|https://*) url=\"$1\" ;;\n"
+        "  esac\n"
+        "  shift || true\n"
+        "done\n"
+        "printf '%s\\t%s\\n' \"$url\" \"$data\" >>\"$log\"\n"
+        "case \"$url\" in\n"
+        "  https://[2001:db8::10]:8765/*) exit 7 ;;\n"
+        "  http://headscale.internal:8765/*) printf '{\"status\":\"ok\"}' ;;\n"
+        "  *) exit 9 ;;\n"
+        "esac\n"
+    )
+    curl.chmod(0o755)
+    env_file.write_text(
+        'HERMES_MASTER_URL="https://[2001:db8::10]:8765"\n'
+        'HMN_MASTER_URLS="https://[2001:db8::10]:8765,http://headscale.internal:8765,https://relay.example"\n'
+        'HERMES_NODE_ID="node-lite"\n'
+        'HERMES_NODE_FINGERPRINT="sha256:lite"\n'
+    )
+
+    subprocess.run(
+        ["sh", "scripts/worker-lite.sh"],
+        check=True,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "HMN_ENV_FILE": str(env_file),
+            "HMN_CURL_LOG": str(curl_log),
+        },
+    )
+
+    urls = [line.split("\t", 1)[0] for line in curl_log.read_text().splitlines()]
+    assert urls == [
+        "https://[2001:db8::10]:8765/api/v1/nodes/node-lite/heartbeat",
+        "http://headscale.internal:8765/api/v1/nodes/node-lite/heartbeat",
+    ]

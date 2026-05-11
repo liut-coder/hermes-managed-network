@@ -66,7 +66,9 @@ Node Script Asset
 
 适合：
 
-- OpenWrt
+- 群晖 / Synology DSM（cron）
+- QNAP（cron）
+- OpenWrt（procd）
 - BusyBox Linux
 - 老路由器
 - 非标准 Linux 固件
@@ -76,6 +78,7 @@ Node Script Asset
 - POSIX `/bin/sh`
 - `curl` 或 `wget`
 - `crond` / procd / OpenRC / 简单 loop 之一
+- IPv6 出站或可访问 Headscale/relay endpoint
 
 能力：
 
@@ -250,3 +253,36 @@ CapabilityProbe(has_sh=True, has_wget=True)
 - proxy-managed 不在目标设备落盘 agent。
 - 所有任务仍必须绑定 node id。
 - 高风险任务进入审批，不因平台不同而绕过。
+
+## NAS / IPv6 接入示例
+
+NAS 场景默认仍走 Worker Pull：即使 NAS 有公网 IPv6，也不要求 NAS 开入站端口。主控 endpoint 可以按优先级提供多个：
+
+1. Master IPv6 / AAAA 域名
+2. Headscale 内网域名或 Tailscale IP
+3. relay fallback
+
+示例：
+
+```bash
+hmn token join-command <TOKEN> \
+  --master-url 'http://[2001:db8::10]:8765' \
+  --safe
+
+hmn node install-heartbeat <NODE_ID> \
+  --runtime lite-worker \
+  --service-manager cron \
+  --master-url 'https://master.example' \
+  --endpoint 'https://[2001:db8::10]:8765' \
+  --endpoint 'http://headscale.internal:8765' \
+  --endpoint 'https://relay.example'
+```
+
+生成的 `node.env` 会写入：
+
+```text
+HERMES_MASTER_URL=https://master.example
+HMN_MASTER_URLS=https://[2001:db8::10]:8765,http://headscale.internal:8765,https://relay.example
+```
+
+POSIX lite-worker 会按 `HMN_MASTER_URLS` 顺序尝试 heartbeat endpoint。适合群晖、QNAP、OpenWrt 等无 systemd 或不适合完整 Python worker 的环境。

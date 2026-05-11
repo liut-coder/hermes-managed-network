@@ -32,7 +32,7 @@ from .docs import (
 from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_details_for_node, ssh_target_for_node
 from .inventory import NodeRegistry
 from .playbook import Playbook
-from .platforms import ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
+from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
 from .storage import SQLiteStore
@@ -403,7 +403,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
             heartbeat_command(node_id=None, master_url=None, db=db)
             return
         if normalized in {"7", "install-heartbeat", "node install-heartbeat", "hmn node install-heartbeat"}:
-            install_heartbeat(node_id=None, master_url=None, service_manager=ServiceManager.SYSTEMD, db=db)
+            install_heartbeat(node_id=None, master_url=None, endpoint=[], service_manager=ServiceManager.SYSTEMD, db=db)
             return
         if normalized in {"8", "worker", "worker status", "node worker-status", "hmn node worker-status"}:
             worker_status(node_id=None, db=db)
@@ -1581,25 +1581,37 @@ def worker_status(
 
 
 def _render_worker_installer(
-    node, master_url: str, service_manager: ServiceManager = ServiceManager.SYSTEMD, beacon_only: bool = False
+    node,
+    master_url: str,
+    service_manager: ServiceManager = ServiceManager.SYSTEMD,
+    beacon_only: bool = False,
+    runtime: NodeRuntimeProfile = NodeRuntimeProfile.FULL_WORKER,
+    endpoints: list[str] | None = None,
 ) -> str:
     url = master_url.rstrip("/")
+    endpoint_values = [item.rstrip("/") for item in (endpoints or []) if item.strip()]
+    if not endpoint_values:
+        endpoint_values = [url]
     service_wiring = render_service_manager_installer(service_manager)
     beacon_env = "HMN_WORKER_MODE=beacon\nHMN_BEACON_ONLY=1" if beacon_only else ""
-    script = f"""set -euo pipefail
+    worker_asset = "worker-lite.sh" if runtime == NodeRuntimeProfile.LITE_WORKER else "worker.sh"
+    shell = "sh" if runtime == NodeRuntimeProfile.LITE_WORKER else "bash"
+    endpoint_csv = ",".join(endpoint_values)
+    script = f"""set -eu
 install -d -m 0700 /etc/hermes-managed-network
 cat >/etc/hermes-managed-network/node.env <<'EOF'
 HERMES_MASTER_URL={url}
+HMN_MASTER_URLS={endpoint_csv}
 HERMES_NODE_ID={node.node_id}
 HERMES_NODE_FINGERPRINT={node.fingerprint}
 HMN_ENABLE_EXEC=0
 {beacon_env}
 EOF
 chmod 0600 /etc/hermes-managed-network/node.env
-curl -fsSL {url}/scripts/worker.sh -o /usr/local/bin/hmn-worker
+curl -fsSL {url}/scripts/{worker_asset} -o /usr/local/bin/hmn-worker
 chmod 0755 /usr/local/bin/hmn-worker
 {service_wiring}"""
-    return "sudo bash -lc " + _shell_quote(script)
+    return f"sudo {shell} -c " + _shell_quote(script)
 
 
 @node_app.command("rotate-fingerprint")
@@ -1627,6 +1639,8 @@ def rotate_fingerprint_command(
 def install_heartbeat(
     node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
     master_url: str | None = typer.Option(None, "--master-url", help="主控 URL；默认自动读取 HMN_PUBLIC_URL 或安装配置"),
+    endpoint: list[str] = typer.Option([], "--endpoint", help="备用主控 endpoint，可重复填写；用于 IPv6/Headscale/relay fallback"),
+    runtime: NodeRuntimeProfile = typer.Option(NodeRuntimeProfile.FULL_WORKER, "--runtime", help="worker 运行时：full-worker/lite-worker/beacon-only"),
     service_manager: ServiceManager = typer.Option(ServiceManager.SYSTEMD, "--service-manager", help="服务管理器适配器"),
     beacon_only: bool = typer.Option(False, "--beacon-only", help="安装 beacon-only 模式：只心跳，不 poll tasks，不执行命令"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
@@ -1634,21 +1648,34 @@ def install_heartbeat(
     store = _store(db)
     node = _select_managed_node(store, node_id)
     url = (master_url or _default_master_url()).rstrip("/")
+    runtime_value = NodeRuntimeProfile.BEACON_ONLY if beacon_only else runtime
+    if not isinstance(endpoint, (list, tuple)):
+        endpoint = []
+    endpoints = [item.rstrip("/") for item in endpoint if item.strip()]
     store.record_audit(
         event_type="node",
         subject_type="node",
         subject_id=node.node_id,
         action="install-heartbeat",
         outcome="rendered",
-        details={"master_url": url, "service_manager": str(service_manager), "enable_exec": False},
+        details={
+            "master_url": url,
+            "service_manager": str(service_manager),
+            "enable_exec": False,
+            "runtime": str(runtime_value),
+            "endpoints": endpoints or [url],
+        },
     )
     typer.echo("请复制下面命令到目标节点执行，它会安装心跳/worker 定时器：")
     if beacon_only:
         typer.echo("beacon-only 模式：只 heartbeat，不会 poll tasks，不会执行命令。")
     else:
         typer.echo("默认安全模式：HMN_ENABLE_EXEC=0，不会执行下发 shell 命令。")
+    typer.echo(f"runtime={runtime_value}")
     typer.echo(f"service_manager={service_manager}")
-    typer.echo(_render_worker_installer(node, url, service_manager, beacon_only=beacon_only))
+    if endpoints:
+        typer.echo("endpoint fallback: " + " -> ".join(endpoints))
+    typer.echo(_render_worker_installer(node, url, service_manager, beacon_only=beacon_only, runtime=runtime_value, endpoints=endpoints))
 
 
 @node_app.command("revoke")

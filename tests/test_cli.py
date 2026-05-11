@@ -100,6 +100,77 @@ def test_cli_can_render_safe_join_command(tmp_path):
     assert token_value in result.stdout
 
 
+
+def test_join_command_accepts_ipv6_literal_master_url(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    token_value = runner.invoke(app, ["token", "create", "--db", str(db)]).stdout.strip()
+
+    result = runner.invoke(
+        app,
+        ["token", "join-command", token_value, "--master-url", "http://[2001:db8::10]:8765", "--safe"],
+    )
+
+    assert result.exit_code == 0
+    assert "HERMES_MASTER_URL='http://[2001:db8::10]:8765'" in result.stdout
+    assert "'http://[2001:db8::10]:8765'/scripts/join.sh" in result.stdout
+
+
+def test_node_install_heartbeat_can_render_nas_lite_worker_with_endpoint_fallbacks(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_nas",
+            fingerprint="sha256:nas",
+            hostname="nas-node",
+            addresses=["2001:db8::20"],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "node",
+            "install-heartbeat",
+            "--db",
+            str(db),
+            "--master-url",
+            "https://master.example",
+            "--endpoint",
+            "https://[2001:db8::10]:8765",
+            "--endpoint",
+            "http://headscale.internal:8765",
+            "--endpoint",
+            "https://relay.example",
+            "--runtime",
+            "lite-worker",
+            "--service-manager",
+            "cron",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "runtime=lite-worker" in result.stdout
+    assert "service_manager=cron" in result.stdout
+    assert "HERMES_MASTER_URL=https://master.example" in result.stdout
+    assert "HMN_MASTER_URLS=https://[2001:db8::10]:8765,http://headscale.internal:8765,https://relay.example" in result.stdout
+    assert "scripts/worker-lite.sh" in result.stdout
+    assert "crontab" in result.stdout
+    event = SQLiteStore(db).list_audit_events()[-1]
+    assert event.details["runtime"] == "lite-worker"
+    assert event.details["endpoints"] == [
+        "https://[2001:db8::10]:8765",
+        "http://headscale.internal:8765",
+        "https://relay.example",
+    ]
+
 def test_cli_can_list_audit_events(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -914,7 +985,7 @@ def test_node_install_heartbeat_prints_systemd_timer(tmp_path):
 
     assert result.exit_code == 0
     assert "自动选择 managed 节点: node_timer (timer-node)" in result.stdout
-    assert "sudo bash -lc" in result.stdout
+    assert "sudo bash -c" in result.stdout
     assert "install -d -m 0700 /etc/hermes-managed-network" in result.stdout
     assert "HERMES_MASTER_URL=https://master.example" in result.stdout
     assert "HERMES_NODE_ID=node_timer" in result.stdout
@@ -1059,6 +1130,8 @@ def test_node_install_heartbeat_records_audit_event(tmp_path):
         "master_url": "https://master.example",
         "service_manager": "systemd",
         "enable_exec": False,
+        "runtime": "full-worker",
+        "endpoints": ["https://master.example"],
     }
 
 

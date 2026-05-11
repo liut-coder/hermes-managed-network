@@ -57,9 +57,22 @@ collect_lite_facts() {
 heartbeat() {
   fingerprint_json=$(json_safe_string "$HERMES_NODE_FINGERPRINT")
   facts=$(collect_lite_facts)
-  curl -fsS -X POST "${HERMES_MASTER_URL%/}/api/v1/nodes/${HERMES_NODE_ID}/heartbeat" \
-    -H 'Content-Type: application/json' \
-    --data "{\"fingerprint\":${fingerprint_json},\"status\":\"ok\",\"facts\":${facts}}" >/dev/null
+  urls=${HMN_MASTER_URLS:-$HERMES_MASTER_URL}
+  old_ifs=$IFS
+  IFS=,
+  for master in $urls; do
+    IFS=$old_ifs
+    master=${master%/}
+    [ -n "$master" ] || continue
+    if curl -fsS -X POST "${master}/api/v1/nodes/${HERMES_NODE_ID}/heartbeat" \
+      -H 'Content-Type: application/json' \
+      --data "{\"fingerprint\":${fingerprint_json},\"status\":\"ok\",\"facts\":${facts}}" >/dev/null; then
+      return 0
+    fi
+    IFS=,
+  done
+  IFS=$old_ifs
+  return 1
 }
 
 main() {

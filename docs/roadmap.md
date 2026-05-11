@@ -91,3 +91,11 @@
 - [x] monitor 内置组件 MVP
 - [x] headscale-server 内置组件 manifest（安装/verify playbook 后续补齐）
 - [ ] backup / docs-sync 组件
+
+## v0.8：NAS / IPv6 接入优化
+
+- [x] `hmn token join-command` 覆盖 IPv6 literal URL（中括号格式）
+- [x] `hmn node install-heartbeat --runtime lite-worker --endpoint ...` 支持 master IPv6 / Headscale 内网 / relay fallback
+- [x] POSIX lite-worker 按 `HMN_MASTER_URLS` 顺序尝试 endpoint fallback
+- [x] lite-worker / cron installer 覆盖群晖、QNAP、OpenWrt 常见无 systemd 环境
+- [x] docs 增加 NAS IPv6 接入示例

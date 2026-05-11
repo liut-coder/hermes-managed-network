@@ -177,7 +177,7 @@ def classify_capabilities(probe: CapabilityProbe) -> RuntimeCapabilities:
             can_poll_tasks=True,
             can_execute_tasks=False,
             requirements=["posix-sh", "http-client"],
-            notes=["no arbitrary shell execution by default", "fit for OpenWrt/BusyBox/old routers"],
+            notes=["no arbitrary shell execution by default", "fit for NAS/OpenWrt/BusyBox/old routers"],
         )
 
     if probe.has_sh and http:

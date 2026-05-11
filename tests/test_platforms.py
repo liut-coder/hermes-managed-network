@@ -117,3 +117,23 @@ def test_service_manager_installer_refuses_none_adapter():
 
     assert "不支持在该节点安装常驻 worker" in script
     assert "exit 1" in script
+
+
+def test_nas_capability_profiles_prefer_lite_worker_with_cron_or_procd():
+    synology = classify_capabilities(
+        CapabilityProbe(os_family="synology", has_sh=True, has_curl=True, has_crond=True, writable_tmp=True)
+    )
+    qnap = classify_capabilities(
+        CapabilityProbe(os_family="qnap", has_sh=True, has_wget=True, has_crond=True, writable_tmp=True)
+    )
+    openwrt = classify_capabilities(
+        CapabilityProbe(os_family="openwrt", has_sh=True, has_wget=True, has_busybox=True, has_procd=True, writable_tmp=True)
+    )
+
+    assert synology.runtime == NodeRuntimeProfile.LITE_WORKER
+    assert synology.service_manager == ServiceManager.CRON
+    assert qnap.runtime == NodeRuntimeProfile.LITE_WORKER
+    assert qnap.service_manager == ServiceManager.CRON
+    assert openwrt.runtime == NodeRuntimeProfile.LITE_WORKER
+    assert openwrt.service_manager == ServiceManager.PROCD
+    assert "NAS" in " ".join(synology.notes + qnap.notes)
