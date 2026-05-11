@@ -40,6 +40,7 @@
 - [x] Telegram gateway 发送/回调接入 API
 - [x] Telegram gateway 实际 Bot 轮询发送器核心
 - [x] Telegram gateway systemd/CLI 运维入口
+- [x] installer 支持 Telegram Gateway 一键 systemd 集成
 - [x] revoked node 心跳 / poll / result 拒绝闭环
 - [x] worker protocol mismatch 禁止取任务
 
@@ -65,6 +66,7 @@
 - [x] node record 保存 `network_provider` / `network_node_id` / `network_ip` / `network_tags` / `network_online`
 - [x] network sync / preauth-key audit
 - [x] Headscale tag 写操作审批化
+- [x] installer 支持 Headscale bundled / external / disabled 配置入口
 - [ ] Headscale ACL 文件级更新审批化（更高风险 action，单独实现）
 - [x] SSH executor 使用 Tailscale IP
 - [x] component verify 使用 Tailscale/Headscale `network_ip` 作为只读探测目标
@@ -86,4 +88,5 @@
 - [x] reverse-proxy 内置组件 MVP
 - [x] forwarder 内置组件 MVP
 - [x] monitor 内置组件 MVP
+- [x] headscale-server 内置组件 manifest（安装/verify playbook 后续补齐）
 - [ ] backup / docs-sync 组件

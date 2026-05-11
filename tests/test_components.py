@@ -159,14 +159,17 @@ def test_component_registry_lists_gets_and_validates_builtin_components():
     listed = registry.list()
     reverse_proxy = registry.get("reverse-proxy")
 
-    assert [component.id for component in listed] == ["forwarder", "monitor", "reverse-proxy"]
+    assert [component.id for component in listed] == ["forwarder", "headscale-server", "monitor", "reverse-proxy"]
     assert reverse_proxy.name == "Reverse Proxy"
     forwarder = registry.get("forwarder")
     assert forwarder.name == "Forwarder"
+    headscale_server = registry.get("headscale-server")
+    assert headscale_server.name == "Headscale Server"
     monitor = registry.get("monitor")
     assert monitor.name == "Monitor"
     assert registry.validate("reverse-proxy") is reverse_proxy
     assert registry.validate("forwarder") is forwarder
+    assert registry.validate("headscale-server") is headscale_server
     assert registry.validate("monitor") is monitor
     try:
         registry.get("missing")
@@ -750,3 +753,14 @@ def test_monitor_component_verify_warns_without_heartbeat(tmp_path):
 
     assert result.exit_code == 1
     assert "heartbeat: WARN missing" in result.stdout
+
+
+def test_builtin_headscale_server_component_manifest_is_available():
+    component = load_builtin_components()["headscale-server"]
+
+    assert component.name == "Headscale Server"
+    assert component.risk == "high"
+    assert component.config_schema["properties"]["server_url"]["type"] == "string"
+    assert component.audit["category"] == "component.headscale-server"
+    assert component.drivers["default"] == "systemd"
+    assert component.playbooks["install"] == "playbooks/install.yaml"

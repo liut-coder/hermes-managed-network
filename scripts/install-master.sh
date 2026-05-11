@@ -11,6 +11,16 @@ HMN_PACKAGE="${HMN_PACKAGE:-hermes-managed-network}"
 HMN_ASSUME_YES="${HMN_ASSUME_YES:-0}"
 HMN_UPGRADE_POLICY="${HMN_UPGRADE_POLICY:-prompt}"
 HMN_BACKUP_DIR="${HMN_BACKUP_DIR:-/var/backups/hermes-managed-network}"
+HMN_PUBLIC_URL="${HMN_PUBLIC_URL:-http://127.0.0.1:${HMN_PORT}}"
+HMN_ENABLE_TELEGRAM="${HMN_ENABLE_TELEGRAM:-0}"
+HMN_TELEGRAM_CHAT_ID="${HMN_TELEGRAM_CHAT_ID:-}"
+HMN_TELEGRAM_BOT_TOKEN="${HMN_TELEGRAM_BOT_TOKEN:-}"
+HMN_TELEGRAM_INTERVAL="${HMN_TELEGRAM_INTERVAL:-10}"
+HMN_HEADSCALE_MODE="${HMN_HEADSCALE_MODE:-bundled}"
+HMN_HEADSCALE_URL="${HMN_HEADSCALE_URL:-}"
+HMN_HEADSCALE_API_KEY="${HMN_HEADSCALE_API_KEY:-}"
+HMN_HEADSCALE_NAMESPACE="${HMN_HEADSCALE_NAMESPACE:-misk}"
+HMN_HEADSCALE_LISTEN_ADDR="${HMN_HEADSCALE_LISTEN_ADDR:-127.0.0.1:8080}"
 CURRENT_VERSION="unknown"
 EXISTING_VERSION="not-installed"
 VERSION_POLICY="install"
@@ -44,6 +54,38 @@ prompt_default() {
   fi
 }
 
+prompt_secret() {
+  local var_name="$1"
+  local label="$2"
+  local value=""
+  if [ "$HMN_ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
+    return
+  fi
+  if [ -n "${!var_name}" ]; then
+    return
+  fi
+  read -r -s -p "${label} [留空跳过]: " value
+  echo
+  if [ -n "$value" ]; then
+    printf -v "$var_name" '%s' "$value"
+  fi
+}
+
+prompt_yes_no_default() {
+  local var_name="$1"
+  local label="$2"
+  local default_value="${!var_name}"
+  local value=""
+  if [ "$HMN_ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
+    return
+  fi
+  read -r -p "${label} [${default_value}]: " value
+  case "$value" in
+    y|Y|yes|YES|1) printf -v "$var_name" '%s' "1" ;;
+    n|N|no|NO|0) printf -v "$var_name" '%s' "0" ;;
+  esac
+}
+
 interactive_config() {
   echo "交互配置 HMN 主控，可直接回车使用当前默认值。"
   echo "当前默认值：host=${HMN_HOST}, port=${HMN_PORT}, user=${HMN_USER}, home=${HMN_HOME}, db=${HMN_DB}"
@@ -52,6 +94,20 @@ interactive_config() {
   prompt_default HMN_USER "运行用户"
   prompt_default HMN_HOME "安装目录"
   prompt_default HMN_DB "数据库路径"
+  prompt_default HMN_PUBLIC_URL "公网访问 URL"
+  prompt_yes_no_default HMN_ENABLE_TELEGRAM "启用 Telegram Bot 审批网关？1=启用,0=跳过"
+  if [ "$HMN_ENABLE_TELEGRAM" = "1" ]; then
+    prompt_default HMN_TELEGRAM_CHAT_ID "Telegram Chat ID"
+    prompt_secret HMN_TELEGRAM_BOT_TOKEN "Telegram Bot Token"
+  fi
+  prompt_default HMN_HEADSCALE_MODE "Headscale 模式 bundled/external/disabled"
+  if [ "$HMN_HEADSCALE_MODE" != "disabled" ]; then
+    prompt_default HMN_HEADSCALE_URL "Headscale URL"
+    prompt_default HMN_HEADSCALE_NAMESPACE "Headscale namespace/user"
+    if [ "$HMN_HEADSCALE_MODE" = "external" ]; then
+      prompt_secret HMN_HEADSCALE_API_KEY "Headscale API Key"
+    fi
+  fi
 }
 
 install_dependencies() {
@@ -119,6 +175,12 @@ backup_existing_state() {
   fi
   if [ -f /etc/hermes-managed-network/master.env ]; then
     cp -a /etc/hermes-managed-network/master.env "$HMN_BACKUP_DIR/master.${stamp}.env"
+  fi
+  if [ -f /etc/hermes-managed-network/telegram-gateway.env ]; then
+    cp -a /etc/hermes-managed-network/telegram-gateway.env "$HMN_BACKUP_DIR/telegram-gateway.${stamp}.env"
+  fi
+  if [ -f /etc/hermes-managed-network/headscale.env ]; then
+    cp -a /etc/hermes-managed-network/headscale.env "$HMN_BACKUP_DIR/headscale.${stamp}.env"
   fi
 }
 
@@ -190,9 +252,94 @@ write_env() {
 HMN_DB=${HMN_DB}
 HMN_HOST=${HMN_HOST}
 HMN_PORT=${HMN_PORT}
+HMN_PUBLIC_URL=${HMN_PUBLIC_URL}
+HMN_HEADSCALE_MODE=${HMN_HEADSCALE_MODE}
+HMN_HEADSCALE_URL=${HMN_HEADSCALE_URL}
+HMN_HEADSCALE_API_KEY=${HMN_HEADSCALE_API_KEY}
+HMN_HEADSCALE_NAMESPACE=${HMN_HEADSCALE_NAMESPACE}
 EOF
   chmod 0640 /etc/hermes-managed-network/master.env
   chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/master.env
+}
+
+write_telegram_gateway_env() {
+  if [ "$HMN_ENABLE_TELEGRAM" != "1" ]; then
+    return
+  fi
+  if [ -z "$HMN_TELEGRAM_CHAT_ID" ] || [ -z "$HMN_TELEGRAM_BOT_TOKEN" ]; then
+    echo "HMN_ENABLE_TELEGRAM=1 但缺少 HMN_TELEGRAM_CHAT_ID 或 HMN_TELEGRAM_BOT_TOKEN" >&2
+    exit 1
+  fi
+  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  cat >/etc/hermes-managed-network/telegram-gateway.env <<EOF
+HMN_API_URL=http://127.0.0.1:${HMN_PORT}
+HMN_TELEGRAM_CHAT_ID=${HMN_TELEGRAM_CHAT_ID}
+HMN_TELEGRAM_BOT_TOKEN=${HMN_TELEGRAM_BOT_TOKEN}
+EOF
+  chmod 0640 /etc/hermes-managed-network/telegram-gateway.env
+  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/telegram-gateway.env
+}
+
+write_telegram_gateway_service() {
+  if [ "$HMN_ENABLE_TELEGRAM" != "1" ]; then
+    return
+  fi
+  cat >/etc/systemd/system/hermes-managed-network-telegram-gateway.service <<EOF
+[Unit]
+Description=Hermes Managed Network Telegram approval gateway
+After=network-online.target hermes-managed-network.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${HMN_USER}
+Group=${HMN_USER}
+EnvironmentFile=/etc/hermes-managed-network/telegram-gateway.env
+ExecStart=/usr/local/bin/hmn telegram-gateway run --interval ${HMN_TELEGRAM_INTERVAL}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+configure_headscale_provider() {
+  if [ "$HMN_HEADSCALE_MODE" = "disabled" ]; then
+    return
+  fi
+  install -d -m 0750 -o "$HMN_USER" -g "$HMN_USER" /etc/hermes-managed-network
+  cat >/etc/hermes-managed-network/headscale.env <<EOF
+HMN_HEADSCALE_MODE=${HMN_HEADSCALE_MODE}
+HMN_HEADSCALE_URL=${HMN_HEADSCALE_URL}
+HMN_HEADSCALE_API_KEY=${HMN_HEADSCALE_API_KEY}
+HMN_HEADSCALE_NAMESPACE=${HMN_HEADSCALE_NAMESPACE}
+EOF
+  cat >/etc/hermes-managed-network/config.yaml <<EOF
+network:
+  provider: headscale
+  headscale:
+    url: ${HMN_HEADSCALE_URL}
+    api_key_env: HMN_HEADSCALE_API_KEY
+    user: ${HMN_HEADSCALE_NAMESPACE}
+EOF
+  chmod 0640 /etc/hermes-managed-network/headscale.env /etc/hermes-managed-network/config.yaml
+  chown "$HMN_USER:$HMN_USER" /etc/hermes-managed-network/headscale.env /etc/hermes-managed-network/config.yaml
+}
+
+install_headscale_bundled() {
+  if [ "$HMN_HEADSCALE_MODE" != "bundled" ]; then
+    return
+  fi
+  echo "准备内置 Headscale 配置骨架。真实 headscale-server 组件会负责安装/配置服务。"
+  if [ -z "$HMN_HEADSCALE_URL" ]; then
+    HMN_HEADSCALE_URL="${HMN_PUBLIC_URL%/}/headscale"
+  fi
+  configure_headscale_provider
 }
 
 install_cli_links() {
@@ -252,15 +399,27 @@ main() {
   install_package
   verify_install
   write_env
+  write_telegram_gateway_env
+  install_headscale_bundled
+  if [ "$HMN_HEADSCALE_MODE" = "external" ]; then
+    configure_headscale_provider
+  fi
   install_cli_links
   write_service
+  write_telegram_gateway_service
   systemctl daemon-reload
   systemctl enable --now hermes-managed-network.service
+  if [ "$HMN_ENABLE_TELEGRAM" = "1" ]; then
+    systemctl enable --now hermes-managed-network-telegram-gateway.service
+  fi
   if ! self_check; then
     print_failure_hint
     exit 1
   fi
   systemctl --no-pager --full status hermes-managed-network.service || true
+  if [ "$HMN_ENABLE_TELEGRAM" = "1" ]; then
+    systemctl --no-pager --full status hermes-managed-network-telegram-gateway.service || true
+  fi
 }
 
 main "$@"

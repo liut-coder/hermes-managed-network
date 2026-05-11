@@ -71,3 +71,31 @@ def test_master_installer_runs_post_deploy_self_check():
     assert "curl -fsS \"http://127.0.0.1:${HMN_PORT}/healthz\"" in script
     assert "curl -fsS \"http://127.0.0.1:${HMN_PORT}/api/v1/version\"" in script
     assert "journalctl -u hermes-managed-network.service" in script
+
+
+def test_master_installer_can_enable_telegram_gateway_service():
+    script = (ROOT / "scripts/install-master.sh").read_text()
+
+    assert "HMN_ENABLE_TELEGRAM" in script
+    assert "HMN_TELEGRAM_CHAT_ID" in script
+    assert "HMN_TELEGRAM_BOT_TOKEN" in script
+    assert "telegram-gateway.env" in script
+    assert "hermes-managed-network-telegram-gateway.service" in script
+    assert "ExecStart=/usr/local/bin/hmn telegram-gateway run --interval" in script
+    assert "systemctl enable --now hermes-managed-network-telegram-gateway.service" in script
+
+
+def test_master_installer_supports_headscale_bundled_and_external_modes():
+    script = (ROOT / "scripts/install-master.sh").read_text()
+
+    assert "HMN_HEADSCALE_MODE" in script
+    assert "bundled" in script
+    assert "external" in script
+    assert "HMN_HEADSCALE_URL" in script
+    assert "HMN_HEADSCALE_API_KEY" in script
+    assert "HMN_HEADSCALE_NAMESPACE" in script
+    assert "headscale.env" in script
+    assert "/etc/hermes-managed-network/config.yaml" in script
+    assert "api_key_env: HMN_HEADSCALE_API_KEY" in script
+    assert "install_headscale_bundled" in script
+    assert "configure_headscale_provider" in script
