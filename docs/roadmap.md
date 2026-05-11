@@ -48,10 +48,12 @@
 
 ## v0.5：资产文档自动化
 
-- [ ] server docs 生成
-- [ ] service docs 生成
-- [ ] domain index 生成
-- [ ] runbook index 生成
+- [x] service docs 生成（dry-run 输出目录）
+- [x] service index 生成（dry-run 输出目录）
+- [x] domains index 生成（dry-run 输出目录）
+- [x] runbooks index 生成（dry-run 输出目录）
+- [ ] 生产文档目录写入
+- [ ] 文档回写审批链路
 
 ## v0.6：插件化组件架构
 
@@ -64,3 +66,23 @@
 - [x] forwarder 内置组件 MVP
 - [x] monitor 内置组件 MVP
 - [ ] backup / docs-sync 组件
+
+## v1.1：Useful Ops MVP
+
+当前范围只做本地/测试目录 dry-run，不连接外部系统，不写生产路径。
+
+- [x] `hmn inspect node --local`：本机资产盘点
+- [x] `hmn discover services`：从 inventory 生成 service registry
+- [x] `hmn docs generate`：从 registry 生成 service 文档与 service/domains/runbooks 索引
+- [x] `hmn uptime plan`：生成 Uptime Kuma 同步计划 dry-run JSON
+- [x] 文档与输出中的敏感值统一写 `[REDACTED]`
+- [ ] 真实 Uptime Kuma sync
+- [ ] 生产写入 `/srv/files/...` 或其他正式资产目录
+- [ ] token/password/API key 注入与回写
+- [ ] 高风险/外部系统写操作审批链路
+
+相关文档：
+
+- [Useful Ops MVP](useful-ops-mvp.md)
+- [Architecture Backlog](architecture-backlog.md)
+- [架构契约](architecture-contract.md)
