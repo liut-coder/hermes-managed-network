@@ -25,7 +25,7 @@ def test_join_endpoint_consumes_token_and_registers_pending_node(tmp_path):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "pending"
+    assert data["status"] == "managed"
     assert data["trust_level"] == "B"
     assert data["labels"] == ["managed", "region:hk"]
 
@@ -36,6 +36,34 @@ def test_join_endpoint_consumes_token_and_registers_pending_node(tmp_path):
     node = store.load_node(data["node_id"])
     assert node.hostname == "demo"
     assert node.fingerprint == "sha256:abc"
+    assert node.status == "managed"
+    assert node.permission_bundles == ["observe", "task"]
+
+
+def test_join_endpoint_can_keep_legacy_pending_confirmation_when_requested(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    token = JoinTokenStore().create(trust_level="B", labels=["managed"])
+    store.save_token(token)
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/join",
+        json={
+            "token": token.value,
+            "fingerprint": "sha256:legacy",
+            "hostname": "legacy-node",
+            "addresses": [],
+            "auto_confirm": False,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "pending"
+    node = store.load_node(data["node_id"])
+    assert node.status == "pending"
+    assert node.permission_bundles == []
 
 
 def test_join_endpoint_records_node_join_audit_event(tmp_path):
@@ -69,6 +97,8 @@ def test_join_endpoint_records_node_join_audit_event(tmp_path):
             "addresses": ["10.0.0.8"],
             "trust_level": "B",
             "labels": ["backup", "worker"],
+            "auto_confirm": True,
+            "permission_bundles": ["observe", "task"],
         }
         for event in events
     )
@@ -81,6 +111,11 @@ def test_control_plane_serves_join_script(tmp_path):
 
     assert response.status_code == 200
     assert "HERMES_JOIN_TOKEN" in response.text
+    assert "HERMES_AUTO_CONFIRM=\"${HERMES_AUTO_CONFIRM:-1}\"" in response.text
+    assert "HERMES_AUTO_INSTALL_WORKER=\"${HERMES_AUTO_INSTALL_WORKER:-1}\"" in response.text
+    assert "HMN_ENABLE_EXEC=\"${HMN_ENABLE_EXEC:-1}\"" in response.text
+    assert "install_worker" in response.text
+    assert "systemctl enable --now hermes-managed-network-heartbeat.timer" in response.text
     assert response.headers["content-type"].startswith("text/x-shellscript")
 
 

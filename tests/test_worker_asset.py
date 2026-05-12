@@ -5,6 +5,13 @@ import subprocess
 from pathlib import Path
 
 
+def test_join_scripts_are_identical_between_repo_and_package_asset():
+    repo_script = Path("scripts/join.sh").read_text()
+    asset_script = Path("src/hermes_managed_network/assets/join.sh").read_text()
+
+    assert repo_script == asset_script
+
+
 def test_worker_scripts_are_identical_between_repo_and_package_asset():
     repo_script = Path("scripts/worker.sh").read_text()
     asset_script = Path("src/hermes_managed_network/assets/worker.sh").read_text()

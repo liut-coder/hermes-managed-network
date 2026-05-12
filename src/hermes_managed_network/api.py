@@ -23,6 +23,7 @@ class JoinRequest(BaseModel):
     fingerprint: str
     hostname: str
     addresses: list[str] = Field(default_factory=list)
+    auto_confirm: bool = True
 
 
 class JoinResponse(BaseModel):
@@ -202,6 +203,12 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             trust_level=consumed.trust_level,
             labels=consumed.labels,
         )
+        permission_bundles: list[str] = []
+        if request.auto_confirm:
+            permission_bundles = ["observe", "task"]
+            node.status = "managed"
+            node.permission_bundles = permission_bundles
+            store.save_node(node)
         store.record_audit(
             event_type="node",
             subject_type="node",
@@ -213,6 +220,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
                 "addresses": node.addresses,
                 "trust_level": node.trust_level,
                 "labels": node.labels,
+                "auto_confirm": request.auto_confirm,
+                "permission_bundles": permission_bundles,
             },
         )
         return JoinResponse(
