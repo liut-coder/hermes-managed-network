@@ -123,7 +123,15 @@
 
 ## v1.1：全托管自动化规划
 
-目标：让机器接入 HMN 后，逐步形成“服务发现 → 外部部署系统 → 监控同步 → 文档中心 → 备份 → 迁移”的集中托管闭环。HMN 不自研完整 CI/CD 流水线引擎，而是接入成熟工具；HMN 负责统一入口、service registry、provider 编排、approval、audit 和文档中心。所有高风险变更仍必须走 approval / audit，不允许因为自动化而绕过安全边界。
+目标：让机器接入 HMN 后，逐步形成“Orchestrator 统筹 → 服务发现 → 外部部署系统 → 监控同步 → 文档中心 → 备份 → 迁移”的集中托管闭环。HMN 不自研完整 CI/CD 流水线引擎，而是接入成熟工具；HMN 负责统一入口、长期任务统筹、service registry、provider 编排、approval、audit 和文档中心。所有高风险变更仍必须走 approval / audit，不允许因为自动化而绕过安全边界。
+
+### Orchestrator 全自动托管统筹
+
+- [ ] Orchestrator 数据模型：维护 task queue、worker registry、assignment、lease、progress report 和 audit 事件。
+- [ ] `hmn orchestrator tick/status/enqueue/report`：支持 30 分钟巡检、自动分发、状态查询和 Telegram 进度汇报。
+- [ ] Worker/bridge adapter：默认通过 worker / bridge / webhook / queue 分发任务，raw SSH 仅作 fallback；连续多次失败后才暂停。
+- [ ] 第二 Hermes / 多 Agent worktree 隔离：并行任务必须隔离工作区，Orchestrator 负责验收、合并和冲突解决。
+- [ ] Orchestrator approval gate：低风险代码/测试/文档自动推进；生产写入、真实 provider 变更、凭据、生产部署和合并 main 必须审批。
 
 ### Provider 化托管控制面
 

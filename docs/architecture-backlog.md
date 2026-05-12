@@ -1,12 +1,26 @@
 # Architecture Backlog
 
-HMN 当前架构主体已完成，下一阶段转入 Provider 化全托管自动化：机器接入后自动发现服务，接入 Coolify / GitHub Actions / Uptime Kuma / restic-borgmatic / Ansible 等成熟系统，由 HMN 统一做 service registry、审批、审计、文档中心和跨工具编排。
+HMN 当前架构主体已完成，下一阶段转入 Orchestrator + Provider 化全托管自动化：机器接入后自动发现服务，接入 Coolify / GitHub Actions / Uptime Kuma / restic-borgmatic / Ansible 等成熟系统，由 HMN 统一做任务统筹、service registry、审批、审计、文档中心和跨工具编排。
 
 ## 当前完成度
 
-- 总体路线图：89 / 121 项完成，约 73.6%。v1.0 及以前路线图已收尾；v1.1 转为 Provider 化托管控制面，未完成项主要集中在 Service Registry、Coolify/GitHub Actions/Uptime Kuma/restic-borgmatic/Ansible Provider、部署编排、文档自动填充、集中备份、恢复和迁移。
-- 架构阶段：v1.0 主体闭环已完成，进入 v1.1 Provider 化托管自动化建设。
+- 总体路线图：89 / 126 项完成，约 70.6%。v1.0 及以前路线图已收尾；v1.1 转为 Orchestrator + Provider 化托管控制面，未完成项主要集中在长期自动统筹、Service Registry、Coolify/GitHub Actions/Uptime Kuma/restic-borgmatic/Ansible Provider、部署编排、文档自动填充、集中备份、恢复和迁移。
+- 架构阶段：v1.0 主体闭环已完成，进入 v1.1 Orchestrator + Provider 化托管自动化建设。
 - 已完成主干：Control Plane、Worker、Headscale Network Provider、Approval、Asset Docs 基础、Component Framework、NAS/IPv6 接入、Production Readiness 基础、monitor 真实闭环、backup 本地归档/verify 基础。
+
+## P0：Orchestrator 全自动托管统筹
+
+目标：把“主控定时检查进度、分发任务给备用机器人/第二 Hermes、合并 worktree、解决冲突、30 分钟汇报”沉淀为 HMN 原生能力，而不是依赖单次聊天会话提示词。
+
+验收标准：
+
+- `hmn orchestrator tick` 可执行单轮统筹，适合 systemd timer / cron 每 30 分钟调用。
+- `hmn orchestrator status/enqueue/report` 能查看队列、添加任务、生成 Telegram/API 友好的简短报告。
+- 持久化 task queue、worker registry、assignment、lease、run/report 和 audit。
+- 默认通过 worker / bridge / webhook / queue 分发任务；raw SSH 仅作 fallback。
+- bridge/worker timeout、No route to host、空输出等临时失败至少多轮重试，连续多次无可用状态后才暂停。
+- 第二 Hermes 并行改代码必须使用隔离 worktree；主控负责验收、合并和冲突解决。
+- 低风险代码、测试、文档和 feature branch 提交可自动推进；生产写入、真实 provider 变更、凭据、生产部署、合并 main 必须走 approval。
 
 ## P0：Provider 化托管控制面
 
@@ -117,13 +131,16 @@ HMN 当前架构主体已完成，下一阶段转入 Provider 化全托管自动
 
 ## 建议执行顺序
 
-1. Provider 统一接口契约。
-2. Coolify Provider + service registry sync。
-3. GitHub Actions Provider + `hmn deploy plan/apply/status`。
-4. Uptime Kuma Provider / 状态页同步。
-5. docs-sync 真实驱动，集中生成部署/维护文档。
-6. restic/borgmatic Backup Provider 与服务级备份策略。
-7. Ansible inventory/export 与机器级配置编排。
-8. 一键恢复 MVP。
-9. 迁移文档与一键迁移 MVP。
-10. 一次部署后的网内批量接入和迁移推荐。
+1. Orchestrator 数据模型 + `tick/status/enqueue/report` 最小闭环。
+2. Worker/bridge adapter + 30 分钟巡检汇报 + 多次失败重试策略。
+3. 第二 Hermes/worktree 隔离与主控合并策略。
+4. Provider 统一接口契约。
+5. Coolify Provider + service registry sync。
+6. GitHub Actions Provider + `hmn deploy plan/apply/status`。
+7. Uptime Kuma Provider / 状态页同步。
+8. docs-sync 真实驱动，集中生成部署/维护文档。
+9. restic/borgmatic Backup Provider 与服务级备份策略。
+10. Ansible inventory/export 与机器级配置编排。
+11. 一键恢复 MVP。
+12. 迁移文档与一键迁移 MVP。
+13. 一次部署后的网内批量接入和迁移推荐。
