@@ -68,6 +68,72 @@ def test_tick_assigns_queued_low_risk_task_to_online_bridge_worker(tmp_path):
     assert snapshot["reports"][0]["summary"] == "已分发给 bridge-1"
 
 
+def test_tick_records_bridge_dispatch_failure_and_retries_without_leasing(tmp_path):
+    class BrokenBridge:
+        def __init__(self):
+            self.calls = 0
+
+        def dispatch(self, *, task, worker):
+            self.calls += 1
+            raise RuntimeError("No route to host")
+
+    service = OrchestratorService(SQLiteStore(tmp_path / "hmn.db"))
+    task_id = service.enqueue(title="分发到备用 bot", scope="code", risk="low", priority=5)
+    service.register_worker(worker_id="miskrobot", transport="bridge", status="online")
+    bridge = BrokenBridge()
+
+    result = service.tick(bridge_adapter=bridge, max_retries=3)
+    snapshot = service.snapshot()
+
+    assert bridge.calls == 1
+    assert result["dispatched"] == []
+    assert result["blocked"] == [{"task_id": task_id, "reason": "bridge dispatch failed: No route to host", "attempt": 1}]
+    assert result["next"] == "等待下一轮重试"
+    assert snapshot["queue"][0]["status"] == "queued"
+    assert snapshot["queue"][0]["attempts"] == 1
+    assert snapshot["reports"][0]["summary"] == "bridge dispatch failed: No route to host"
+
+
+def test_tick_pauses_task_after_repeated_bridge_failures(tmp_path):
+    class BrokenBridge:
+        def dispatch(self, *, task, worker):
+            raise TimeoutError("timeout")
+
+    service = OrchestratorService(SQLiteStore(tmp_path / "hmn.db"))
+    task_id = service.enqueue(title="连续失败任务", scope="code", risk="low", priority=5)
+    service.register_worker(worker_id="miskrobot", transport="bridge", status="online")
+
+    for _ in range(3):
+        result = service.tick(bridge_adapter=BrokenBridge(), max_retries=3)
+
+    snapshot = service.snapshot()
+    task = snapshot["queue"][0]
+    assert task["task_id"] == task_id
+    assert task["status"] == "paused"
+    assert task["attempts"] == 3
+    assert result["blocked"] == [{"task_id": task_id, "reason": "连续 3 次分发失败，已暂停"}]
+    assert result["next"] == "等待主控检查 worker/bridge 状态"
+
+
+def test_tick_requeues_expired_lease_before_dispatch(tmp_path):
+    service = OrchestratorService(SQLiteStore(tmp_path / "hmn.db"))
+    task_id = service.enqueue(title="旧 lease", scope="code", risk="low", priority=5)
+    service.register_worker(worker_id="old-worker", transport="bridge", status="online")
+    first = service.tick()
+    assert first["dispatched"] == [{"task_id": task_id, "worker_id": "old-worker"}]
+
+    with SQLiteStore(tmp_path / "hmn.db").connect() as conn:
+        conn.execute("UPDATE orchestrator_assignments SET leased_at = '2000-01-01T00:00:00+00:00' WHERE task_id = ?", (task_id,))
+        conn.execute("UPDATE orchestrator_workers SET status = 'offline' WHERE worker_id = 'old-worker'")
+    service.register_worker(worker_id="new-worker", transport="bridge", status="online")
+
+    second = service.tick(lease_timeout_seconds=1)
+    snapshot = service.snapshot()
+
+    assert second["dispatched"] == [{"task_id": task_id, "worker_id": "new-worker"}]
+    assert snapshot["reports"][0]["summary"] == "已分发给 new-worker"
+
+
 def test_report_is_short_chinese_summary(tmp_path):
     service = OrchestratorService(SQLiteStore(tmp_path / "hmn.db"))
     service.enqueue(title="巡检", scope="ops", risk="low", priority=1)

@@ -86,6 +86,9 @@ class OrchestratorService:
                 );
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(orchestrator_tasks)").fetchall()}
+            if "attempts" not in columns:
+                conn.execute("ALTER TABLE orchestrator_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
 
     def _record_audit(self, *, subject_id: str, action: str, outcome: str, details: dict[str, Any]) -> None:
         if hasattr(self.store, "record_audit"):
@@ -207,7 +210,7 @@ class OrchestratorService:
         with self.store.connect() as conn:
             task_rows = conn.execute(
                 """
-                SELECT task_id, title, scope, risk, priority, status, worker_hint, source
+                SELECT task_id, title, scope, risk, priority, status, worker_hint, source, attempts
                 FROM orchestrator_tasks
                 ORDER BY priority DESC, created_at ASC, task_id ASC
                 """
@@ -238,8 +241,12 @@ class OrchestratorService:
         reports = [dict(row) for row in report_rows]
         if not reports:
             reports = self._audit_reports()
+        queue = [dict(row) for row in task_rows]
+        for task in queue:
+            if task.get("attempts") == 0:
+                task.pop("attempts", None)
         return {
-            "queue": [dict(row) for row in task_rows],
+            "queue": queue,
             "workers": [
                 {
                     "worker_id": row["worker_id"],
@@ -267,11 +274,43 @@ class OrchestratorService:
                 )
         return reports
 
-    def tick(self) -> dict[str, Any]:
+    def tick(
+        self,
+        *,
+        bridge_adapter: Any | None = None,
+        max_retries: int = 3,
+        lease_timeout_seconds: int = 30 * 60,
+    ) -> dict[str, Any]:
         if not hasattr(self.store, "connect"):
             return {"dispatched": [], "blocked": [], "next": "暂无可分发任务"}
 
         with self.store.connect() as conn:
+            now_dt = _now()
+            now = _dt(now_dt)
+            leased_rows = conn.execute(
+                """
+                SELECT a.task_id, a.leased_at
+                FROM orchestrator_assignments a
+                JOIN orchestrator_tasks t ON t.task_id = a.task_id
+                WHERE a.status = 'leased' AND t.status = 'leased'
+                """
+            ).fetchall()
+            for leased in leased_rows:
+                try:
+                    leased_at = datetime.fromisoformat(leased["leased_at"])
+                except ValueError:
+                    leased_at = now_dt
+                age = (now_dt - leased_at).total_seconds()
+                if age > lease_timeout_seconds:
+                    conn.execute(
+                        "UPDATE orchestrator_assignments SET status = ?, updated_at = ? WHERE task_id = ?",
+                        ("expired", now, leased["task_id"]),
+                    )
+                    conn.execute(
+                        "UPDATE orchestrator_tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                        ("queued", now, leased["task_id"]),
+                    )
+
             task = conn.execute(
                 """
                 SELECT * FROM orchestrator_tasks
@@ -298,28 +337,94 @@ class OrchestratorService:
                     "next": "等待 worker 上线后重试",
                 }
 
-            now = _dt(_now())
-            assignment_id = f"orch_asg_{uuid4().hex[:12]}"
-            conn.execute(
-                "UPDATE orchestrator_tasks SET status = ?, updated_at = ? WHERE task_id = ?",
-                ("leased", now, task["task_id"]),
-            )
-            conn.execute(
-                """
-                INSERT INTO orchestrator_assignments (
-                    assignment_id, task_id, worker_id, status, leased_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (assignment_id, task["task_id"], worker["worker_id"], "leased", now, now),
-            )
-            summary = f"已分发给 {worker['worker_id']}"
-            conn.execute(
-                """
-                INSERT INTO orchestrator_reports (report_id, task_id, status, summary, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (f"orch_rep_{uuid4().hex[:12]}", task["task_id"], "leased", summary, now),
-            )
+            dispatch_audit: dict[str, Any] | None = None
+            dispatch_result: dict[str, Any] | None = None
+            if bridge_adapter is not None:
+                try:
+                    bridge_adapter.dispatch(task=dict(task), worker=dict(worker))
+                except Exception as exc:  # noqa: BLE001 - retry bookkeeping must preserve operator-facing bridge errors.
+                    attempts = int(task["attempts"] or 0) + 1
+                    if attempts >= max_retries:
+                        summary = f"连续 {max_retries} 次分发失败，已暂停"
+                        conn.execute(
+                            "UPDATE orchestrator_tasks SET status = ?, attempts = ?, updated_at = ? WHERE task_id = ?",
+                            ("paused", attempts, now, task["task_id"]),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO orchestrator_reports (report_id, task_id, status, summary, created_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (f"orch_rep_{uuid4().hex[:12]}", task["task_id"], "paused", summary, now),
+                        )
+                        dispatch_audit = {
+                            "subject_id": task["task_id"],
+                            "action": "tick/dispatch_failed",
+                            "outcome": "paused",
+                            "details": {"worker_id": worker["worker_id"], "attempts": attempts, "error": str(exc)},
+                        }
+                        dispatch_result = {
+                            "dispatched": [],
+                            "blocked": [{"task_id": task["task_id"], "reason": summary}],
+                            "next": "等待主控检查 worker/bridge 状态",
+                        }
+                    else:
+                        reason = f"bridge dispatch failed: {exc}"
+                        conn.execute(
+                            "UPDATE orchestrator_tasks SET attempts = ?, updated_at = ? WHERE task_id = ?",
+                            (attempts, now, task["task_id"]),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO orchestrator_reports (report_id, task_id, status, summary, created_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (f"orch_rep_{uuid4().hex[:12]}", task["task_id"], "retry", reason, now),
+                        )
+                        dispatch_audit = {
+                            "subject_id": task["task_id"],
+                            "action": "tick/dispatch_failed",
+                            "outcome": "retry",
+                            "details": {"worker_id": worker["worker_id"], "attempts": attempts, "error": str(exc)},
+                        }
+                        dispatch_result = {
+                            "dispatched": [],
+                            "blocked": [{"task_id": task["task_id"], "reason": reason, "attempt": attempts}],
+                            "next": "等待下一轮重试",
+                        }
+
+            if dispatch_result is not None:
+                audit_after_commit = dispatch_audit
+            else:
+                audit_after_commit = None
+
+            if dispatch_result is None:
+                assignment_id = f"orch_asg_{uuid4().hex[:12]}"
+                conn.execute(
+                    "UPDATE orchestrator_tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                    ("leased", now, task["task_id"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO orchestrator_assignments (
+                        assignment_id, task_id, worker_id, status, leased_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (assignment_id, task["task_id"], worker["worker_id"], "leased", now, now),
+                )
+                summary = f"已分发给 {worker['worker_id']}"
+                conn.execute(
+                    """
+                    INSERT INTO orchestrator_reports (report_id, task_id, status, summary, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (f"orch_rep_{uuid4().hex[:12]}", task["task_id"], "leased", summary, now),
+                )
+
+        if dispatch_result is not None:
+            if audit_after_commit is not None:
+                self._record_audit(**audit_after_commit)
+            return dispatch_result
 
         self._record_audit(
             subject_id=task["task_id"],
