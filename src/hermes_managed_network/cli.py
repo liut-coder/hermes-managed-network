@@ -19,6 +19,8 @@ import typer
 
 from .components import ComponentManifest, load_builtin_components
 from .deploy import render_deploy_plan_json, render_deploy_status_json
+from .discovery import discover_services_from_file
+from .docs_generate import load_registry_and_generate_docs
 from .docs import (
     DEFAULT_DOCS_ROOT,
     DEFAULT_SERVICE_ROOT,
@@ -32,13 +34,16 @@ from .docs import (
     write_service_index,
 )
 from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_details_for_node, ssh_target_for_node
+from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .orchestrator import OrchestratorService
 from .playbook import Playbook
 from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
+from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH
 from .storage import SQLiteStore, ServiceRecord
+from .uptime import render_uptime_plan_json
 from .approval_gateway import (
     ApprovalGatewayClientConfig,
     ApprovalGatewayHttpApiClient,
@@ -117,6 +122,8 @@ approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
 docs_app = typer.Typer(help="生成机器/服务资产文档")
 service_app = typer.Typer(help="管理服务资产登记")
+inspect_app = typer.Typer(help="盘点节点资产")
+discover_app = typer.Typer(help="从盘点结果发现服务")
 uptime_app = typer.Typer(help="生成 Uptime Kuma dry-run 规划")
 deploy_app = typer.Typer(help="生成部署计划与状态聚合")
 app.add_typer(token_app, name="token")
@@ -134,6 +141,8 @@ app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
 app.add_typer(docs_app, name="docs")
 app.add_typer(service_app, name="service")
+app.add_typer(inspect_app, name="inspect")
+app.add_typer(discover_app, name="discover")
 app.add_typer(uptime_app, name="uptime")
 app.add_typer(deploy_app, name="deploy")
 
@@ -1448,7 +1457,13 @@ def docs_generate(
     output_root: Path = typer.Option(DEFAULT_DOCS_ROOT, "--output-root", help="机器文档根目录"),
     service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
     runbook_root: Path | None = typer.Option(None, "--runbook-root", help="Runbook 源目录"),
+    registry: Path | None = typer.Option(None, "--registry", help="service registry JSON 路径"),
+    output_dir: Path | None = typer.Option(None, "--output-dir", help="service registry 文档输出目录"),
 ) -> None:
+    if registry is not None:
+        generated_dir = load_registry_and_generate_docs(registry, output_dir or Path("docs"))
+        typer.echo(str(generated_dir))
+        return
     result = generate_docs(_store(db), output_root, service_root, runbook_root)
     typer.echo(f"生成机器文档: {result.server_count}")
     if result.service_index:
@@ -1559,11 +1574,16 @@ def _uptime_monitor_for_service(service: ServiceRecord) -> dict[str, object] | N
     }
 
 
-@app.command("discover")
+@discover_app.callback(invoke_without_command=True)
 def discover_services(
+    ctx: typer.Context,
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
-    from_json: Path = typer.Option(..., "--from-json", help="从 JSON 清单导入服务资产（dry-run 发现入口）"),
+    from_json: Path | None = typer.Option(None, "--from-json", help="从 JSON 清单导入服务资产（dry-run 发现入口）"),
 ) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if from_json is None:
+        raise typer.BadParameter("需要传入 --from-json；或使用 hmn discover services --inventory ...")
     payload = json.loads(from_json.read_text(encoding="utf-8"))
     services_payload = payload.get("services", []) if isinstance(payload, dict) else payload
     store = _store(db)
@@ -1574,11 +1594,56 @@ def discover_services(
     typer.echo(f"discovered services: {count}")
 
 
+@inspect_app.command("node")
+def inspect_node(
+    local: bool = typer.Option(False, "--local", help="盘点本机资产"),
+    node: str | None = typer.Option(None, "--node", help="预留远程节点 ID；当前 MVP 不执行远程 SSH"),
+    output: Path | None = typer.Option(None, "--output", help="写入 inventory JSON 文件"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    if node and not local:
+        typer.echo("remote inspect is reserved for a future SSH/worker provider; use --local for this MVP")
+        raise typer.Exit(2)
+    if not local:
+        raise typer.BadParameter("当前 MVP 需要显式传入 --local")
+    inventory = collect_local_inventory(node=node or "local")
+    rendered = inventory_to_json(inventory)
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered + "\n", encoding="utf-8")
+        if not json_output:
+            typer.echo(str(output))
+    if json_output or not output:
+        typer.echo(rendered)
+
+
+@discover_app.command("services")
+def discover_services_command(
+    inventory: Path = typer.Option(..., "--inventory", help="inspect node 生成的 inventory JSON"),
+    output: Path | None = typer.Option(None, "--output", help="写入 service registry JSON 文件"),
+    json_output: bool = typer.Option(False, "--json", help="输出 registry JSON"),
+) -> None:
+    registry = discover_services_from_file(inventory)
+    if output:
+        registry.save(output)
+        if not json_output:
+            typer.echo(str(output))
+    rendered = json.dumps(registry.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    if json_output or not output:
+        typer.echo(rendered)
+
+
+
 @uptime_app.command("plan")
 def uptime_plan(
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    service_registry: Path | None = typer.Option(None, "--service-registry", help="service registry JSON 路径"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
 ) -> None:
+    if service_registry is not None:
+        rendered = render_uptime_plan_json(service_registry)
+        typer.echo(rendered)
+        return
     monitors = [monitor for service in _store(db).list_service_records() if (monitor := _uptime_monitor_for_service(service))]
     payload = {"provider": "uptime-kuma", "dry_run": True, "monitors": monitors}
     if json_output:
