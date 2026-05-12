@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping, Protocol, runtime_checkable
+import re
 
 _REDACTED = "[REDACTED]"
 _SENSITIVE_KEYWORDS = (
@@ -30,15 +30,17 @@ class ProviderOperationStatus(StrEnum):
     ERROR = "error"
 
 
+
 def _looks_sensitive_key(key: str) -> bool:
     lowered = key.lower()
     return any(keyword in lowered for keyword in _SENSITIVE_KEYWORDS)
 
 
+
 def redact_sensitive_data(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            str(key): (_REDACTED if _looks_sensitive_key(str(key)) else redact_sensitive_data(item))
+            key: (_REDACTED if _looks_sensitive_key(str(key)) else redact_sensitive_data(item))
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -46,7 +48,7 @@ def redact_sensitive_data(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(redact_sensitive_data(item) for item in value)
     if isinstance(value, str):
-        return _SENSITIVE_ASSIGNMENT_RE.sub(lambda _match: _REDACTED, value)
+        return _SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{_REDACTED}", value)
     return value
 
 
@@ -147,8 +149,17 @@ class ManagedProvider(ABC):
                 changed=False,
                 dry_run=True,
                 approval_required=False,
-                details={"provider_id": plan.provider_id, "risk": plan.risk, "approval_request_id": approval_request_id, "plan": plan.sanitized()},
-                metadata={"audit_event_id": audit_event_id, "placeholder": True, "not_executable": True},
+                details={
+                    "provider_id": plan.provider_id,
+                    "risk": plan.risk,
+                    "approval_request_id": approval_request_id,
+                    "plan": plan.sanitized(),
+                },
+                metadata={
+                    "audit_event_id": audit_event_id,
+                    "placeholder": True,
+                    "not_executable": True,
+                },
                 warnings=["provider contract placeholder does not perform external writes"],
             )
         return ManagedProviderResult(
@@ -158,8 +169,17 @@ class ManagedProvider(ABC):
             changed=False,
             dry_run=True,
             approval_required=plan.approval_required or plan.mutating or plan.risk in {"high", "critical"},
-            details={"provider_id": plan.provider_id, "risk": plan.risk, "plan": plan.sanitized()},
-            metadata={"contract": "placeholder", "placeholder": True, "not_executable": True, "audit_event_id": audit_event_id},
+            details={
+                "provider_id": plan.provider_id,
+                "risk": plan.risk,
+                "plan": plan.sanitized(),
+            },
+            metadata={
+                "contract": "placeholder",
+                "placeholder": True,
+                "not_executable": True,
+                "audit_event_id": audit_event_id,
+            },
             warnings=["mutation is blocked by the provider contract placeholder"],
         )
 
@@ -175,8 +195,18 @@ class ManagedProvider(ABC):
                 changed=False,
                 dry_run=True,
                 approval_required=False,
-                details={"provider_id": plan.provider_id, "risk": plan.risk, "approval_request_id": approval_request_id, "rollback_hint": plan.rollback_hint, "plan": plan.sanitized()},
-                metadata={"audit_event_id": audit_event_id, "placeholder": True, "not_executable": True},
+                details={
+                    "provider_id": plan.provider_id,
+                    "risk": plan.risk,
+                    "approval_request_id": approval_request_id,
+                    "rollback_hint": plan.rollback_hint,
+                    "plan": plan.sanitized(),
+                },
+                metadata={
+                    "audit_event_id": audit_event_id,
+                    "placeholder": True,
+                    "not_executable": True,
+                },
                 warnings=["provider contract placeholder does not perform external writes"],
             )
         return ManagedProviderResult(
@@ -186,7 +216,17 @@ class ManagedProvider(ABC):
             changed=False,
             dry_run=True,
             approval_required=plan.approval_required or plan.mutating or plan.risk in {"high", "critical"},
-            details={"provider_id": plan.provider_id, "risk": plan.risk, "approval_request_id": approval_request_id, "rollback_hint": plan.rollback_hint, "plan": plan.sanitized()},
-            metadata={"audit_event_id": audit_event_id, "placeholder": True, "not_executable": True},
+            details={
+                "provider_id": plan.provider_id,
+                "risk": plan.risk,
+                "approval_request_id": approval_request_id,
+                "rollback_hint": plan.rollback_hint,
+                "plan": plan.sanitized(),
+            },
+            metadata={
+                "audit_event_id": audit_event_id,
+                "placeholder": True,
+                "not_executable": True,
+            },
             warnings=["mutation is blocked by the provider contract placeholder"],
         )

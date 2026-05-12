@@ -32,21 +32,35 @@ class FakeProvider(ManagedProvider):
             dry_run=True,
             approval_required=True,
             summary="prepared fake plan",
-            steps=[{"action": "connect", "Authorization": "Bearer top-secret"}, {"action": "store", "refresh_token": "refresh-secret"}],
+            steps=[
+                {"action": "connect", "Authorization": "Bearer top-secret"},
+                {"action": "store", "refresh_token": "refresh-secret"},
+            ],
             context={"password": "db-pass", "safe": "visible"},
             metadata={"api_key": "plan-secret"},
             rollback_hint="revert fake changes",
         )
 
     def verify(self, *, config: dict[str, object] | None = None) -> ManagedProviderResult:
-        return ManagedProviderResult(operation="verify", status=ProviderOperationStatus.OK, summary="verified", details={"access_token": "verify-secret", "safe": "visible"})
+        return ManagedProviderResult(
+            operation="verify",
+            status=ProviderOperationStatus.OK,
+            summary="verified",
+            details={"access_token": "verify-secret", "safe": "visible"},
+        )
 
     def status(self, *, config: dict[str, object] | None = None) -> ManagedProviderResult:
-        return ManagedProviderResult(operation="status", status=ProviderOperationStatus.OK, summary="healthy", details={"token": "status-secret", "state": "ready"})
+        return ManagedProviderResult(
+            operation="status",
+            status=ProviderOperationStatus.OK,
+            summary="healthy",
+            details={"token": "status-secret", "state": "ready"},
+        )
 
 
 def test_provider_plan_and_result_expose_sanitized_auditable_views():
     provider = FakeProvider()
+
     plan = provider.plan(intent="bootstrap", config={"api_key": "plan-secret"})
     discover = provider.discover(config={"token": "discover-token"})
     verify = provider.verify(config={"password": "verify-pass"})
@@ -57,6 +71,7 @@ def test_provider_plan_and_result_expose_sanitized_auditable_views():
     assert plan.sanitized()["steps"][0]["Authorization"] == "[REDACTED]"
     assert plan.sanitized()["steps"][1]["refresh_token"] == "[REDACTED]"
     assert plan.sanitized()["context"]["safe"] == "visible"
+
     audit_payload = plan.audit_payload()
     assert audit_payload["provider_id"] == "fake"
     assert audit_payload["operation"] == "apply"
@@ -66,6 +81,7 @@ def test_provider_plan_and_result_expose_sanitized_auditable_views():
     assert audit_payload["rollback_hint"] == "revert fake changes"
     assert audit_payload["steps"][0]["Authorization"] == "[REDACTED]"
     assert audit_payload["context"]["password"] == "[REDACTED]"
+
     assert discover.details["api_key"] == "discover-secret"
     assert discover.sanitized()["details"]["api_key"] == "[REDACTED]"
     assert verify.sanitized()["details"]["access_token"] == "[REDACTED]"
@@ -76,7 +92,9 @@ def test_provider_plan_and_result_expose_sanitized_auditable_views():
 def test_default_apply_returns_approval_required_contract_placeholder_for_high_risk_plan():
     provider = FakeProvider()
     plan = provider.plan(intent="open-route")
+
     result = provider.apply(plan=plan)
+
     assert result.operation == "apply"
     assert result.status is ProviderOperationStatus.PLANNED
     assert result.changed is False
@@ -92,11 +110,14 @@ def test_default_apply_returns_approval_required_contract_placeholder_for_high_r
 def test_default_apply_and_rollback_require_explicit_approval_reference_to_exit_pending_state():
     provider = FakeProvider()
     plan = provider.plan(intent="approved-change")
+
     pending_result = provider.apply(plan=plan, config={"audit_event_id": "audit_123"})
     apply_result = provider.apply(plan=plan, config={"approval_request_id": "appr_123", "audit_event_id": "audit_123"})
     rollback_result = provider.rollback(plan=plan, config={"approval_request_id": "appr_123", "audit_event_id": "audit_123"})
+
     assert pending_result.status is ProviderOperationStatus.PLANNED
     assert pending_result.approval_required is True
+
     assert apply_result.status is ProviderOperationStatus.NOT_IMPLEMENTED
     assert apply_result.approval_required is False
     assert apply_result.changed is False
@@ -105,6 +126,7 @@ def test_default_apply_and_rollback_require_explicit_approval_reference_to_exit_
     assert apply_result.metadata["audit_event_id"] == "audit_123"
     assert apply_result.metadata["placeholder"] is True
     assert apply_result.metadata["not_executable"] is True
+
     assert rollback_result.operation == "rollback"
     assert rollback_result.status is ProviderOperationStatus.NOT_IMPLEMENTED
     assert rollback_result.approval_required is False
@@ -114,6 +136,7 @@ def test_default_apply_and_rollback_require_explicit_approval_reference_to_exit_
 
 def test_fake_provider_satisfies_runtime_protocol():
     provider = FakeProvider()
+
     assert isinstance(provider, ManagedProviderProtocol)
 
 
@@ -121,6 +144,7 @@ def test_incomplete_provider_cannot_be_instantiated():
     class IncompleteProvider(ManagedProvider):
         provider_id = "incomplete"
         display_name = "Incomplete Provider"
+
     try:
         IncompleteProvider()
     except TypeError as exc:
@@ -130,6 +154,15 @@ def test_incomplete_provider_cannot_be_instantiated():
 
 
 def test_redact_sensitive_data_covers_nested_dicts_and_strings():
-    payload = {"nested": {"api_key": "xyz"}, "Authorization": "Bearer very-secret", "safe": "ok"}
-    assert redact_sensitive_data(payload) == {"nested": {"api_key": "[REDACTED]"}, "Authorization": "[REDACTED]", "safe": "ok"}
+    payload = {
+        "nested": {"api_key": "xyz"},
+        "Authorization": "Bearer very-secret",
+        "safe": "ok",
+    }
+
+    assert redact_sensitive_data(payload) == {
+        "nested": {"api_key": "[REDACTED]"},
+        "Authorization": "[REDACTED]",
+        "safe": "ok",
+    }
     assert redact_sensitive_data("refresh_token=secret-value password=hunter2") == "[REDACTED] [REDACTED]"
