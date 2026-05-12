@@ -5,7 +5,7 @@ HMN 当前架构主体已完成，下一阶段转入 Orchestrator + Provider 化
 ## 当前完成度
 
 - 总体路线图：89 / 126 项完成，约 70.6%。v1.0 及以前路线图已收尾；v1.1 转为 Orchestrator + Provider 化托管控制面，未完成项主要集中在长期自动统筹、Service Registry、Coolify/GitHub Actions/Uptime Kuma/restic-borgmatic/Ansible Provider、部署编排、文档自动填充、集中备份、恢复和迁移。
-- 架构阶段：v1.0 主体闭环已完成，进入 v1.1 Orchestrator + Provider 化托管自动化建设。
+- 架构阶段：v1.0 主体闭环已完成，进入 v1.1 Provider 化托管自动化建设；当前进一步细化为 Orchestrator + Provider 化托管控制面。
 - 已完成主干：Control Plane、Worker、Headscale Network Provider、Approval、Asset Docs 基础、Component Framework、NAS/IPv6 接入、Production Readiness 基础、monitor 真实闭环、backup 本地归档/verify 基础。
 
 ## P0：Orchestrator 全自动托管统筹
