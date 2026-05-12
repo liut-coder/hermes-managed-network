@@ -91,3 +91,8 @@ def test_useful_ops_smoke_dry_run_chain_generates_registry_docs_and_uptime_plan(
             "reason": "missing domain and port",
         }
     ]
+
+    apply_result = runner.invoke(app, ["uptime", "sync", "--db", str(tmp_path / "hmn.db"), "--service-registry", str(registry_path)])
+    assert apply_result.exit_code != 0
+    assert "需要审批" in apply_result.stdout
+    assert "未写入 Uptime Kuma" in apply_result.stdout

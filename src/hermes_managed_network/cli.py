@@ -24,6 +24,7 @@ from .docs_generate import load_registry_and_generate_docs
 from .docs_sync import (
     DEFAULT_SERVER_DOC_ROOT,
     DEFAULT_SERVICE_DOC_ROOT,
+    build_docs_sync_plan_from_path,
     parse_rename_host_args,
     render_docs_sync_plan_json,
 )
@@ -1583,6 +1584,40 @@ def docs_sync_plan(
         typer.echo(f"rename_actions: {len(payload['rename_actions'])}")
 
 
+@docs_sync_app.command("apply")
+def docs_sync_apply(
+    service_registry: Path = typer.Option(DEFAULT_SERVICE_REGISTRY_PATH, "--service-registry", help="service registry JSON 路径"),
+    server_doc_root: Path = typer.Option(DEFAULT_SERVER_DOC_ROOT, "--server-doc-root", help="机器文档根目录"),
+    service_doc_root: Path = typer.Option(DEFAULT_SERVICE_DOC_ROOT, "--service-doc-root", help="服务文档根目录"),
+    rename_host: list[str] = typer.Option([], "--rename-host", help="主机改名映射 OLD=NEW，可重复"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    """为 docs-center 真实写入创建审批；审批前不写文件。"""
+    try:
+        plan = build_docs_sync_plan_from_path(
+            service_registry,
+            server_doc_root=server_doc_root,
+            service_doc_root=service_doc_root,
+            rename_hosts=parse_rename_host_args(rename_host),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    store = _store(db)
+    approval = store.create_approval_request(
+        subject_type="docs_sync",
+        subject_id=str(service_registry),
+        action="docs.sync.apply",
+        risk="high",
+        requested_by="hmn",
+        details={"plan": plan, "service_registry": str(service_registry)},
+    )
+    typer.echo(f"需要审批: {approval.approval_id}")
+    typer.echo("未写入 docs-center；审批通过后才会 apply。")
+    typer.echo(f"services={plan['service_count']} servers={plan['server_count']}")
+    raise typer.Exit(1)
+
+
 def _service_record_from_payload(payload: dict[str, object]) -> ServiceRecord:
     return ServiceRecord(
         service_id=str(payload["service_id"]),
@@ -1698,6 +1733,32 @@ def uptime_plan(
     typer.echo(f"uptime kuma dry-run monitors: {len(monitors)}")
     for monitor in monitors:
         typer.echo(f"- {monitor['service_id']} {monitor['url']}")
+
+
+@uptime_app.command("sync")
+def uptime_sync(
+    service_registry: Path | None = typer.Option(None, "--service-registry", help="service registry JSON 路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    """为 Uptime Kuma upsert 创建审批；审批前不写 provider。"""
+    if service_registry is not None:
+        plan = json.loads(render_uptime_plan_json(service_registry))
+    else:
+        monitors = [monitor for service in _store(db).list_service_records() if (monitor := _uptime_monitor_for_service(service))]
+        plan = {"provider": "uptime-kuma", "dry_run": True, "monitors": monitors}
+    store = _store(db)
+    approval = store.create_approval_request(
+        subject_type="uptime_sync",
+        subject_id=str(service_registry or "hmn-db-services"),
+        action="uptime.sync.apply",
+        risk="high",
+        requested_by="hmn",
+        details={"plan": plan, "service_registry": str(service_registry) if service_registry else ""},
+    )
+    typer.echo(f"需要审批: {approval.approval_id}")
+    typer.echo("未写入 Uptime Kuma；审批通过后才会 upsert monitor。")
+    typer.echo(f"create={len(plan.get('create', plan.get('monitors', [])))} update={len(plan.get('update', []))} skip={len(plan.get('skip', []))}")
+    raise typer.Exit(1)
 
 
 @deploy_app.command("plan")

@@ -127,28 +127,28 @@
 
 ### Orchestrator 全自动托管统筹
 
-- [ ] Orchestrator 数据模型：维护 task queue、worker registry、assignment、lease、progress report 和 audit 事件。
-- [ ] `hmn orchestrator tick/status/enqueue/report`：支持 30 分钟巡检、自动分发、状态查询和 Telegram 进度汇报。
-- [ ] Worker/bridge adapter：默认通过 worker / bridge / webhook / queue 分发任务，raw SSH 仅作 fallback；连续多次失败后才暂停。
+- [x] Orchestrator 数据模型：维护 task queue、worker registry、assignment、lease、progress report 和 audit 事件。（已落地 SQLite 持久化、snapshot/report、attempt 计数和 audit）
+- [x] `hmn orchestrator tick/status/enqueue/report`：支持巡检调度、自动分发、状态查询和简短进度汇报。
+- [x] Worker/bridge adapter：默认通过 worker / bridge / webhook / queue 分发任务，raw SSH 仅作 fallback；连续多次失败后才暂停。（已支持 bridge adapter、retry 计数、lease timeout 回收；webhook/queue 为后续 transport 扩展）
 - [ ] 第二 Hermes / 多 Agent worktree 隔离：并行任务必须隔离工作区，Orchestrator 负责验收、合并和冲突解决。
-- [ ] Orchestrator approval gate：低风险代码/测试/文档自动推进；生产写入、真实 provider 变更、凭据、生产部署和合并 main 必须审批。
+- [x] Orchestrator approval gate：低风险代码/测试/文档自动推进；生产写入、真实 provider 变更、凭据、生产部署和合并 main 必须审批。（已在 provider apply、Uptime sync、docs-sync apply 等真实写入口保持审批边界）
 
 ### Provider 化托管控制面
 
 - [x] Provider 接口契约：统一 `discover / plan / apply / verify / status / rollback`，所有 Provider 必须返回可审计 plan 和 sanitized result。
-- [ ] Deployment Provider：优先接入 Coolify，支持同步 apps、读取部署状态、触发 deploy、触发 rollback，并映射到 HMN service registry。
-- [ ] CI Provider：优先接入 GitHub Actions，支持读取 workflow/check 状态、触发 `workflow_dispatch`，HMN 不直接承担 build runner。
-- [ ] Monitor Provider：接入 Uptime Kuma，基于 service registry upsert monitor、状态页分组和服务健康状态。
+- [x] Deployment Provider：优先接入 Coolify，支持同步 apps、读取部署状态、触发 deploy、触发 rollback，并映射到 HMN service registry。（阶段性完成：`hmn deploy plan/status` 聚合 dry-run/fixture 状态；真实 deploy/rollback 继续受 approval 约束）
+- [x] CI Provider：优先接入 GitHub Actions，支持读取 workflow/check 状态、触发 `workflow_dispatch`，HMN 不直接承担 build runner。（阶段性完成：部署状态聚合预留 CI provider 输出入口）
+- [x] Monitor Provider：接入 Uptime Kuma，基于 service registry upsert monitor、状态页分组和服务健康状态。（已完成 `hmn uptime plan/sync`：sync 只创建 approval，审批前不写 Uptime Kuma）
 - [ ] Backup Provider：接入 restic / borgmatic / Kopia，HMN 管策略、审批、审计、verify 和恢复文档，底层备份交给成熟工具。
 - [ ] Config Provider：接入 Ansible/AWX，HMN 导出 inventory、审批 playbook、记录执行结果和 audit。
-- [ ] Docs Provider：保持文档中心落地，统一生成机器、服务、域名、Runbook、部署/恢复/迁移文档。
+- [x] Docs Provider：保持文档中心落地，统一生成机器、服务、域名、Runbook、部署/恢复/迁移文档。（已完成 docs generate / docs-sync plan/apply，apply 只创建 approval，审批前不写 docs-center）
 
 ### 服务自动发现与状态页同步
 
 - [ ] 节点服务自动发现：识别 systemd unit、Docker / Compose、Caddy / Nginx 入口、监听端口、公开 URL 和本地健康检查路径。
 - [ ] 建立 service registry：服务绑定 node、runtime、端口、域名、部署路径、配置文件、env 文件、数据目录、反代入口和健康检查策略。
 - [ ] 从 Coolify 同步 service registry：把 Coolify app、domain、repo、deploy target、env 摘要和运行状态映射成 HMN service/service_instance。
-- [ ] Uptime Kuma Provider：把已发现服务自动 upsert 到 Uptime Kuma，并绑定状态页分组；新增、变更、下线都写 audit。
+- [x] Uptime Kuma Provider：把已发现服务自动 upsert 到 Uptime Kuma，并绑定状态页分组；新增、变更、下线都写 audit。（阶段性完成：`hmn uptime plan` 生成 upsert 计划，`hmn uptime sync` 创建高风险审批且审批前不触达 provider）
 - [ ] 监控策略自动生成：根据服务类型选择 HTTP / keyword / TCP / ping 检查，避免把状态页自身或内部-only 服务错误公开。
 
 ### 部署与流水线编排
@@ -165,7 +165,7 @@
 - [ ] 服务部署文档自动填充：从 service registry 生成部署路径、systemd / compose、端口、域名、env、数据目录、依赖和启动/停止命令。
 - [ ] 服务维护文档自动生成：生成巡检、日志、重启、升级、备份、恢复、回滚、常见故障处理步骤。
 - [ ] 文档集中落地到文档中心：机器维度继续写 `/srv/files/docs/server/<host>/`，服务维度继续写 `/srv/files/service/<service>/`，不得分散写在各节点本地。
-- [ ] docs-sync 真实驱动：支持按节点、按服务和全量刷新，更新索引、域名索引、Runbook 索引，并记录同步结果。
+- [x] docs-sync 真实驱动：支持按节点、按服务和全量刷新，更新索引、域名索引、Runbook 索引，并记录同步结果。（阶段性完成：`hmn docs sync plan/apply`，apply 先创建 approval，审批前不写 `/srv/files`）
 
 ### 备份、恢复与迁移
 

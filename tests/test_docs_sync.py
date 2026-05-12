@@ -181,3 +181,41 @@ def test_docs_sync_plan_cli_json_is_parseable_and_redacts_sensitive_fields(tmp_p
     assert "secret-token" not in rendered
     assert "top-secret" not in rendered
     assert rendered.count("[REDACTED]") >= 4
+
+
+def test_docs_sync_apply_requires_approval_and_does_not_write_docs(tmp_path):
+    registry_path = _write_registry(tmp_path)
+    db = tmp_path / "hmn.db"
+    server_root = tmp_path / "server-docs"
+    service_root = tmp_path / "service-docs"
+
+    result = runner.invoke(
+        app,
+        [
+            "docs",
+            "sync",
+            "apply",
+            "--db",
+            str(db),
+            "--service-registry",
+            str(registry_path),
+            "--server-doc-root",
+            str(server_root),
+            "--service-doc-root",
+            str(service_root),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "需要审批" in result.stdout
+    assert "未写入 docs-center" in result.stdout
+    assert not server_root.exists()
+    assert not service_root.exists()
+    from hermes_managed_network.storage import SQLiteStore
+
+    approval = SQLiteStore(db).list_approval_requests(status="pending")[0]
+    assert approval.subject_type == "docs_sync"
+    assert approval.action == "docs.sync.apply"
+    assert approval.risk == "high"
+    assert approval.details["plan"]["dry_run"] is True
+    assert approval.details["plan"]["server_count"] == 2
