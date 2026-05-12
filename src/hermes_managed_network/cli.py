@@ -46,6 +46,7 @@ from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .orchestrator import OrchestratorService
 from .playbook import Playbook
+from .backup_provider import render_backup_plan_json
 from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
@@ -589,6 +590,33 @@ def menu(plain: bool = typer.Option(False, "--plain", help="只打印快捷命�
         _show_menu()
     else:
         _show_interactive_menu()
+
+
+@backup_app.command("service-plan")
+def backup_service_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    adapter: str | None = typer.Option(
+        None,
+        "--adapter",
+        help="只输出指定 backup adapter（restic|borgmatic|kopia）。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 backup dry-run plan JSON。"),
+) -> None:
+    rendered = render_backup_plan_json(
+        service_registry,
+        service_id=service_id,
+        adapter=adapter,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
 
 
 @app.command("version")
