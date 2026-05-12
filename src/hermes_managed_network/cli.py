@@ -18,6 +18,7 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
+from .config_provider import plan_config_inventory_export
 from .deploy import render_deploy_plan_json, render_deploy_status_json
 from .discovery import discover_services_from_file
 from .docs_generate import load_registry_and_generate_docs
@@ -137,6 +138,8 @@ inspect_app = typer.Typer(help="盘点节点资产")
 discover_app = typer.Typer(help="从盘点结果发现服务")
 uptime_app = typer.Typer(help="生成 Uptime Kuma dry-run 规划")
 deploy_app = typer.Typer(help="生成部署计划与状态聚合")
+config_provider_app = typer.Typer(help="生成 Config Provider dry-run 计划")
+config_provider_inventory_app = typer.Typer(help="生成 inventory export dry-run")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(network_app, name="network")
@@ -158,6 +161,8 @@ app.add_typer(inspect_app, name="inspect")
 app.add_typer(discover_app, name="discover")
 app.add_typer(uptime_app, name="uptime")
 app.add_typer(deploy_app, name="deploy")
+app.add_typer(config_provider_app, name="config-provider")
+config_provider_app.add_typer(config_provider_inventory_app, name="inventory")
 
 
 def _default_db() -> Path:
@@ -1797,6 +1802,14 @@ def deploy_status(
         return
     payload = json.loads(rendered)
     typer.echo(f"deploy status services: {payload['service_count']}")
+
+
+@config_provider_inventory_app.command("plan")
+def config_provider_inventory_plan(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    payload = plan_config_inventory_export(nodes=_store(db).list_nodes(), services=_store(db).list_service_records())
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def _format_service_summary(service: ServiceRecord) -> str:
