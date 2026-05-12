@@ -47,6 +47,7 @@ from .inventory import NodeRegistry
 from .orchestrator import OrchestratorService
 from .playbook import Playbook
 from .backup_provider import render_backup_plan_json
+from .restore import render_restore_plan_json
 from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
@@ -141,6 +142,7 @@ uptime_app = typer.Typer(help="生成 Uptime Kuma dry-run 规划")
 deploy_app = typer.Typer(help="生成部署计划与状态聚合")
 config_provider_app = typer.Typer(help="生成 Config Provider dry-run 计划")
 config_provider_inventory_app = typer.Typer(help="生成 inventory export dry-run")
+restore_app = typer.Typer(help="从 service registry 生成服务级 restore plan（dry-run）")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(network_app, name="network")
@@ -164,6 +166,7 @@ app.add_typer(uptime_app, name="uptime")
 app.add_typer(deploy_app, name="deploy")
 app.add_typer(config_provider_app, name="config-provider")
 config_provider_app.add_typer(config_provider_inventory_app, name="inventory")
+app.add_typer(restore_app, name="restore")
 
 
 def _default_db() -> Path:
@@ -618,6 +621,28 @@ def backup_service_plan_command(
     typer.echo(rendered)
 
 
+@restore_app.command("plan")
+def restore_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    target_node: str | None = typer.Option(None, "--target-node", help="覆盖 restore 目标节点。"),
+    snapshot: str | None = typer.Option(None, "--snapshot", help="指定恢复快照（latest 或 snapshot_id）。"),
+    as_json: bool = typer.Option(False, "--json", help="输出 restore dry-run plan JSON。"),
+) -> None:
+    rendered = render_restore_plan_json(
+        service_registry,
+        service_id=service_id,
+        target_node=target_node,
+        snapshot=snapshot,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
 
 @app.command("version")
 def version() -> None:
