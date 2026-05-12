@@ -135,7 +135,7 @@
 
 ### Provider 化托管控制面
 
-- [ ] Provider 接口契约：统一 `discover / plan / apply / verify / status / rollback`，所有 Provider 必须返回可审计 plan 和 sanitized result。
+- [x] Provider 接口契约：统一 `discover / plan / apply / verify / status / rollback`，所有 Provider 必须返回可审计 plan 和 sanitized result。
 - [ ] Deployment Provider：优先接入 Coolify，支持同步 apps、读取部署状态、触发 deploy、触发 rollback，并映射到 HMN service registry。
 - [ ] CI Provider：优先接入 GitHub Actions，支持读取 workflow/check 状态、触发 `workflow_dispatch`，HMN 不直接承担 build runner。
 - [ ] Monitor Provider：接入 Uptime Kuma，基于 service registry upsert monitor、状态页分组和服务健康状态。
