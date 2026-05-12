@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urljoin
 
-from .docs_generate import _redact_text, _sanitize_value
+from .sanitize import _redact_text, _sanitize_value
 from .service_registry import ServiceRecord, ServiceRegistry
 
 Transport = Callable[[str, str], object]
@@ -211,8 +211,8 @@ def _ports(raw: object) -> list[int]:
 
 
 def _runtime_summary(app: dict[str, object]) -> str:
-    repository = str(app.get("git_repository") or "unknown")
-    branch = str(app.get("git_branch") or "main")
+    repository = _redact_text(app.get("git_repository") or "unknown")
+    branch = _redact_text(app.get("git_branch") or "main")
     return f"repo:{repository}#{branch}"
 
 

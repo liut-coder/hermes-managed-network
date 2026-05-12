@@ -107,7 +107,7 @@ def _fixture_payload() -> dict[str, object]:
                     {"domain": "www.demo.example.com"},
                 ],
                 "ports": [80, "443"],
-                "git_repository": "https://github.com/example/demo-web.git",
+                "git_repository": "https://user:repo-token@github.com/example/demo-web.git",
                 "git_branch": "main",
                 "deploy_target": {
                     "name": "edge-01-docker",
@@ -153,7 +153,7 @@ def test_discover_coolify_services_from_fixture_maps_apps_to_registry(tmp_path):
     assert web.kind == "coolify"
     assert web.domains == ["demo.example.com", "www.demo.example.com"]
     assert web.ports == [80, 443]
-    assert web.runtime == "repo:https://github.com/example/demo-web.git#main"
+    assert web.runtime == "repo:[REDACTED]#main"
     assert web.source == f"coolify-fixture:{fixture_path}"
     assert web.monitor["status"] == "running"
     assert web.monitor["project"] == "demo-project"
@@ -198,4 +198,5 @@ def test_build_coolify_sync_dry_run_returns_sanitized_summary(tmp_path):
     assert "super-secret-token" not in rendered
     assert "top-secret" not in rendered
     assert "refresh-secret" not in rendered
+    assert "repo-token" not in rendered
     assert "[REDACTED]" in rendered

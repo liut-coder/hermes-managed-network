@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .docs_generate import _redact_text, _sanitize_value
+from .sanitize import _redact_text, _sanitize_value
 
 
 @dataclass(frozen=True)
