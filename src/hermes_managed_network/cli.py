@@ -18,6 +18,7 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
+from .deploy import render_deploy_plan_json, render_deploy_status_json
 from .docs import (
     DEFAULT_DOCS_ROOT,
     DEFAULT_SERVICE_ROOT,
@@ -117,6 +118,7 @@ telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容�
 docs_app = typer.Typer(help="生成机器/服务资产文档")
 service_app = typer.Typer(help="管理服务资产登记")
 uptime_app = typer.Typer(help="生成 Uptime Kuma dry-run 规划")
+deploy_app = typer.Typer(help="生成部署计划与状态聚合")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(network_app, name="network")
@@ -133,6 +135,7 @@ app.add_typer(telegram_gateway_app, name="telegram-gateway")
 app.add_typer(docs_app, name="docs")
 app.add_typer(service_app, name="service")
 app.add_typer(uptime_app, name="uptime")
+app.add_typer(deploy_app, name="deploy")
 
 
 def _default_db() -> Path:
@@ -1584,6 +1587,44 @@ def uptime_plan(
     typer.echo(f"uptime kuma dry-run monitors: {len(monitors)}")
     for monitor in monitors:
         typer.echo(f"- {monitor['service_id']} {monitor['url']}")
+
+
+@deploy_app.command("plan")
+def deploy_plan(
+    service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
+    provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    rendered = render_deploy_plan_json(
+        service_registry,
+        service_id=service_id,
+        provider_fixture_dir=provider_fixture_dir,
+    )
+    if json_output:
+        typer.echo(rendered)
+        return
+    payload = json.loads(rendered)
+    typer.echo(f"deploy plan services: {payload['service_count']}")
+
+
+@deploy_app.command("status")
+def deploy_status(
+    service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
+    provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    rendered = render_deploy_status_json(
+        service_registry,
+        service_id=service_id,
+        provider_fixture_dir=provider_fixture_dir,
+    )
+    if json_output:
+        typer.echo(rendered)
+        return
+    payload = json.loads(rendered)
+    typer.echo(f"deploy status services: {payload['service_count']}")
 
 
 def _format_service_summary(service: ServiceRecord) -> str:
