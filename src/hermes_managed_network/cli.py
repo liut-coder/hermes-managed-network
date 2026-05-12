@@ -36,7 +36,7 @@ from .playbook import Playbook
 from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
-from .storage import SQLiteStore
+from .storage import SQLiteStore, ServiceRecord
 from .approval_gateway import (
     ApprovalGatewayClientConfig,
     ApprovalGatewayHttpApiClient,
@@ -109,6 +109,8 @@ network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
 approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
 docs_app = typer.Typer(help="生成机器/服务资产文档")
+service_app = typer.Typer(help="管理服务资产登记")
+uptime_app = typer.Typer(help="生成 Uptime Kuma dry-run 规划")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(network_app, name="network")
@@ -122,6 +124,8 @@ app.add_typer(backup_app, name="backup")
 app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
 app.add_typer(docs_app, name="docs")
+app.add_typer(service_app, name="service")
+app.add_typer(uptime_app, name="uptime")
 
 
 def _default_db() -> Path:
@@ -1448,7 +1452,19 @@ def docs_service(
     url: str = typer.Option("", "--url", help="对外 URL"),
     port: str = typer.Option("", "--port", help="监听端口"),
     summary: str = typer.Option("", "--summary", help="服务简介"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    from_registry: bool = typer.Option(False, "--from-registry", help="从服务登记表生成"),
 ) -> None:
+    if from_registry:
+        service = _store(db).load_service_record(service_id)
+        if service is None:
+            typer.echo(f"service not found: {service_id}", err=True)
+            raise typer.Exit(1)
+        title = title or service.name
+        node = node or service.node_id
+        url = url or service.health_check_url or (f"https://{service.domains[0]}" if service.domains else "")
+        port = port or (",".join(str(item) for item in service.ports))
+        summary = summary or f"kind={service.kind} runtime={service.runtime or '-'}"
     path = write_service_doc(
         ServiceDoc(
             service_id=service_id,
@@ -1486,6 +1502,146 @@ def docs_runbook_index(
 ) -> None:
     path = write_runbook_index(service_root, runbook_root)
     typer.echo(str(path))
+
+
+def _service_record_from_payload(payload: dict[str, object]) -> ServiceRecord:
+    return ServiceRecord(
+        service_id=str(payload["service_id"]),
+        name=str(payload.get("name") or payload["service_id"]),
+        node_id=str(payload.get("node_id", "")),
+        kind=str(payload.get("kind", "unknown")),
+        runtime=str(payload.get("runtime", "")),
+        domains=[str(item) for item in payload.get("domains", [])],
+        ports=[int(item) for item in payload.get("ports", [])],
+        deploy_path=str(payload.get("deploy_path", "")),
+        config_paths=[str(item) for item in payload.get("config_paths", [])],
+        env_paths=[str(item) for item in payload.get("env_paths", [])],
+        data_paths=[str(item) for item in payload.get("data_paths", [])],
+        health_check_url=str(payload.get("health_check_url", "")),
+        monitor_enabled=bool(payload.get("monitor_enabled", False)),
+        docs_path=str(payload.get("docs_path", "")),
+        source=str(payload.get("source", "discover")),
+        status=str(payload.get("status", "active")),
+        metadata=dict(payload.get("metadata", {})),
+    )
+
+
+def _uptime_monitor_for_service(service: ServiceRecord) -> dict[str, object] | None:
+    url = service.health_check_url
+    if not url and service.domains:
+        url = f"https://{service.domains[0]}"
+    if not url or not service.monitor_enabled:
+        return None
+    return {
+        "service_id": service.service_id,
+        "name": service.name,
+        "type": "http",
+        "url": url,
+        "tags": ["hmn", f"service:{service.service_id}"],
+    }
+
+
+@app.command("discover")
+def discover_services(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    from_json: Path = typer.Option(..., "--from-json", help="从 JSON 清单导入服务资产（dry-run 发现入口）"),
+) -> None:
+    payload = json.loads(from_json.read_text(encoding="utf-8"))
+    services_payload = payload.get("services", []) if isinstance(payload, dict) else payload
+    store = _store(db)
+    count = 0
+    for item in services_payload:
+        store.save_service_record(_service_record_from_payload(item))
+        count += 1
+    typer.echo(f"discovered services: {count}")
+
+
+@uptime_app.command("plan")
+def uptime_plan(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    monitors = [monitor for service in _store(db).list_service_records() if (monitor := _uptime_monitor_for_service(service))]
+    payload = {"provider": "uptime-kuma", "dry_run": True, "monitors": monitors}
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"uptime kuma dry-run monitors: {len(monitors)}")
+    for monitor in monitors:
+        typer.echo(f"- {monitor['service_id']} {monitor['url']}")
+
+
+def _format_service_summary(service: ServiceRecord) -> str:
+    domains = ",".join(service.domains) if service.domains else "-"
+    return f"{service.service_id}\t{service.name}\t{service.node_id or '-'}\t{service.kind}\t{domains}"
+
+
+def _echo_service_detail(service: ServiceRecord) -> None:
+    typer.echo(f"service: {service.service_id}")
+    typer.echo(f"name: {service.name}")
+    typer.echo(f"node: {service.node_id or '-'}")
+    typer.echo(f"kind: {service.kind}")
+    typer.echo(f"runtime: {service.runtime or '-'}")
+    typer.echo(f"domains: {', '.join(service.domains) if service.domains else '-'}")
+    typer.echo(f"ports: {', '.join(str(port) for port in service.ports) if service.ports else '-'}")
+    typer.echo(f"deploy_path: {service.deploy_path or '-'}")
+    typer.echo(f"health_check_url: {service.health_check_url or '-'}")
+    typer.echo(f"monitor_enabled: {service.monitor_enabled}")
+
+
+@service_app.command("add")
+def service_add(
+    service_id: str,
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    name: str = typer.Option(..., "--name", help="服务名称"),
+    node_id: str = typer.Option("", "--node", help="所属节点 ID"),
+    kind: str = typer.Option("unknown", "--kind", help="服务类型"),
+    runtime: str = typer.Option("", "--runtime", help="运行方式"),
+    domain: list[str] = typer.Option([], "--domain", help="绑定域名，可重复"),
+    port: list[int] = typer.Option([], "--port", help="暴露端口，可重复"),
+    deploy_path: str = typer.Option("", "--deploy-path", help="部署路径"),
+    config_path: list[str] = typer.Option([], "--config-path", help="配置文件路径，可重复"),
+    env_path: list[str] = typer.Option([], "--env-path", help="环境文件路径，可重复"),
+    data_path: list[str] = typer.Option([], "--data-path", help="数据目录路径，可重复"),
+    health_check_url: str = typer.Option("", "--health-check-url", help="健康检查 URL"),
+    monitor_enabled: bool = typer.Option(False, "--monitor-enabled", help="纳入监控规划"),
+) -> None:
+    service = ServiceRecord(
+        service_id=service_id,
+        name=name,
+        node_id=node_id,
+        kind=kind,
+        runtime=runtime,
+        domains=list(domain),
+        ports=list(port),
+        deploy_path=deploy_path,
+        config_paths=list(config_path),
+        env_paths=list(env_path),
+        data_paths=list(data_path),
+        health_check_url=health_check_url,
+        monitor_enabled=monitor_enabled,
+    )
+    _store(db).save_service_record(service)
+    typer.echo(f"service saved: {service_id}")
+
+
+@service_app.command("list")
+def service_list(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    node_id: str = typer.Option("", "--node", help="按节点过滤"),
+) -> None:
+    services = _store(db).list_service_records(node_id or None)
+    for service in services:
+        typer.echo(_format_service_summary(service))
+
+
+@service_app.command("show")
+def service_show(service_id: str, db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    service = _store(db).load_service_record(service_id)
+    if service is None:
+        typer.echo(f"service not found: {service_id}", err=True)
+        raise typer.Exit(1)
+    _echo_service_detail(service)
 
 
 @node_app.command("list")

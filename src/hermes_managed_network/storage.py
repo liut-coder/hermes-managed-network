@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 from pathlib import Path
@@ -58,6 +58,29 @@ class MonitorSnapshot:
     exec_mode: str
     facts_summary: dict[str, Any]
     created_at: datetime
+
+
+@dataclass
+class ServiceRecord:
+    service_id: str
+    name: str
+    node_id: str = ""
+    kind: str = "unknown"
+    runtime: str = ""
+    domains: list[str] = field(default_factory=list)
+    ports: list[int] = field(default_factory=list)
+    deploy_path: str = ""
+    config_paths: list[str] = field(default_factory=list)
+    env_paths: list[str] = field(default_factory=list)
+    data_paths: list[str] = field(default_factory=list)
+    health_check_url: str = ""
+    monitor_enabled: bool = False
+    docs_path: str = ""
+    source: str = "manual"
+    status: str = "active"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass
@@ -282,6 +305,28 @@ class SQLiteStore:
                     facts_summary_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS services (
+                    service_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    node_id TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'unknown',
+                    runtime TEXT NOT NULL DEFAULT '',
+                    domains_json TEXT NOT NULL DEFAULT '[]',
+                    ports_json TEXT NOT NULL DEFAULT '[]',
+                    deploy_path TEXT NOT NULL DEFAULT '',
+                    config_paths_json TEXT NOT NULL DEFAULT '[]',
+                    env_paths_json TEXT NOT NULL DEFAULT '[]',
+                    data_paths_json TEXT NOT NULL DEFAULT '[]',
+                    health_check_url TEXT NOT NULL DEFAULT '',
+                    monitor_enabled INTEGER NOT NULL DEFAULT 0,
+                    docs_path TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             for statement in (
@@ -300,6 +345,122 @@ class SQLiteStore:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc):
                         raise
+
+    def save_service_record(self, service: ServiceRecord) -> ServiceRecord:
+        now = datetime.now(timezone.utc)
+        existing = self.load_service_record(service.service_id)
+        created_at = service.created_at or (existing.created_at if existing else now)
+        saved = ServiceRecord(
+            service_id=service.service_id,
+            name=service.name,
+            node_id=service.node_id,
+            kind=service.kind,
+            runtime=service.runtime,
+            domains=list(service.domains),
+            ports=list(service.ports),
+            deploy_path=service.deploy_path,
+            config_paths=list(service.config_paths),
+            env_paths=list(service.env_paths),
+            data_paths=list(service.data_paths),
+            health_check_url=service.health_check_url,
+            monitor_enabled=service.monitor_enabled,
+            docs_path=service.docs_path,
+            source=service.source,
+            status=service.status,
+            metadata=dict(service.metadata),
+            created_at=created_at,
+            updated_at=now,
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO services (
+                    service_id, name, node_id, kind, runtime, domains_json, ports_json,
+                    deploy_path, config_paths_json, env_paths_json, data_paths_json,
+                    health_check_url, monitor_enabled, docs_path, source, status,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(service_id) DO UPDATE SET
+                    name=excluded.name,
+                    node_id=excluded.node_id,
+                    kind=excluded.kind,
+                    runtime=excluded.runtime,
+                    domains_json=excluded.domains_json,
+                    ports_json=excluded.ports_json,
+                    deploy_path=excluded.deploy_path,
+                    config_paths_json=excluded.config_paths_json,
+                    env_paths_json=excluded.env_paths_json,
+                    data_paths_json=excluded.data_paths_json,
+                    health_check_url=excluded.health_check_url,
+                    monitor_enabled=excluded.monitor_enabled,
+                    docs_path=excluded.docs_path,
+                    source=excluded.source,
+                    status=excluded.status,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    saved.service_id,
+                    saved.name,
+                    saved.node_id,
+                    saved.kind,
+                    saved.runtime,
+                    json.dumps(saved.domains),
+                    json.dumps(saved.ports),
+                    saved.deploy_path,
+                    json.dumps(saved.config_paths),
+                    json.dumps(saved.env_paths),
+                    json.dumps(saved.data_paths),
+                    saved.health_check_url,
+                    1 if saved.monitor_enabled else 0,
+                    saved.docs_path,
+                    saved.source,
+                    saved.status,
+                    json.dumps(saved.metadata, sort_keys=True),
+                    _dt(saved.created_at),
+                    _dt(saved.updated_at),
+                ),
+            )
+        return saved
+
+    def _service_record_from_row(self, row) -> ServiceRecord:
+        return ServiceRecord(
+            service_id=row["service_id"],
+            name=row["name"],
+            node_id=row["node_id"],
+            kind=row["kind"],
+            runtime=row["runtime"],
+            domains=json.loads(row["domains_json"]),
+            ports=[int(port) for port in json.loads(row["ports_json"])],
+            deploy_path=row["deploy_path"],
+            config_paths=json.loads(row["config_paths_json"]),
+            env_paths=json.loads(row["env_paths_json"]),
+            data_paths=json.loads(row["data_paths_json"]),
+            health_check_url=row["health_check_url"],
+            monitor_enabled=bool(row["monitor_enabled"]),
+            docs_path=row["docs_path"],
+            source=row["source"],
+            status=row["status"],
+            metadata=json.loads(row["metadata_json"]),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    def load_service_record(self, service_id: str) -> ServiceRecord | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM services WHERE service_id = ?", (service_id,)).fetchone()
+        return self._service_record_from_row(row) if row else None
+
+    def list_service_records(self, node_id: str | None = None) -> list[ServiceRecord]:
+        with self.connect() as conn:
+            if node_id:
+                rows = conn.execute(
+                    "SELECT * FROM services WHERE node_id = ? ORDER BY service_id",
+                    (node_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM services ORDER BY service_id").fetchall()
+        return [self._service_record_from_row(row) for row in rows]
 
     def record_audit(
         self,
