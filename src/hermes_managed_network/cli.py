@@ -21,6 +21,12 @@ from .components import ComponentManifest, load_builtin_components
 from .deploy import render_deploy_plan_json, render_deploy_status_json
 from .discovery import discover_services_from_file
 from .docs_generate import load_registry_and_generate_docs
+from .docs_sync import (
+    DEFAULT_SERVER_DOC_ROOT,
+    DEFAULT_SERVICE_DOC_ROOT,
+    parse_rename_host_args,
+    render_docs_sync_plan_json,
+)
 from .docs import (
     DEFAULT_DOCS_ROOT,
     DEFAULT_SERVICE_ROOT,
@@ -121,6 +127,7 @@ network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
 approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
 docs_app = typer.Typer(help="生成机器/服务资产文档")
+docs_sync_app = typer.Typer(help="生成集中 docs-sync dry-run 计划")
 service_app = typer.Typer(help="管理服务资产登记")
 inspect_app = typer.Typer(help="盘点节点资产")
 discover_app = typer.Typer(help="从盘点结果发现服务")
@@ -140,6 +147,7 @@ app.add_typer(backup_app, name="backup")
 app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
 app.add_typer(docs_app, name="docs")
+docs_app.add_typer(docs_sync_app, name="sync")
 app.add_typer(service_app, name="service")
 app.add_typer(inspect_app, name="inspect")
 app.add_typer(discover_app, name="discover")
@@ -1535,6 +1543,36 @@ def docs_runbook_index(
 ) -> None:
     path = write_runbook_index(service_root, runbook_root)
     typer.echo(str(path))
+
+
+@docs_sync_app.command("plan")
+def docs_sync_plan(
+    service_registry: Path = typer.Option(DEFAULT_SERVICE_REGISTRY_PATH, "--service-registry", help="service registry JSON 路径"),
+    server_doc_root: Path = typer.Option(DEFAULT_SERVER_DOC_ROOT, "--server-doc-root", help="机器文档根目录"),
+    service_doc_root: Path = typer.Option(DEFAULT_SERVICE_DOC_ROOT, "--service-doc-root", help="服务文档根目录"),
+    rename_host: list[str] = typer.Option([], "--rename-host", help="主机改名映射 OLD=NEW，可重复"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    """生成 docs-center 同步 dry-run 计划，不写入 /srv/files。"""
+    try:
+        rendered = render_docs_sync_plan_json(
+            service_registry,
+            server_doc_root=server_doc_root,
+            service_doc_root=service_doc_root,
+            rename_hosts=parse_rename_host_args(rename_host),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    if json_output:
+        typer.echo(rendered)
+        return
+    payload = json.loads(rendered)
+    typer.echo(f"docs sync plan: services={payload['service_count']} servers={payload['server_count']}")
+    typer.echo(f"server_doc_root: {payload['server_doc_root']}")
+    typer.echo(f"service_doc_root: {payload['service_doc_root']}")
+    if payload.get("rename_actions"):
+        typer.echo(f"rename_actions: {len(payload['rename_actions'])}")
 
 
 def _service_record_from_payload(payload: dict[str, object]) -> ServiceRecord:
