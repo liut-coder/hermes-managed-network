@@ -106,6 +106,47 @@ def test_orchestrator_status_tick_report_render_short_chinese_output(monkeypatch
     assert report.stdout.strip() == "队列 1｜worker 1｜最近：已派发"
 
 
+def test_orchestrator_worker_register_update_cli_persists_state(tmp_path):
+    runner = CliRunner()
+    db_args = ["--db", str(tmp_path / "hmn.db")]
+
+    register = runner.invoke(
+        app,
+        [
+            "orchestrator",
+            "worker",
+            "register",
+            "--id",
+            "miskrobot",
+            "--transport",
+            "bridge",
+            "--status",
+            "online",
+            "--label",
+            "code",
+            "--label",
+            "standby",
+            *db_args,
+        ],
+    )
+    status = runner.invoke(app, ["orchestrator", "status", *db_args])
+    update = runner.invoke(app, ["orchestrator", "worker", "update", "--id", "miskrobot", "--status", "offline", *db_args])
+    updated_status = runner.invoke(app, ["orchestrator", "status", *db_args])
+
+    assert register.exit_code == 0
+    assert "worker 已登记" in register.stdout
+    assert "miskrobot" in register.stdout
+    assert status.exit_code == 0
+    assert "miskrobot" in status.stdout
+    assert "bridge" in status.stdout
+    assert "online" in status.stdout
+    assert "labels=code,standby" in status.stdout
+    assert update.exit_code == 0
+    assert "worker 已更新" in update.stdout
+    assert updated_status.exit_code == 0
+    assert "offline" in updated_status.stdout
+
+
 def test_top_help_and_plain_menu_show_orchestrator_commands():
     runner = CliRunner()
 
@@ -114,11 +155,15 @@ def test_top_help_and_plain_menu_show_orchestrator_commands():
 
     assert help_result.exit_code == 0
     assert "hmn orchestrator enqueue" in help_result.stdout
+    assert "hmn orchestrator worker register" in help_result.stdout
+    assert "hmn orchestrator worker update" in help_result.stdout
     assert "hmn orchestrator status" in help_result.stdout
     assert "hmn orchestrator tick" in help_result.stdout
     assert "hmn orchestrator report" in help_result.stdout
     assert menu_result.exit_code == 0
     assert "hmn orchestrator enqueue" in menu_result.stdout
+    assert "hmn orchestrator worker register" in menu_result.stdout
+    assert "hmn orchestrator worker update" in menu_result.stdout
     assert "hmn orchestrator status" in menu_result.stdout
     assert "hmn orchestrator tick" in menu_result.stdout
     assert "hmn orchestrator report" in menu_result.stdout
