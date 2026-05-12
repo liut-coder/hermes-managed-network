@@ -32,6 +32,7 @@ from .docs import (
 )
 from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_details_for_node, ssh_target_for_node
 from .inventory import NodeRegistry
+from .orchestrator import OrchestratorService
 from .playbook import Playbook
 from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
@@ -75,6 +76,10 @@ app = typer.Typer(
         "  hmn task run              下发任务（worker/ssh）\n"
         "  hmn task list             查看任务队列\n"
         "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
+        "  hmn orchestrator enqueue  加入托管调度队列\n"
+        "  hmn orchestrator status   查看调度状态\n"
+        "  hmn orchestrator tick     执行单轮调度\n"
+        "  hmn orchestrator report   输出简短报告\n"
         "  hmn approval list         查看待审批操作\n"
         "  hmn approval-gateway poll-once --client telegram 发送一次审批通知\n"
         "  hmn component list        查看可用组件\n"
@@ -101,6 +106,7 @@ node_app = typer.Typer(help="管理已登记节点")
 playbook_app = typer.Typer(help="运行本地 playbook")
 audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
+orchestrator_app = typer.Typer(help="全托管调度器")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
 monitor_app = typer.Typer(help="监控节点健康闭环")
@@ -117,6 +123,7 @@ app.add_typer(network_app, name="network")
 app.add_typer(playbook_app, name="playbook")
 app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
+app.add_typer(orchestrator_app, name="orchestrator")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
 app.add_typer(monitor_app, name="monitor")
@@ -323,8 +330,12 @@ def _show_menu() -> None:
     typer.echo("13. hmn task run                     下发任务（worker/ssh）")
     typer.echo("14. hmn task list                    查看任务")
     typer.echo("    hmn task ssh-run-next            执行下一个 SSH 任务")
-    typer.echo("15. hmn approval list                查看审批")
-    typer.echo("16. hmn telegram-gateway poll-once   发送审批通知")
+    typer.echo("15. hmn orchestrator enqueue         加入托管队列")
+    typer.echo("    hmn orchestrator status          查看调度状态")
+    typer.echo("    hmn orchestrator tick            执行单轮调度")
+    typer.echo("    hmn orchestrator report          输出简短报告")
+    typer.echo("16. hmn approval list                查看审批")
+    typer.echo("    hmn telegram-gateway poll-once   发送审批通知")
     typer.echo("17. hmn component list               查看组件")
     typer.echo("18. hmn component status             查看组件状态")
     typer.echo("19. hmn component apply              记录组件状态")
@@ -355,6 +366,10 @@ def _show_menu() -> None:
     typer.echo("  hmn task run 'uptime' --executor ssh --wait")
     typer.echo("  hmn task list")
     typer.echo("  hmn task ssh-run-next")
+    typer.echo("  hmn orchestrator enqueue --title '巡检服务' --scope ops --priority 5")
+    typer.echo("  hmn orchestrator status")
+    typer.echo("  hmn orchestrator tick")
+    typer.echo("  hmn orchestrator report")
     typer.echo("  hmn telegram-gateway poll-once")
     typer.echo("  hmn component list")
     typer.echo("  hmn component plan reverse-proxy --node node1 --set domain=example.com --set upstream=http://127.0.0.1:3000")
@@ -2652,6 +2667,84 @@ def ssh_run_next(db: Path = typer.Option(None, "--db", help="SQLite 数据库路
     typer.echo(f"已执行任务: {completed.task_id}")
     typer.echo(f"节点: {completed.node_id}")
     typer.echo(f"退出码: {completed.exit_code}")
+
+
+def _orchestrator_service(db: Path | None) -> OrchestratorService:
+    return OrchestratorService(_store(db))
+
+
+def _fmt_orch_item(item: dict, *keys: str) -> str:
+    values = [str(item.get(key, "")) for key in keys if item.get(key, "") not in {None, ""}]
+    return " | ".join(values) if values else "-"
+
+
+@orchestrator_app.command("enqueue")
+def orchestrator_enqueue(
+    title: str = typer.Option(..., "--title", help="任务标题"),
+    scope: str = typer.Option("", "--scope", help="任务范围"),
+    risk: str = typer.Option("low", "--risk", help="风险级别：low/medium/high/critical"),
+    priority: int = typer.Option(5, "--priority", help="优先级，数字越大越先做"),
+    worker_hint: str = typer.Option("", "--worker", help="建议 worker，可留空"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    if risk not in {"low", "medium", "high", "critical"}:
+        typer.echo("风险级别只允许 low/medium/high/critical。")
+        raise typer.Exit(1)
+    task_id = _orchestrator_service(db).enqueue(
+        title=title,
+        scope=scope,
+        risk=risk,
+        priority=priority,
+        worker_hint=worker_hint,
+        source="cli",
+    )
+    typer.echo(f"已入队: {task_id}")
+
+
+@orchestrator_app.command("status")
+def orchestrator_status(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    snapshot = _orchestrator_service(db).snapshot()
+    typer.echo("队列:")
+    for item in snapshot.get("queue", []):
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "status", "title", "priority"))
+    if not snapshot.get("queue"):
+        typer.echo("  空")
+    typer.echo("worker:")
+    for item in snapshot.get("workers", []):
+        typer.echo("  " + _fmt_orch_item(item, "worker_id", "status", "transport"))
+    if not snapshot.get("workers"):
+        typer.echo("  空")
+    typer.echo("assignment:")
+    for item in snapshot.get("assignments", []):
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "worker_id", "status"))
+    if not snapshot.get("assignments"):
+        typer.echo("  空")
+    typer.echo("最近 report:")
+    for item in snapshot.get("reports", [])[:5]:
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "status", "summary"))
+    if not snapshot.get("reports"):
+        typer.echo("  暂无")
+
+
+@orchestrator_app.command("tick")
+def orchestrator_tick(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    result = _orchestrator_service(db).tick()
+    typer.echo("已分发:")
+    for item in result.get("dispatched", []):
+        typer.echo(f"  {item.get('task_id', '-')} -> {item.get('worker_id', '-')}")
+    if not result.get("dispatched"):
+        typer.echo("  无")
+    typer.echo("阻塞:")
+    for item in result.get("blocked", []):
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "reason"))
+    if not result.get("blocked"):
+        typer.echo("  无")
+    typer.echo(f"下一步：{result.get('next', '暂无')}")
+
+
+@orchestrator_app.command("report")
+def orchestrator_report(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    typer.echo(_orchestrator_service(db).report())
 
 
 @approval_app.command("list")
