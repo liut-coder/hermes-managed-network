@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 07:28 EDT
+## Latest cron reconciliation — 2026-05-13 08:03 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -114,6 +114,8 @@ Native backlog command was rerun on the live repository:
 Observed branch state:
 
 - Branch total: 12.
+- Local branches: 2 (`feat/v1-1-useful-ops-mvp`, `main`).
+- Worktrees: 1 (`/root/hermes-managed-network`).
 - WIP: 0/3.
 - `generated`: empty.
 - `needs-review`: empty.
@@ -134,17 +136,21 @@ Observed branch state:
   - `hmn-task-provider-contract`
   - `hmn-task20-config-provider`
 
-Manual priority branch probes from the latest cleanup pass still apply: the old local task branches (`hmn-task12-coolify`, `hmn-config-provider-merge-check`, `hmn-docs-center-apply`, `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, `hmn-task19-onboarding-plan`) are absent locally and on origin.
+Manual priority branch probes in this cron pass:
 
-The remaining priority remote heads are still not literal ancestors, but remain cleanup-only by task-specific diff:
-
-- `origin/feat/monitor-closed-loop`: not absorbed by ancestor check; backlog command marks it merged because the task-specific monitor/component slices are already present on HEAD. Do not broad-merge stale branch.
-- `origin/feat/production-readiness-p0`: not absorbed by ancestor check; production readiness slice is already extracted on HEAD.
-- `origin/fix/production-p0-readiness`: not absorbed by ancestor check; same production readiness slice is already extracted on HEAD.
+- `hmn-task12-coolify`: absent locally and on origin.
+- `hmn-config-provider-merge-check`: absent locally and on origin.
+- `hmn-docs-center-apply`: absent locally and on origin.
+- `hmn-task17-restore-plan`: absent locally and on origin.
+- `hmn-task18-migration-plan`: absent locally and on origin.
+- `hmn-task19-onboarding-plan`: absent locally and on origin.
+- `origin/feat/monitor-closed-loop`: ancestor check still `no`; `ahead=3`, `behind=129`; cleanup-only because task-specific monitor/component slices are already present on HEAD. Do not broad-merge stale branch.
+- `origin/feat/production-readiness-p0`: ancestor check still `no`; `ahead=1`, `behind=128`; production readiness slice is already extracted on HEAD.
+- `origin/fix/production-p0-readiness`: ancestor check still `no`; `ahead=1`, `behind=128`; same production readiness slice is already extracted on HEAD.
 
 Cron state:
 
-- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 07:58 EDT.
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 08:32 EDT.
 - No active duplicate HMN merge-first cron was observed in the live cron list.
 
 Untracked generated artifacts observed again in the working tree:
