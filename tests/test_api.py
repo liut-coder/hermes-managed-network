@@ -35,6 +35,46 @@ def test_hmn_web_docs_module_rejects_path_traversal(tmp_path):
     assert response.status_code in {404, 400}
 
 
+def test_hmn_web_docs_index_api_lists_server_and_service_docs(tmp_path):
+    docs_root = tmp_path / "files"
+    (docs_root / "docs" / "server" / "demo").mkdir(parents=True)
+    (docs_root / "docs" / "server" / "demo" / "README.md").write_text("# Demo Node", encoding="utf-8")
+    (docs_root / "service").mkdir(parents=True)
+    (docs_root / "service" / "api.md").write_text("# API", encoding="utf-8")
+
+    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+
+    response = client.get("/api/v1/hmn-web/docs/index")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "server_docs": [
+            {
+                "title": "demo/README.md",
+                "path": "docs/server/demo/README.md",
+                "url": "/hmn-web/docs/file/docs/server/demo/README.md",
+            }
+        ],
+        "service_docs": [
+            {"title": "api.md", "path": "service/api.md", "url": "/hmn-web/docs/file/service/api.md"}
+        ],
+    }
+
+
+def test_hmn_web_docs_view_page_wraps_markdown(tmp_path):
+    docs_root = tmp_path / "files"
+    (docs_root / "service").mkdir(parents=True)
+    (docs_root / "service" / "demo.md").write_text("# Demo\n\nhello", encoding="utf-8")
+    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+
+    response = client.get("/hmn-web/docs/view/service/demo.md")
+
+    assert response.status_code == 200
+    assert "HMN 文档" in response.text
+    assert "# Demo" in response.text
+    assert "hello" in response.text
+
+
 from hermes_managed_network.api import create_app
 from hermes_managed_network.storage import SQLiteStore, ServiceRecord
 from hermes_managed_network.tokens import JoinTokenStore

@@ -362,6 +362,95 @@ def _notification_response(notification: Notification) -> NotificationResponse:
     )
 
 
+def _list_docs(root: Path, subdir: str) -> list[dict[str, str]]:
+    base = root / subdir
+    if not base.exists():
+        return []
+    items: list[dict[str, str]] = []
+    for path in sorted(base.rglob("*.md")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        title = path.relative_to(base).as_posix()
+        items.append(
+            {
+                "title": title,
+                "path": relative,
+                "url": f"/hmn-web/docs/file/{relative}",
+            }
+        )
+    return items
+
+
+def _docs_index_payload(root: Path) -> dict[str, list[dict[str, str]]]:
+    return {
+        "server_docs": _list_docs(root, "docs/server"),
+        "service_docs": _list_docs(root, "service"),
+    }
+
+
+def _render_docs_index_html(payload: dict[str, list[dict[str, str]]]) -> str:
+    def section(title: str, items: list[dict[str, str]]) -> str:
+        links = "\n".join(
+            f'<li><a href="{escape(item["url"])}">{escape(item["title"])}</a></li>' for item in items
+        ) or "<li>暂无文档</li>"
+        return f"<section><h2>{escape(title)}</h2><ul>{links}</ul></section>"
+
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HMN 文档中心</title>
+  <style>
+    body {{ margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f7; color: #1d1d1f; }}
+    main {{ max-width: 880px; margin: 0 auto; }}
+    h1 {{ font-size: 28px; margin: 0 0 8px; }}
+    p {{ color: #6e6e73; }}
+    section {{ background: white; border-radius: 18px; padding: 18px; margin: 16px 0; box-shadow: 0 8px 30px rgba(0,0,0,.06); }}
+    h2 {{ font-size: 18px; margin: 0 0 12px; }}
+    ul {{ list-style: none; padding: 0; margin: 0; }}
+    li {{ border-top: 1px solid #eee; }}
+    li:first-child {{ border-top: 0; }}
+    a {{ display: block; padding: 12px 0; color: #06c; text-decoration: none; word-break: break-all; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>HMN 文档中心</h1>
+    <p>实时读取 /srv/files 文档；只读浏览，不经过 file.misk.cc。</p>
+    {section("机器文档", payload["server_docs"])}
+    {section("服务文档", payload["service_docs"])}
+  </main>
+</body>
+</html>"""
+
+
+def _render_markdown_viewer(relative_path: str, content: str) -> str:
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HMN 文档 - {escape(relative_path)}</title>
+  <style>
+    body {{ margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f7; color: #1d1d1f; }}
+    main {{ max-width: 960px; margin: 0 auto; background: white; border-radius: 18px; padding: 18px; box-shadow: 0 8px 30px rgba(0,0,0,.06); }}
+    a {{ color: #06c; }}
+    pre {{ white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.55; }}
+  </style>
+</head>
+<body>
+  <main>
+    <p><a href="/hmn-web/docs">← 返回 HMN 文档中心</a></p>
+    <h1>HMN 文档</h1>
+    <p>{escape(relative_path)}</p>
+    <pre>{escape(content)}</pre>
+  </main>
+</body>
+</html>"""
+
+
 def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFAULT_DOCS_ROOT) -> FastAPI:
     app = FastAPI(title="Hermes Managed Network", version="0.2.0", docs_url="/api/docs", redoc_url="/api/redoc")
     app.add_middleware(
@@ -445,24 +534,22 @@ def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFA
             raise HTTPException(status_code=404, detail="docs file not found")
         return candidate
 
+    @app.get("/api/v1/hmn-web/docs/index")
+    def hmn_web_docs_index_api() -> dict[str, list[dict[str, str]]]:
+        return _docs_index_payload(docs_base)
+
     @app.get("/hmn-web/docs", response_class=HTMLResponse, include_in_schema=False)
     def hmn_web_docs_index() -> HTMLResponse:
-        markdown_files = sorted(docs_base.rglob("*.md")) if docs_base.exists() else []
-        links = "".join(
-            f'<li><a href="/hmn-web/docs/file/{escape(path.relative_to(docs_base).as_posix())}">{escape(path.relative_to(docs_base).as_posix())}</a></li>'
-            for path in markdown_files
-        )
-        body = (
-            "<!doctype html><html><head><meta charset='utf-8'><title>HMN 文档中心</title></head>"
-            "<body><h1>HMN 文档中心</h1><ul>"
-            f"{links}"
-            "</ul></body></html>"
-        )
-        return HTMLResponse(body)
+        return HTMLResponse(_render_docs_index_html(_docs_index_payload(docs_base)))
 
     @app.get("/hmn-web/docs/file/{doc_path:path}", include_in_schema=False)
     def hmn_web_docs_file(doc_path: str) -> FileResponse:
         return FileResponse(_docs_file(doc_path), media_type="text/markdown; charset=utf-8")
+
+    @app.get("/hmn-web/docs/view/{doc_path:path}", response_class=HTMLResponse, include_in_schema=False)
+    def hmn_web_docs_view(doc_path: str) -> HTMLResponse:
+        path = _docs_file(doc_path)
+        return HTMLResponse(_render_markdown_viewer(doc_path, path.read_text(encoding="utf-8")))
 
     @app.get("/api/v1/console/services", response_model=ConsoleServicesResponse)
     def console_services() -> ConsoleServicesResponse:
