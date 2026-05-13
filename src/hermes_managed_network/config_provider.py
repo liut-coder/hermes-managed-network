@@ -8,12 +8,14 @@ from .providers import redact_sensitive_data
 from .storage import ServiceRecord
 
 
+
 def _node_host(node: Node) -> str:
     if node.ssh_host:
         return node.ssh_host
     if node.addresses:
         return node.addresses[0]
     return node.hostname
+
 
 
 def _service_summary(service: ServiceRecord) -> dict[str, Any]:
@@ -34,16 +36,15 @@ def _service_summary(service: ServiceRecord) -> dict[str, Any]:
     }
 
 
+
 def plan_config_inventory_export(*, nodes: Iterable[Node], services: Iterable[ServiceRecord]) -> dict[str, Any]:
     node_list = sorted(list(nodes), key=lambda item: item.node_id)
     service_list = sorted(list(services), key=lambda item: item.service_id)
     service_ids_by_node: dict[str, list[str]] = defaultdict(list)
-    grouped_services: dict[str, list[ServiceRecord]] = defaultdict(list)
 
     for service in service_list:
         if service.node_id:
             service_ids_by_node[service.node_id].append(service.service_id)
-        grouped_services[service.service_id].append(service)
 
     inventory_by_node = {
         node.node_id: {
@@ -89,3 +90,66 @@ def plan_config_inventory_export(*, nodes: Iterable[Node], services: Iterable[Se
             "by_service": inventory_by_service,
         },
     }
+
+
+
+def plan_config_playbook_apply(
+    *,
+    playbook_name: str,
+    nodes: Iterable[Node],
+    services: Iterable[ServiceRecord],
+    limit_nodes: list[str] | None = None,
+    tags: list[str] | None = None,
+    extra_vars: list[str] | None = None,
+) -> dict[str, Any]:
+    inventory = plan_config_inventory_export(
+        nodes=_filter_nodes(nodes, limit_nodes=limit_nodes),
+        services=_filter_services(services, limit_nodes=limit_nodes),
+    )
+    return {
+        "provider_id": "config-provider",
+        "operation": "playbook_apply_request",
+        "intent": "dry_run_playbook_apply",
+        "dry_run": True,
+        "approval_required": True,
+        "risk": "high",
+        "playbook": {
+            "name": playbook_name,
+            "tags": list(tags or []),
+            "extra_vars": list(extra_vars or []),
+        },
+        "execution": {
+            "requested": False,
+            "not_executed": True,
+            "external_writes_blocked": True,
+        },
+        "inventory": {
+            "node_count": len(inventory["inventory"]["by_node"]),
+            "service_count": len(inventory["inventory"]["by_service"]),
+            "inventory": inventory["inventory"],
+        },
+        "provider_capabilities": {
+            "inventory_export": True,
+            "approval_gate": True,
+            "audit": True,
+            "external_execution_enabled": False,
+        },
+    }
+
+
+
+def _filter_nodes(nodes: Iterable[Node], *, limit_nodes: list[str] | None) -> list[Node]:
+    node_list = list(nodes)
+    if not limit_nodes:
+        return node_list
+    allowed = set(limit_nodes)
+    return [node for node in node_list if node.node_id in allowed]
+
+
+
+def _filter_services(services: Iterable[ServiceRecord], *, limit_nodes: list[str] | None) -> list[ServiceRecord]:
+    service_list = list(services)
+    if not limit_nodes:
+        return service_list
+    allowed = set(limit_nodes)
+    return [service for service in service_list if service.node_id in allowed]

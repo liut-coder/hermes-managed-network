@@ -145,3 +145,148 @@ def test_config_provider_inventory_plan_cli_reads_db_and_prints_json(tmp_path):
     assert payload["inventory"]["by_node"]["node-1"]["host"] == "node1.example.invalid"
     assert payload["inventory"]["by_service"]["svc_api"]["service"]["metadata"]["secret_token"] == "[REDACTED]"
     assert payload["inventory"]["by_service"]["svc_api"]["service"]["metadata"]["safe"] == "ok"
+
+
+
+def test_config_provider_playbook_apply_requires_approval_and_writes_audit_only(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node-apply",
+            fingerprint="fp-apply",
+            hostname="node-apply",
+            addresses=["10.0.0.2"],
+            trust_level="managed",
+            labels=["env:prod", "role:web"],
+            status="managed",
+            ssh_host="node-apply.example.invalid",
+            ssh_user="ops",
+            ssh_port=2222,
+        )
+    )
+    store.save_service_record(
+        ServiceRecord(
+            service_id="svc_web_apply",
+            name="Web Apply",
+            node_id="node-apply",
+            kind="docker",
+            runtime="compose",
+            domains=["apply.example.invalid"],
+            ports=[80],
+            source="manual",
+            status="active",
+            metadata={"safe": "ok", "token": "blocked"},
+        )
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "config-provider",
+            "playbook",
+            "apply",
+            "deploy-web.yml",
+            "--db",
+            str(db),
+            "--limit-node",
+            "node-apply",
+            "--tag",
+            "deploy",
+            "--extra-var",
+            "release=2026.05.13",
+            "--request-by",
+            "cron",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    approvals = SQLiteStore(db).list_approval_requests()
+    audit_events = SQLiteStore(db).list_audit_events()
+
+    assert payload["operation"] == "playbook_apply_request"
+    assert payload["provider_id"] == "config-provider"
+    assert payload["dry_run"] is True
+    assert payload["approval_required"] is True
+    assert payload["execution"]["not_executed"] is True
+    assert payload["execution"]["external_writes_blocked"] is True
+    assert payload["playbook"]["name"] == "deploy-web.yml"
+    assert payload["inventory"]["node_count"] == 1
+    assert payload["inventory"]["service_count"] == 1
+    assert payload["approval_id"].startswith("appr_")
+    assert len(approvals) == 1
+    assert approvals[0].action == "config_provider.playbook_apply"
+    assert approvals[0].risk == "high"
+    assert approvals[0].details["playbook"]["name"] == "deploy-web.yml"
+    assert approvals[0].details["execution"]["external_writes_blocked"] is True
+    assert any(event.action == "approval/request" for event in audit_events)
+
+
+
+def test_config_provider_playbook_apply_inventory_export_contains_redacted_hosts_and_targets(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node-a",
+            fingerprint="fp-a",
+            hostname="host-a",
+            addresses=["10.0.0.11"],
+            trust_level="managed",
+            labels=["role:web"],
+            status="managed",
+            ssh_host="host-a.example.invalid",
+            ssh_user="root",
+            ssh_port=22,
+        )
+    )
+    store.save_node(
+        Node(
+            node_id="node-b",
+            fingerprint="fp-b",
+            hostname="host-b",
+            addresses=["10.0.0.12"],
+            trust_level="managed",
+            labels=["role:worker"],
+            status="managed",
+            ssh_host="host-b.example.invalid",
+            ssh_user="ops",
+            ssh_port=2202,
+        )
+    )
+    store.save_service_record(
+        ServiceRecord(
+            service_id="svc_worker_b",
+            name="Worker B",
+            node_id="node-b",
+            kind="systemd",
+            runtime="systemd",
+            source="manual",
+            status="active",
+            metadata={"api_key": "very-secret", "safe": "ok"},
+        )
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "config-provider",
+            "playbook",
+            "apply",
+            "site.yml",
+            "--db",
+            str(db),
+            "--limit-node",
+            "node-b",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+
+    assert payload["inventory"]["node_count"] == 1
+    assert list(payload["inventory"]["inventory"]["by_node"].keys()) == ["node-b"]
+    assert list(payload["inventory"]["inventory"]["by_service"].keys()) == ["svc_worker_b"]
+    assert payload["inventory"]["inventory"]["by_service"]["svc_worker_b"]["service"]["metadata"]["api_key"] == "[REDACTED]"
+    assert payload["inventory"]["inventory"]["by_service"]["svc_worker_b"]["service"]["metadata"]["safe"] == "ok"

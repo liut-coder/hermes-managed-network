@@ -18,7 +18,7 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
-from .config_provider import plan_config_inventory_export
+from .config_provider import plan_config_inventory_export, plan_config_playbook_apply
 from .deploy import build_deploy_plan, build_deploy_status, render_deploy_plan_json, render_deploy_status_json
 from .discovery import discover_services_from_file
 from .docs_generate import load_registry_and_generate_docs
@@ -49,7 +49,7 @@ from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
 from .orchestrator import OrchestratorService
 from .playbook import Playbook
-from .backup_provider import render_backup_plan_json
+from .backup_provider import build_backup_apply_request, render_backup_plan_json
 from .migration import render_migration_plan_json
 from .onboarding import render_onboarding_plan_json
 from .restore import render_restore_plan_json
@@ -57,7 +57,7 @@ from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
 from .service_discovery import apply_discovered_services, discover_services_from_text, plan_discovered_services
-from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH
+from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH, ServiceRegistry
 from .service_registry_adapters import registry_from_storage_records
 from .storage import SQLiteStore, ServiceRecord
 from .uptime import build_uptime_plan, render_uptime_plan_json
@@ -153,6 +153,7 @@ uptime_app = typer.Typer(help="生成 Uptime Kuma dry-run 规划")
 deploy_app = typer.Typer(help="生成部署计划与状态聚合")
 config_provider_app = typer.Typer(help="生成 Config Provider dry-run 计划")
 config_provider_inventory_app = typer.Typer(help="生成 inventory export dry-run")
+config_provider_playbook_app = typer.Typer(help="生成 playbook 执行审批 dry-run")
 migration_app = typer.Typer(help="从 service registry 生成服务迁移 plan（dry-run）")
 restore_app = typer.Typer(help="从 service registry 生成服务级 restore plan（dry-run）")
 onboarding_app = typer.Typer(help="从 nodes inventory 生成 onboarding/capacity plan（dry-run）")
@@ -179,6 +180,7 @@ app.add_typer(uptime_app, name="uptime")
 app.add_typer(deploy_app, name="deploy")
 app.add_typer(config_provider_app, name="config-provider")
 config_provider_app.add_typer(config_provider_inventory_app, name="inventory")
+config_provider_app.add_typer(config_provider_playbook_app, name="playbook")
 app.add_typer(migration_app, name="migration")
 app.add_typer(restore_app, name="restore")
 app.add_typer(onboarding_app, name="onboarding")
@@ -639,6 +641,46 @@ def backup_service_plan_command(
         service_id=service_id,
         adapter=adapter,
     )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
+@backup_app.command("provider-apply")
+def backup_provider_apply_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    adapter: list[str] = typer.Option([], "--adapter", help="目标 backup adapter，可重复。"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    request_by: str = typer.Option("hmn", "--request-by", help="审批请求发起者。"),
+    as_json: bool = typer.Option(False, "--json", help="输出 backup provider apply dry-run JSON。"),
+) -> None:
+    registry = ServiceRegistry.load(service_registry)
+    payload = build_backup_apply_request(
+        registry,
+        service_id=service_id,
+        adapters=list(adapter),
+    )
+    approval = _store(db).create_approval_request(
+        subject_type="backup_provider",
+        subject_id=service_id or str(service_registry),
+        action="backup.apply",
+        risk="high",
+        requested_by=request_by,
+        details={
+            "provider": payload["provider"],
+            "tool_candidates": payload["tool_candidates"],
+            "service_count": payload["service_count"],
+            "execution": payload["execution"],
+        },
+    )
+    payload["approval_id"] = approval.approval_id
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     if as_json:
         typer.echo(rendered)
         return
@@ -2007,6 +2049,41 @@ def config_provider_inventory_plan(
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
     payload = plan_config_inventory_export(nodes=_store(db).list_nodes(), services=_store(db).list_service_records())
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+@config_provider_playbook_app.command("apply")
+def config_provider_playbook_apply(
+    playbook_name: str,
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    limit_node: list[str] = typer.Option([], "--limit-node", help="限制目标节点，可重复。"),
+    tag: list[str] = typer.Option([], "--tag", help="Ansible tag，可重复。"),
+    extra_var: list[str] = typer.Option([], "--extra-var", help="额外变量 KEY=VALUE，可重复。"),
+    request_by: str = typer.Option("hmn", "--request-by", help="审批请求发起者。"),
+) -> None:
+    store = _store(db)
+    payload = plan_config_playbook_apply(
+        playbook_name=playbook_name,
+        nodes=store.list_nodes(),
+        services=store.list_service_records(),
+        limit_nodes=list(limit_node),
+        tags=list(tag),
+        extra_vars=list(extra_var),
+    )
+    approval = store.create_approval_request(
+        subject_type="config_provider",
+        subject_id=playbook_name,
+        action="config_provider.playbook_apply",
+        risk="high",
+        requested_by=request_by,
+        details={
+            "playbook": payload["playbook"],
+            "inventory": payload["inventory"],
+            "execution": payload["execution"],
+            "provider_id": payload["provider_id"],
+        },
+    )
+    payload["approval_id"] = approval.approval_id
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 

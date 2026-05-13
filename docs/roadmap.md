@@ -149,8 +149,8 @@
 - [x] Deployment Provider：优先接入 Coolify，支持同步 apps、读取部署状态、触发 deploy、触发 rollback，并映射到 HMN service registry。（阶段性完成：`hmn deploy plan/status` 聚合 dry-run/fixture 状态；真实 deploy/rollback 继续受 approval 约束）
 - [x] CI Provider：优先接入 GitHub Actions，支持读取 workflow/check 状态、触发 `workflow_dispatch`，HMN 不直接承担 build runner。（阶段性完成：部署状态聚合预留 CI provider 输出入口）
 - [x] Monitor Provider：接入 Uptime Kuma，基于 service registry upsert monitor、状态页分组和服务健康状态。（已完成 `hmn uptime plan/sync`：sync 只创建 approval，审批前不写 Uptime Kuma）
-- [>] Backup Provider：后台实现中（worktree `/tmp/hmn-provider-control-plane`），完成后回填。
-- [>] Config Provider：后台实现中（worktree `/tmp/hmn-provider-control-plane`），完成后回填。
+- [x] Backup Provider：接入 restic / borgmatic / Kopia，HMN 管策略、审批、审计、verify 和恢复文档，底层备份交给成熟工具。（已落地 `hmn backup service-plan/provider-apply`：按 service registry 生成 restic/borgmatic/Kopia dry-run 计划，provider-apply 仅创建 approval/audit，不触达真实备份工具）
+- [x] Config Provider：接入 Ansible/AWX，HMN 导出 inventory、审批 playbook、记录执行结果和 audit。（已落地 `hmn config-provider inventory plan` 与 `hmn config-provider playbook apply`：导出脱敏 inventory，playbook apply 仅生成审批请求和 audit，默认不调用真实 Ansible/AWX）
 - [x] Docs Provider：保持文档中心落地，统一生成机器、服务、域名、Runbook、部署/恢复/迁移文档。（已完成 docs generate / docs-sync plan/apply，apply 只创建 approval，审批前不写 docs-center）
 
 ### 服务自动发现与状态页同步

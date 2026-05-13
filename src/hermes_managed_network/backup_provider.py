@@ -19,6 +19,7 @@ ADAPTER_ALIASES = {
 }
 
 
+
 def build_backup_plan_from_path(
     path: Path = DEFAULT_SERVICE_REGISTRY_PATH,
     *,
@@ -29,6 +30,7 @@ def build_backup_plan_from_path(
     return build_backup_plan(registry, service_id=service_id, adapter=adapter)
 
 
+
 def render_backup_plan_json(
     path: Path = DEFAULT_SERVICE_REGISTRY_PATH,
     *,
@@ -37,6 +39,7 @@ def render_backup_plan_json(
 ) -> str:
     payload = build_backup_plan_from_path(path, service_id=service_id, adapter=adapter)
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
 
 
 def build_backup_plan(
@@ -64,11 +67,52 @@ def build_backup_plan(
     )
 
 
+
+def build_backup_apply_request(
+    registry: ServiceRegistry,
+    *,
+    service_id: str | None = None,
+    adapters: list[str] | None = None,
+) -> dict[str, object]:
+    normalized_adapters = _normalize_adapters(adapters)
+    filtered = registry.list_services()
+    if service_id is not None:
+        filtered = [service for service in filtered if service.service_id == service_id]
+    if normalized_adapters:
+        filtered = [service for service in filtered if _service_adapter(service) in normalized_adapters]
+    payload_services = [_service_backup_payload(service) for service in filtered if _service_adapter(service) is not None]
+    return _sanitize_value(
+        {
+            "mode": "apply_request",
+            "provider": "backup-provider",
+            "dry_run": True,
+            "approval_required": True,
+            "risk": "high",
+            "service_count": len(payload_services),
+            "service_id": service_id,
+            "tool_candidates": normalized_adapters or sorted({_service_adapter(service) for service in filtered if _service_adapter(service)}),
+            "provider_capabilities": {
+                "verify": True,
+                "restore_docs": True,
+                "external_execution_enabled": False,
+            },
+            "execution": {
+                "requested": False,
+                "not_executed": True,
+                "external_writes_blocked": True,
+            },
+            "services": payload_services,
+        }
+    )
+
+
+
 def _registry_source(registry: ServiceRegistry) -> str:
     services = registry.list_services()
     if not services:
         return "service-registry"
     return str(services[0].source or "service-registry")
+
 
 
 def _select_services(
@@ -83,6 +127,7 @@ def _select_services(
     if adapter is not None:
         services = [service for service in services if _service_adapter(service) == adapter]
     return services
+
 
 
 def _service_backup_payload(service: ServiceRecord) -> dict[str, object]:
@@ -119,6 +164,7 @@ def _service_backup_payload(service: ServiceRecord) -> dict[str, object]:
     }
 
 
+
 def _backup_metadata(service: ServiceRecord) -> dict[str, object]:
     monitor = service.monitor if isinstance(service.monitor, dict) else {}
     backup = monitor.get("backup")
@@ -127,8 +173,10 @@ def _backup_metadata(service: ServiceRecord) -> dict[str, object]:
     return {}
 
 
+
 def _service_adapter(service: ServiceRecord) -> str | None:
     return _normalize_adapter(_backup_metadata(service).get("adapter"))
+
 
 
 def _normalize_adapter(adapter: object) -> str | None:
@@ -137,10 +185,22 @@ def _normalize_adapter(adapter: object) -> str | None:
     return ADAPTER_ALIASES.get(adapter.strip().lower())
 
 
+
+def _normalize_adapters(adapters: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for adapter in adapters or []:
+        value = _normalize_adapter(adapter)
+        if value is not None and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+
 def _redacted_repository(backup: dict[str, object]) -> str | None:
     if backup.get("repository") or backup.get("target"):
         return "[REDACTED]"
     return None
+
 
 
 def _string_list(value: object) -> list[str]:
@@ -151,16 +211,19 @@ def _string_list(value: object) -> list[str]:
     return [str(value)]
 
 
+
 def _dict_value(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return {str(key): item for key, item in value.items()}
     return {}
 
 
+
 def _string_value(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
 
 
 def _verify_plan(verify: object, checksum: object) -> dict[str, object]:
