@@ -6,6 +6,7 @@ ENV_FILE="${HMN_ENV_FILE:-$HMN_DIR/node.env}"
 : "${HMN_ENABLE_EXEC:=0}"
 : "${HMN_WORKER_MODE:=worker}"
 : "${HMN_BEACON_ONLY:=0}"
+: "${HMN_TASK_TIMEOUT_SEC:=0}"
 HMN_WORKER_PROTOCOL_VERSION="${HMN_WORKER_PROTOCOL_VERSION:-0.1}"
 
 if [ ! -r "$ENV_FILE" ]; then
@@ -221,7 +222,7 @@ run_once() {
   if is_beacon_only; then
     exit 0
   fi
-  local response task_id command risk signature stdout_file stderr_file exit_code
+  local response task_id command risk signature stdout_file stderr_file exit_code timeout_cmd timeout_status
   response="$(poll_task)"
   task_id="$(printf '%s' "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("task_id", ""))')"
   [ -z "$task_id" ] && exit 0
@@ -244,8 +245,17 @@ run_once() {
   fi
   stdout_file="$(mktemp)"; stderr_file="$(mktemp)"
   set +e
-  bash -lc "$command" >"$stdout_file" 2>"$stderr_file"
-  exit_code=$?
+  if [ "${HMN_TASK_TIMEOUT_SEC:-0}" != "0" ] && command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=(timeout --kill-after=5s "${HMN_TASK_TIMEOUT_SEC}" bash -lc "$command")
+    "${timeout_cmd[@]}" >"$stdout_file" 2>"$stderr_file"
+    exit_code=$?
+    if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
+      printf '%s\n' "hmn worker timeout after ${HMN_TASK_TIMEOUT_SEC}s" >>"$stderr_file"
+    fi
+  else
+    bash -lc "$command" >"$stdout_file" 2>"$stderr_file"
+    exit_code=$?
+  fi
   set -e
   submit_result "$task_id" "$exit_code" "$(cat "$stdout_file")" "$(cat "$stderr_file")"
   rm -f "$stdout_file" "$stderr_file"
