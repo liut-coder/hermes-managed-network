@@ -245,6 +245,78 @@ def _fact_number(facts: dict[str, Any], *keys: str, default: int | float = 0) ->
     return default
 
 
+def _percent(used: int | float, total: int | float) -> int:
+    if not total:
+        return 0
+    return round(max(0, min(100, (used / total) * 100)))
+
+
+def _memory_percent(facts: dict[str, Any]) -> int | float:
+    value = _fact_number(facts, "memory_percent")
+    if value:
+        return value
+    memory = facts.get("memory")
+    if isinstance(memory, dict):
+        total = memory.get("total_kb") or memory.get("total_bytes")
+        available = memory.get("available_kb") or memory.get("free_kb") or memory.get("available_bytes")
+        if isinstance(total, (int, float)) and isinstance(available, (int, float)):
+            return _percent(total - available, total)
+    return _fact_number(facts, "memory", default=0)
+
+
+def _disk_percent(facts: dict[str, Any]) -> int | float:
+    value = _fact_number(facts, "disk_percent")
+    if value:
+        return value
+    disk = facts.get("disk")
+    if isinstance(disk, dict):
+        used = disk.get("used_bytes")
+        total = disk.get("total_bytes")
+        if isinstance(used, (int, float)) and isinstance(total, (int, float)):
+            return _percent(used, total)
+    return _fact_number(facts, "disk", default=0)
+
+
+def _load_value(facts: dict[str, Any]) -> int | float:
+    value = facts.get("load_average") or facts.get("load")
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, dict):
+        for key in ("1m", "1", "one"):
+            item = value.get(key)
+            try:
+                return round(float(item), 2)
+            except (TypeError, ValueError):
+                pass
+    return 0
+
+
+def _uptime_text(facts: dict[str, Any]) -> str:
+    value = facts.get("uptime")
+    if isinstance(value, dict) and isinstance(value.get("seconds"), (int, float)):
+        seconds = int(value["seconds"])
+    elif isinstance(value, (int, float)):
+        seconds = int(value)
+    elif isinstance(value, str):
+        return value
+    else:
+        return "-"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _os_text(facts: dict[str, Any]) -> str:
+    capabilities = facts.get("capabilities")
+    os_family = capabilities.get("os_family") if isinstance(capabilities, dict) else None
+    return str(facts.get("os") or facts.get("platform") or os_family or "unknown")
+
+
 def _console_node_response(store: SQLiteStore, node) -> ConsoleNodeResponse:
     event = _latest_heartbeat_event(store, node.node_id)
     facts = event.details.get("facts", {}) if event else {}
@@ -267,12 +339,12 @@ def _console_node_response(store: SQLiteStore, node) -> ConsoleNodeResponse:
         trust=node.trust_level,
         role=(node.labels[0] if node.labels else "node"),
         ip=(node.network_ip or (node.addresses[0] if node.addresses else "-")),
-        os=str(facts.get("os") or facts.get("platform") or "unknown"),
-        uptime=str(facts.get("uptime") or "-"),
+        os=_os_text(facts),
+        uptime=_uptime_text(facts),
         cpu=_fact_number(facts, "cpu_percent", "cpu"),
-        memory=_fact_number(facts, "memory_percent", "memory"),
-        disk=_fact_number(facts, "disk_percent", "disk"),
-        load=_fact_number(facts, "load_average", "load"),
+        memory=_memory_percent(facts),
+        disk=_disk_percent(facts),
+        load=_load_value(facts),
         hb=_heartbeat_label(age_seconds),
         exec=bool(facts.get("exec_enabled") or "task" in node.permission_bundles),
     )

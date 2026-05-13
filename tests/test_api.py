@@ -223,6 +223,55 @@ def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
     assert data["approvals"][0]["status"] == "pending"
 
 
+def test_console_summary_maps_nested_worker_heartbeat_facts(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_nested_facts",
+            fingerprint="sha256:nested",
+            hostname="nested-node",
+            addresses=["100.64.0.12"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_nested_facts",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "capabilities": {"os_family": "linux"},
+                "uptime": {"seconds": 93780},
+                "load_average": {"1m": "0.12", "5m": "0.08", "15m": "0.05"},
+                "memory": {"total_kb": 1000, "available_kb": 400, "free_kb": 200},
+                "disk": {"path": "/", "total_bytes": 1000, "used_bytes": 420, "free_bytes": 580},
+                "exec_enabled": False,
+            },
+        },
+    )
+    client = TestClient(create_app(db))
+
+    response = client.get("/api/v1/console/summary")
+
+    assert response.status_code == 200
+    node = response.json()["nodes"][0]
+    assert node["os"] == "linux"
+    assert node["uptime"] == "1d 2h"
+    assert node["memory"] == 60
+    assert node["disk"] == 42
+    assert node["load"] == 0.12
+    assert node["exec"] is False
+
+
 def test_console_services_endpoint_returns_db_service_record_summaries(tmp_path):
     db = tmp_path / "hmn.db"
     SQLiteStore(db).save_service_record(
