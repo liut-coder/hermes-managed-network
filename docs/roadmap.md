@@ -91,7 +91,7 @@
 - [x] reverse-proxy 内置组件 MVP
 - [x] forwarder 内置组件 MVP
 - [x] monitor 内置组件 MVP（facts 收集、threshold 判定）
-- [x] monitor heartbeat 闭环：`hmn monitor health / scan / snapshot` 基于心跳事件评估节点健康，自动记录 MonitorSnapshot，支持 stale/timeout/stale_heartbeat/missing/critical 分级
+- [x] monitor heartbeat 闭环：`hmn monitor run-once / status / report` 基于心跳事件评估节点健康，自动记录 MonitorSnapshot，支持 fresh/stale/timeout/missing/worker_protocol_incompatible 分级
 - [x] headscale-server 内置组件 manifest（安装/verify playbook 后续补齐）
 - [x] backup / docs-sync 组件 manifest（先完成组件注册、配置 schema、driver 边界和健康检查声明；真实驱动闭环后续补齐）
 
