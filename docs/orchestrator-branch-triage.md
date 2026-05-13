@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 06:55 EDT
+## Latest cron reconciliation — 2026-05-13 07:28 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -134,7 +134,7 @@ Observed branch state:
   - `hmn-task-provider-contract`
   - `hmn-task20-config-provider`
 
-Manual priority branch probes found the old local task branches (`hmn-task12-coolify`, `hmn-config-provider-merge-check`, `hmn-docs-center-apply`, `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, `hmn-task19-onboarding-plan`) still absent locally and on origin.
+Manual priority branch probes from the latest cleanup pass still apply: the old local task branches (`hmn-task12-coolify`, `hmn-config-provider-merge-check`, `hmn-docs-center-apply`, `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, `hmn-task19-onboarding-plan`) are absent locally and on origin.
 
 The remaining priority remote heads are still not literal ancestors, but remain cleanup-only by task-specific diff:
 
@@ -144,8 +144,8 @@ The remaining priority remote heads are still not literal ancestors, but remain 
 
 Cron state:
 
-- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 07:23 EDT.
-- Older duplicate HMN orchestrator jobs remain paused: `a664a1c7cc73`, `b2f723639ca7`.
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 07:58 EDT.
+- No active duplicate HMN merge-first cron was observed in the live cron list.
 
 Untracked generated artifacts observed again in the working tree:
 
