@@ -11,7 +11,7 @@ Hermes Managed Network 是一个安全 Agent 运维托管控制面。
 Telegram / Web Console / API
 
 控制面
-Hermes Master / Approval / Audit / Inventory / Scheduler
+Hermes Master / Approval / Audit / Inventory / Scheduler / Orchestrator
 
 网络与身份层
 Headscale / Tailscale / ACL / Node Identity
@@ -35,6 +35,31 @@ Hermes Master 负责：
 - 维护节点清单
 - 同步机器 / 服务 / 域名文档
 
+## Orchestrator 全自动托管统筹
+
+Orchestrator 是 HMN 面向“长期全自动托管”的主控循环。它不替代 Approval、Worker 或 Provider，而是把任务拆分、分发、巡检、合并和汇报沉淀成可审计机制。
+
+职责：
+
+- 维护托管任务队列、worker registry、assignment、lease 和 progress report。
+- 默认每 30 分钟执行一轮 `tick`：检查任务进度、worker 状态、git/worktree 状态和测试结果。
+- 把低风险开发/运维任务分发给备用 Hermes worker、第二 Hermes 或其他 Agent worker。
+- 默认通过 worker / bridge / webhook / queue 通信；raw SSH 只作为 fallback。
+- 并行写代码时为每个 worker 使用隔离 worktree，由 Orchestrator 负责验收、合并和解决冲突。
+- 汇报给 Telegram / API / docs center，报告必须简短、可追溯、不含敏感凭据。
+
+安全边界：
+
+- 低风险代码、测试、文档和 feature branch 提交可自动推进。
+- 生产写入、真实外部 provider 变更、凭据/token、删除或覆盖生产数据、生产部署、合并 main 必须进入 approval。
+- worker/bridge 临时失败时先重试和查状态；连续多次无法取得有用状态后才暂停自动化。
+
+建议命令形态：
+
+- `hmn orchestrator tick`：执行单轮统筹，可由 systemd timer / cron 每 30 分钟调用。
+- `hmn orchestrator status`：查看队列、worker、assignment、最近汇报和阻塞点。
+- `hmn orchestrator enqueue`：把路线图任务或临时任务加入托管队列。
+- `hmn orchestrator report`：生成 Telegram/API 友好的进度汇报。
 
 ## Network Provider
 

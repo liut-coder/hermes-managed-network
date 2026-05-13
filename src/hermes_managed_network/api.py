@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 from uuid import uuid4
 
 import hermes_managed_network
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Any
 
@@ -14,8 +18,10 @@ from .approval_telegram_flow import handle_telegram_approval_callback
 from .network_acl import dispatch_approved_network_acl_apply
 from .network_base import NetworkProviderError
 from .version import current_version_info, is_worker_compatible
+from .web_console import register_web_console
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
+DEFAULT_DOCS_ROOT = Path("/srv/files")
 
 
 class JoinRequest(BaseModel):
@@ -23,6 +29,7 @@ class JoinRequest(BaseModel):
     fingerprint: str
     hostname: str
     addresses: list[str] = Field(default_factory=list)
+    auto_confirm: bool = True
 
 
 class JoinResponse(BaseModel):
@@ -59,6 +66,79 @@ class VersionResponse(BaseModel):
     package_version: str
     api_version: str
     worker_protocol_version: str
+
+
+class ConsoleNodeResponse(BaseModel):
+    id: str
+    name: str
+    status: str
+    live: str
+    trust: str
+    role: str
+    ip: str
+    os: str
+    uptime: str
+    cpu: int | float
+    memory: int | float
+    disk: int | float
+    load: int | float
+    hb: str
+    exec: bool
+
+
+class ConsoleTaskResponse(BaseModel):
+    id: str
+    node_id: str
+    node_name: str
+    command: str
+    risk: str
+    status: str
+    created_by: str
+    created_at: str
+
+
+class ConsoleApprovalResponse(BaseModel):
+    id: str
+    subject_type: str
+    subject_id: str
+    action: str
+    risk: str
+    status: str
+    requested_by: str
+    created_at: str
+
+
+class ConsoleMetricsResponse(BaseModel):
+    online_nodes: int
+    total_nodes: int
+    managed_nodes: int
+    pending_nodes: int
+    pending_approvals: int
+    running_tasks: int
+
+
+class ConsoleServiceResponse(BaseModel):
+    service_id: str
+    name: str
+    node_id: str
+    kind: str
+    domains: list[str]
+    ports: list[int]
+    status: str
+    monitor_enabled: bool
+    docs_path: str
+    source: str
+
+
+class ConsoleServicesResponse(BaseModel):
+    services: list[ConsoleServiceResponse]
+
+
+class ConsoleSummaryResponse(BaseModel):
+    metrics: ConsoleMetricsResponse
+    nodes: list[ConsoleNodeResponse]
+    tasks: list[ConsoleTaskResponse]
+    approvals: list[ConsoleApprovalResponse]
 
 
 class NodeAuthRequest(BaseModel):
@@ -136,6 +216,141 @@ class TelegramCallbackResponse(BaseModel):
     dispatched_task_id: str | None = None
 
 
+def _iso(value: object) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _latest_heartbeat_event(store: SQLiteStore, node_id: str):
+    for event in reversed(store.list_audit_events()):
+        if event.event_type == "node" and event.subject_id == node_id and event.action == "heartbeat":
+            return event
+    return None
+
+
+def _heartbeat_label(age_seconds: int | None) -> str:
+    if age_seconds is None:
+        return "无"
+    if age_seconds < 60:
+        return "刚刚"
+    if age_seconds < 3600:
+        return f"{age_seconds // 60} 分钟前"
+    return f"{age_seconds // 3600} 小时前"
+
+
+def _fact_number(facts: dict[str, Any], *keys: str, default: int | float = 0) -> int | float:
+    for key in keys:
+        value = facts.get(key)
+        if isinstance(value, (int, float)):
+            return value
+    return default
+
+
+def _percent(used: int | float, total: int | float) -> int:
+    if not total:
+        return 0
+    return round(max(0, min(100, (used / total) * 100)))
+
+
+def _memory_percent(facts: dict[str, Any]) -> int | float:
+    value = _fact_number(facts, "memory_percent")
+    if value:
+        return value
+    memory = facts.get("memory")
+    if isinstance(memory, dict):
+        total = memory.get("total_kb") or memory.get("total_bytes")
+        available = memory.get("available_kb") or memory.get("free_kb") or memory.get("available_bytes")
+        if isinstance(total, (int, float)) and isinstance(available, (int, float)):
+            return _percent(total - available, total)
+    return _fact_number(facts, "memory", default=0)
+
+
+def _disk_percent(facts: dict[str, Any]) -> int | float:
+    value = _fact_number(facts, "disk_percent")
+    if value:
+        return value
+    disk = facts.get("disk")
+    if isinstance(disk, dict):
+        used = disk.get("used_bytes")
+        total = disk.get("total_bytes")
+        if isinstance(used, (int, float)) and isinstance(total, (int, float)):
+            return _percent(used, total)
+    return _fact_number(facts, "disk", default=0)
+
+
+def _load_value(facts: dict[str, Any]) -> int | float:
+    value = facts.get("load_average") or facts.get("load")
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, dict):
+        for key in ("1m", "1", "one"):
+            item = value.get(key)
+            try:
+                return round(float(item), 2)
+            except (TypeError, ValueError):
+                pass
+    return 0
+
+
+def _uptime_text(facts: dict[str, Any]) -> str:
+    value = facts.get("uptime")
+    if isinstance(value, dict) and isinstance(value.get("seconds"), (int, float)):
+        seconds = int(value["seconds"])
+    elif isinstance(value, (int, float)):
+        seconds = int(value)
+    elif isinstance(value, str):
+        return value
+    else:
+        return "-"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _os_text(facts: dict[str, Any]) -> str:
+    capabilities = facts.get("capabilities")
+    os_family = capabilities.get("os_family") if isinstance(capabilities, dict) else None
+    return str(facts.get("os") or facts.get("platform") or os_family or "unknown")
+
+
+def _console_node_response(store: SQLiteStore, node) -> ConsoleNodeResponse:
+    event = _latest_heartbeat_event(store, node.node_id)
+    facts = event.details.get("facts", {}) if event else {}
+    facts = facts if isinstance(facts, dict) else {}
+    now = datetime.now(timezone.utc)
+    age_seconds = int((now - event.created_at).total_seconds()) if event else None
+    if node.status == "pending":
+        live = "unknown"
+    elif event is not None and event.outcome == "ok" and age_seconds is not None and age_seconds <= 300:
+        live = "online"
+    elif event is not None and age_seconds is not None and age_seconds <= 900:
+        live = "stale"
+    else:
+        live = "offline"
+    return ConsoleNodeResponse(
+        id=node.node_id,
+        name=node.hostname,
+        status=node.status,
+        live=live,
+        trust=node.trust_level,
+        role=(node.labels[0] if node.labels else "node"),
+        ip=(node.network_ip or (node.addresses[0] if node.addresses else "-")),
+        os=_os_text(facts),
+        uptime=_uptime_text(facts),
+        cpu=_fact_number(facts, "cpu_percent", "cpu"),
+        memory=_memory_percent(facts),
+        disk=_disk_percent(facts),
+        load=_load_value(facts),
+        hb=_heartbeat_label(age_seconds),
+        exec=bool(facts.get("exec_enabled") or "task" in node.permission_bundles),
+    )
+
+
+
 def _notification_response(notification: Notification) -> NotificationResponse:
     return NotificationResponse(
         notification_id=notification.notification_id,
@@ -147,9 +362,106 @@ def _notification_response(notification: Notification) -> NotificationResponse:
     )
 
 
-def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
-    app = FastAPI(title="Hermes Managed Network", version="0.2.0")
+def _list_docs(root: Path, subdir: str) -> list[dict[str, str]]:
+    base = root / subdir
+    if not base.exists():
+        return []
+    items: list[dict[str, str]] = []
+    for path in sorted(base.rglob("*.md")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        title = path.relative_to(base).as_posix()
+        items.append(
+            {
+                "title": title,
+                "path": relative,
+                "url": f"/hmn-web/docs/file/{relative}",
+            }
+        )
+    return items
+
+
+def _docs_index_payload(root: Path) -> dict[str, list[dict[str, str]]]:
+    return {
+        "server_docs": _list_docs(root, "docs/server"),
+        "service_docs": _list_docs(root, "service"),
+    }
+
+
+def _render_docs_index_html(payload: dict[str, list[dict[str, str]]]) -> str:
+    def section(title: str, items: list[dict[str, str]]) -> str:
+        links = "\n".join(
+            f'<li><a href="{escape(item["url"])}">{escape(item["title"])}</a></li>' for item in items
+        ) or "<li>暂无文档</li>"
+        return f"<section><h2>{escape(title)}</h2><ul>{links}</ul></section>"
+
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HMN 文档中心</title>
+  <style>
+    body {{ margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f7; color: #1d1d1f; }}
+    main {{ max-width: 880px; margin: 0 auto; }}
+    h1 {{ font-size: 28px; margin: 0 0 8px; }}
+    p {{ color: #6e6e73; }}
+    section {{ background: white; border-radius: 18px; padding: 18px; margin: 16px 0; box-shadow: 0 8px 30px rgba(0,0,0,.06); }}
+    h2 {{ font-size: 18px; margin: 0 0 12px; }}
+    ul {{ list-style: none; padding: 0; margin: 0; }}
+    li {{ border-top: 1px solid #eee; }}
+    li:first-child {{ border-top: 0; }}
+    a {{ display: block; padding: 12px 0; color: #06c; text-decoration: none; word-break: break-all; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>HMN 文档中心</h1>
+    <p>实时读取 /srv/files 文档；只读浏览，不经过 file.misk.cc。</p>
+    {section("机器文档", payload["server_docs"])}
+    {section("服务文档", payload["service_docs"])}
+  </main>
+</body>
+</html>"""
+
+
+def _render_markdown_viewer(relative_path: str, content: str) -> str:
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HMN 文档 - {escape(relative_path)}</title>
+  <style>
+    body {{ margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f7; color: #1d1d1f; }}
+    main {{ max-width: 960px; margin: 0 auto; background: white; border-radius: 18px; padding: 18px; box-shadow: 0 8px 30px rgba(0,0,0,.06); }}
+    a {{ color: #06c; }}
+    pre {{ white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.55; }}
+  </style>
+</head>
+<body>
+  <main>
+    <p><a href="/hmn-web/docs">← 返回 HMN 文档中心</a></p>
+    <h1>HMN 文档</h1>
+    <p>{escape(relative_path)}</p>
+    <pre>{escape(content)}</pre>
+  </main>
+</body>
+</html>"""
+
+
+def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFAULT_DOCS_ROOT) -> FastAPI:
+    app = FastAPI(title="Hermes Managed Network", version="0.2.0", docs_url="/api/docs", redoc_url="/api/redoc")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     store = SQLiteStore(db_path)
+    docs_base = Path(docs_root).expanduser().resolve()
+    register_web_console(app, store, docs_base)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -164,11 +476,100 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             worker_protocol_version=info.worker_protocol_version,
         )
 
+    @app.get("/api/v1/console/summary", response_model=ConsoleSummaryResponse)
+    def console_summary() -> ConsoleSummaryResponse:
+        nodes = [_console_node_response(store, node) for node in store.list_nodes()]
+        tasks = store.list_tasks()[:8]
+        approvals = store.list_approval_requests()[:8]
+        node_names = {node.id: node.name for node in nodes}
+        return ConsoleSummaryResponse(
+            metrics=ConsoleMetricsResponse(
+                online_nodes=sum(1 for node in nodes if node.live == "online"),
+                total_nodes=len(nodes),
+                managed_nodes=sum(1 for node in nodes if node.status == "managed"),
+                pending_nodes=sum(1 for node in nodes if node.status == "pending"),
+                pending_approvals=sum(1 for approval in approvals if approval.status == "pending"),
+                running_tasks=sum(1 for task in tasks if task.status == "running"),
+            ),
+            nodes=nodes,
+            tasks=[
+                ConsoleTaskResponse(
+                    id=task.task_id,
+                    node_id=task.node_id,
+                    node_name=node_names.get(task.node_id, task.node_id),
+                    command=task.command,
+                    risk=task.risk,
+                    status=task.status,
+                    created_by=task.created_by,
+                    created_at=_iso(task.created_at),
+                )
+                for task in tasks
+            ],
+            approvals=[
+                ConsoleApprovalResponse(
+                    id=approval.approval_id,
+                    subject_type=approval.subject_type,
+                    subject_id=approval.subject_id,
+                    action=approval.action,
+                    risk=approval.risk,
+                    status=approval.status,
+                    requested_by=approval.requested_by,
+                    created_at=_iso(approval.created_at),
+                )
+                for approval in approvals
+            ],
+        )
+
     def _asset_script(name: str) -> Response:
         script_path = Path(hermes_managed_network.__file__).resolve().parent / "assets" / name
         if not script_path.exists():
             raise HTTPException(status_code=404, detail=f"{name} not found")
         return Response(script_path.read_text(), media_type="text/x-shellscript")
+
+    def _docs_file(path: str) -> Path:
+        candidate = (docs_base / path).resolve()
+        if docs_base not in candidate.parents and candidate != docs_base:
+            raise HTTPException(status_code=400, detail="invalid docs path")
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail="docs file not found")
+        return candidate
+
+    @app.get("/api/v1/hmn-web/docs/index")
+    def hmn_web_docs_index_api() -> dict[str, list[dict[str, str]]]:
+        return _docs_index_payload(docs_base)
+
+    @app.get("/hmn-web/docs", response_class=HTMLResponse, include_in_schema=False)
+    def hmn_web_docs_index() -> HTMLResponse:
+        return HTMLResponse(_render_docs_index_html(_docs_index_payload(docs_base)))
+
+    @app.get("/hmn-web/docs/file/{doc_path:path}", include_in_schema=False)
+    def hmn_web_docs_file(doc_path: str) -> FileResponse:
+        return FileResponse(_docs_file(doc_path), media_type="text/markdown; charset=utf-8")
+
+    @app.get("/hmn-web/docs/view/{doc_path:path}", response_class=HTMLResponse, include_in_schema=False)
+    def hmn_web_docs_view(doc_path: str) -> HTMLResponse:
+        path = _docs_file(doc_path)
+        return HTMLResponse(_render_markdown_viewer(doc_path, path.read_text(encoding="utf-8")))
+
+    @app.get("/api/v1/console/services", response_model=ConsoleServicesResponse)
+    def console_services() -> ConsoleServicesResponse:
+        return ConsoleServicesResponse(
+            services=[
+                ConsoleServiceResponse(
+                    service_id=service.service_id,
+                    name=service.name,
+                    node_id=service.node_id,
+                    kind=service.kind,
+                    domains=list(service.domains),
+                    ports=list(service.ports),
+                    status=service.status,
+                    monitor_enabled=service.monitor_enabled,
+                    docs_path=service.docs_path,
+                    source=service.source,
+                )
+                for service in store.list_service_records()
+            ]
+        )
 
     @app.get("/scripts/join.sh", include_in_schema=False)
     def join_script() -> Response:
@@ -202,6 +603,12 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             trust_level=consumed.trust_level,
             labels=consumed.labels,
         )
+        permission_bundles: list[str] = []
+        if request.auto_confirm:
+            permission_bundles = ["observe", "task"]
+            node.status = "managed"
+            node.permission_bundles = permission_bundles
+            store.save_node(node)
         store.record_audit(
             event_type="node",
             subject_type="node",
@@ -213,6 +620,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
                 "addresses": node.addresses,
                 "trust_level": node.trust_level,
                 "labels": node.labels,
+                "auto_confirm": request.auto_confirm,
+                "permission_bundles": permission_bundles,
             },
         )
         return JoinResponse(
@@ -280,7 +689,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         if not is_worker_compatible(current_version_info().worker_protocol_version, request.worker_protocol_version):
             raise HTTPException(status_code=426, detail="worker protocol version mismatch; update node worker")
-        task = store.next_pending_task(node_id, executor="worker")
+        store.expire_stuck_tasks()
+        task = store.claim_next_task(node_id, executor="worker")
         if task is None:
             return NoTaskResponse(task=None)
         return TaskResponse(
@@ -310,6 +720,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         if node.fingerprint != request.fingerprint:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         updated = store.complete_task(task_id, exit_code=request.exit_code, stdout=request.stdout, stderr=request.stderr)
+        if updated is None:
+            raise HTTPException(status_code=409, detail="task is already terminal")
         return TaskResultResponse(task_id=updated.task_id, status=updated.status)
 
     def _resolve_approval(

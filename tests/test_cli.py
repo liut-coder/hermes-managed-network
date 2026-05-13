@@ -93,12 +93,38 @@ def test_top_help_and_menu_show_monitor_and_backup_commands():
     assert "hmn backup run" in help_result.stdout
     assert "hmn backup verify" in help_result.stdout
     assert "hmn backup status" in help_result.stdout
+    assert "hmn task recover-stuck" in help_result.stdout
     assert menu_result.exit_code == 0
+    assert "hmn task recover-stuck" in menu_result.stdout
     assert "hmn monitor status" in menu_result.stdout
     assert "hmn backup plan" in menu_result.stdout
     assert "hmn backup run" in menu_result.stdout
     assert "hmn backup verify" in menu_result.stdout
     assert "hmn backup status" in menu_result.stdout
+
+def test_task_recover_stuck_cli_expires_old_running_tasks(tmp_path):
+    from datetime import datetime, timezone
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_recover"))
+    task = store.create_task(node_id="node_recover", command="slow")
+    store.claim_next_task("node_recover", lease_seconds=900)
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET lease_expires_at = ? WHERE task_id = ?",
+            (datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc).isoformat(), task.task_id),
+        )
+
+    result = runner.invoke(app, ["task", "recover-stuck", "--older-than", "1", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "expired count: 1" in result.stdout
+    assert task.task_id in result.stdout
+    assert SQLiteStore(db).load_task(task.task_id).status == "failed"
+
+
 
 def test_cli_can_create_and_revoke_token(tmp_path):
     runner = CliRunner()
@@ -115,6 +141,94 @@ def test_cli_can_create_and_revoke_token(tmp_path):
 
     assert revoked.exit_code == 0
     assert SQLiteStore(db).load_token(token_value).status == "revoked"
+
+
+def test_service_discover_dry_run_uses_fixture_text_and_does_not_write_db(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    systemd_fixture = tmp_path / "systemd.txt"
+    systemd_fixture.write_text("nginx.service loaded active running nginx web server\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "service",
+            "discover",
+            "--db",
+            str(db),
+            "--node-id",
+            "node-cli",
+            "--systemd-output",
+            str(systemd_fixture),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "discovered services: 1" in result.stdout
+    assert "create: svc_node-cli_nginx" in result.stdout
+    assert "kind: None -> systemd" in result.stdout
+    assert "svc_node-cli_nginx" in result.stdout
+    assert SQLiteStore(db).list_service_records() == []
+    assert SQLiteStore(db).list_audit_events() == []
+
+
+def test_service_discover_apply_uses_fixture_text_and_writes_db_and_audit(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    docker_fixture = tmp_path / "docker.jsonl"
+    docker_fixture.write_text('{"Names":"web-app","Image":"nginx:alpine","Ports":"0.0.0.0:8080->80/tcp"}\n', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "service",
+            "discover",
+            "--db",
+            str(db),
+            "--node-id",
+            "node-cli",
+            "--docker-output",
+            str(docker_fixture),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "applied services: 1" in result.stdout
+    stored = SQLiteStore(db).list_service_records(node_id="node-cli")
+    assert [record.service_id for record in stored] == ["svc_node-cli_web-app"]
+    assert stored[0].kind == "docker"
+    assert stored[0].ports == [8080]
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "service_discovery"
+    assert events[-1].details["service_ids"] == ["svc_node-cli_web-app"]
+
+
+def test_service_discover_rejects_no_dry_run_without_applying(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    systemd_fixture = tmp_path / "systemd.txt"
+    systemd_fixture.write_text("nginx.service loaded active running nginx web server\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "service",
+            "discover",
+            "--db",
+            str(db),
+            "--node-id",
+            "node-cli",
+            "--systemd-output",
+            str(systemd_fixture),
+            "--no-dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert SQLiteStore(db).list_service_records() == []
+    assert SQLiteStore(db).list_audit_events() == []
 
 
 def test_cli_can_expire_pending_tokens(tmp_path):
@@ -293,6 +407,7 @@ def test_menu_shows_quick_actions():
     assert "hmn node install-heartbeat" in result.stdout
     assert "hmn node worker-status" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
     assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
@@ -310,6 +425,7 @@ def test_root_command_shows_menu_instead_of_missing_command():
     assert "hmn node status" in result.stdout
     assert "hmn node doctor" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
     assert "hmn version" in result.stdout
     assert "hmn update" in result.stdout
     assert "hmn uninstall" in result.stdout
@@ -330,6 +446,7 @@ def test_menu_plain_prints_quick_actions():
     assert "hmn node install-heartbeat" in result.stdout
     assert "hmn node worker-status" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
     assert "hmn version" in result.stdout
     assert "示例" in result.stdout
 
@@ -343,6 +460,7 @@ def test_command_help_includes_examples():
     assert "示例" in result.stdout
     assert "hmn node confirm" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
 
 
 def test_root_menu_can_start_wake_flow(tmp_path, monkeypatch):
@@ -507,14 +625,18 @@ def test_doctor_command_reports_full_production_readiness(tmp_path):
 
     assert result.exit_code == 0
     assert "生产巡检" in result.stdout
+    assert "安装状态" in result.stdout
     assert "master.env: OK" in result.stdout
     assert "database path: OK" in result.stdout
     assert "database file: OK" in result.stdout
+    assert "服务状态" in result.stdout
     assert "control plane service: OK" in result.stdout
     assert "approval gateway service: OK" in result.stdout
     assert "headscale config: OK" in result.stdout
+    assert "接口状态" in result.stdout
     assert "healthz: SKIP" in result.stdout
     assert "api version: SKIP" in result.stdout
+    assert "upgrade/rollback readiness" in result.stdout
     assert "upgrade backup: OK" in result.stdout
     assert "rollback command: hmn rollback --stamp 20260101-010203" in result.stdout
     assert "最近日志提示" in result.stdout
@@ -745,11 +867,15 @@ def test_doctor_command_reports_installer_readiness(tmp_path):
 
     assert result.exit_code == 0
     assert "生产巡检" in result.stdout
+    assert "安装状态" in result.stdout
     assert "master.env: OK" in result.stdout
     assert "database path: OK" in result.stdout
+    assert "服务状态" in result.stdout
     assert "control plane service: OK" in result.stdout
     assert "approval gateway service: OK" in result.stdout
     assert "headscale config: OK" in result.stdout
+    assert "接口状态" in result.stdout
+    assert "upgrade/rollback readiness" in result.stdout
     assert "upgrade backup: WARN" in result.stdout
     assert "/var/backups/hermes-managed-network" in result.stdout
     assert "hmn update" in result.stdout

@@ -18,6 +18,21 @@ from pathlib import Path
 import typer
 
 from .components import ComponentManifest, load_builtin_components
+from .config_provider import plan_config_inventory_export, plan_config_playbook_apply
+from .deploy import build_deploy_plan, build_deploy_status, render_deploy_plan_json, render_deploy_status_json
+from .discovery import discover_services_from_file
+from .docs_generate import load_registry_and_generate_docs
+from .docs_sync import (
+    DEFAULT_DOCS_CENTER_ROOT,
+    DEFAULT_SERVER_DOC_ROOT,
+    DEFAULT_SERVICE_DOC_ROOT,
+    apply_docs_sync_from_registry,
+    build_docs_sync_plan_from_path,
+    build_docs_sync_plan_from_registry,
+    parse_rename_host_args,
+    render_docs_sync_apply_json,
+    render_docs_sync_plan_json,
+)
 from .docs import (
     DEFAULT_DOCS_ROOT,
     DEFAULT_SERVICE_ROOT,
@@ -31,12 +46,23 @@ from .docs import (
     write_service_index,
 )
 from .executor import PlaybookExecutor, SSHExecutionError, classify_ssh_failure, run_ssh_task, ssh_target_details_for_node, ssh_target_for_node
+from .inspect import collect_local_inventory, inventory_to_json
 from .inventory import NodeRegistry
+from .orchestrator import OrchestratorService
 from .playbook import Playbook
+from .backup_provider import build_backup_apply_request, render_backup_plan_json
+from .migration import render_migration_plan_json
+from .onboarding import render_onboarding_plan_json
+from .restore import render_restore_plan_json
 from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
-from .storage import SQLiteStore
+from .service_discovery import apply_discovered_services, discover_services_from_text, plan_discovered_services
+from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH, ServiceRegistry
+from .service_registry_adapters import registry_from_storage_records
+from .storage import SQLiteStore, ServiceRecord
+from .uptime import build_uptime_plan, render_uptime_plan_json
+from .coolify_provider import build_coolify_sync_dry_run, sync_coolify_registry_from_fixture
 from .approval_gateway import (
     ApprovalGatewayClientConfig,
     ApprovalGatewayHttpApiClient,
@@ -74,7 +100,17 @@ app = typer.Typer(
         "  hmn network node tags set 设置节点 tag（审批）\n"
         "  hmn task run              下发任务（worker/ssh）\n"
         "  hmn task list             查看任务队列\n"
+        "  hmn task recover-stuck    恢复过期 running 任务\n"
         "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
+        "  hmn service discover      服务发现 dry-run/apply\n"
+        "  hmn deploy plan --db ./hmn.db 从 DB 生成部署计划\n"
+        "  hmn orchestrator enqueue  加入托管调度队列\n"
+        "  hmn orchestrator worker register 登记调度 worker\n"
+        "  hmn orchestrator worker update   更新 worker 状态\n"
+        "  hmn orchestrator status   查看调度状态\n"
+        "  hmn orchestrator backlog  扫描分支债务\n"
+        "  hmn orchestrator tick     执行单轮调度\n"
+        "  hmn orchestrator report   输出简短报告\n"
         "  hmn approval list         查看待审批操作\n"
         "  hmn approval-gateway poll-once --client telegram 发送一次审批通知\n"
         "  hmn component list        查看可用组件\n"
@@ -101,6 +137,8 @@ node_app = typer.Typer(help="管理已登记节点")
 playbook_app = typer.Typer(help="运行本地 playbook")
 audit_app = typer.Typer(help="查看审计事件")
 task_app = typer.Typer(help="下发和查看节点任务")
+orchestrator_app = typer.Typer(help="全托管调度器")
+orchestrator_worker_app = typer.Typer(help="管理调度 worker")
 approval_app = typer.Typer(help="管理高风险操作审批")
 component_app = typer.Typer(help="管理按需加载组件")
 monitor_app = typer.Typer(help="监控节点健康闭环")
@@ -109,12 +147,26 @@ network_app = typer.Typer(help="管理网络 provider 与 Headscale 同步")
 approval_gateway_app = typer.Typer(help="运行多客户端审批网关")
 telegram_gateway_app = typer.Typer(help="运行 Telegram 审批网关（兼容旧命令）")
 docs_app = typer.Typer(help="生成机器/服务资产文档")
+docs_sync_app = typer.Typer(help="生成集中 docs-sync dry-run 计划")
+service_app = typer.Typer(help="管理服务资产登记")
+inspect_app = typer.Typer(help="盘点节点资产")
+discover_app = typer.Typer(help="从盘点结果发现服务")
+uptime_app = typer.Typer(help="生成 Uptime Kuma dry-run 规划")
+deploy_app = typer.Typer(help="生成部署计划与状态聚合")
+config_provider_app = typer.Typer(help="生成 Config Provider dry-run 计划")
+config_provider_inventory_app = typer.Typer(help="生成 inventory export dry-run")
+config_provider_playbook_app = typer.Typer(help="生成 playbook 执行审批 dry-run")
+migration_app = typer.Typer(help="从 service registry 生成服务迁移 plan（dry-run）")
+restore_app = typer.Typer(help="从 service registry 生成服务级 restore plan（dry-run）")
+onboarding_app = typer.Typer(help="从 nodes inventory 生成 onboarding/capacity plan（dry-run）")
 app.add_typer(token_app, name="token")
 app.add_typer(node_app, name="node")
 app.add_typer(network_app, name="network")
 app.add_typer(playbook_app, name="playbook")
 app.add_typer(audit_app, name="audit")
 app.add_typer(task_app, name="task")
+app.add_typer(orchestrator_app, name="orchestrator")
+orchestrator_app.add_typer(orchestrator_worker_app, name="worker")
 app.add_typer(approval_app, name="approval")
 app.add_typer(component_app, name="component")
 app.add_typer(monitor_app, name="monitor")
@@ -122,6 +174,18 @@ app.add_typer(backup_app, name="backup")
 app.add_typer(approval_gateway_app, name="approval-gateway")
 app.add_typer(telegram_gateway_app, name="telegram-gateway")
 app.add_typer(docs_app, name="docs")
+docs_app.add_typer(docs_sync_app, name="sync")
+app.add_typer(service_app, name="service")
+app.add_typer(inspect_app, name="inspect")
+app.add_typer(discover_app, name="discover")
+app.add_typer(uptime_app, name="uptime")
+app.add_typer(deploy_app, name="deploy")
+app.add_typer(config_provider_app, name="config-provider")
+config_provider_app.add_typer(config_provider_inventory_app, name="inventory")
+config_provider_app.add_typer(config_provider_playbook_app, name="playbook")
+app.add_typer(migration_app, name="migration")
+app.add_typer(restore_app, name="restore")
+app.add_typer(onboarding_app, name="onboarding")
 
 
 def _default_db() -> Path:
@@ -318,9 +382,17 @@ def _show_menu() -> None:
     typer.echo("12. hmn network node tags set        设置节点 tag（审批）")
     typer.echo("13. hmn task run                     下发任务（worker/ssh）")
     typer.echo("14. hmn task list                    查看任务")
+    typer.echo("    hmn task recover-stuck           恢复过期 running 任务")
     typer.echo("    hmn task ssh-run-next            执行下一个 SSH 任务")
-    typer.echo("15. hmn approval list                查看审批")
-    typer.echo("16. hmn telegram-gateway poll-once   发送审批通知")
+    typer.echo("15. hmn orchestrator enqueue         加入托管队列")
+    typer.echo("    hmn orchestrator worker register 登记调度 worker")
+    typer.echo("    hmn orchestrator worker update   更新 worker 状态")
+    typer.echo("    hmn orchestrator status          查看调度状态")
+    typer.echo("    hmn orchestrator backlog         扫描分支债务")
+    typer.echo("    hmn orchestrator tick            执行单轮调度")
+    typer.echo("    hmn orchestrator report          输出简短报告")
+    typer.echo("16. hmn approval list                查看审批")
+    typer.echo("    hmn telegram-gateway poll-once   发送审批通知")
     typer.echo("17. hmn component list               查看组件")
     typer.echo("18. hmn component status             查看组件状态")
     typer.echo("19. hmn component apply              记录组件状态")
@@ -350,7 +422,18 @@ def _show_menu() -> None:
     typer.echo("  hmn task run 'uptime'")
     typer.echo("  hmn task run 'uptime' --executor ssh --wait")
     typer.echo("  hmn task list")
+    typer.echo("  hmn task recover-stuck --older-than 900")
     typer.echo("  hmn task ssh-run-next")
+    typer.echo("  hmn service discover --node-id node1 --systemd-output systemd.txt")
+    typer.echo("  hmn service discover --node-id node1 --docker-output docker.jsonl --apply")
+    typer.echo("  hmn deploy plan --db ./hmn.db")
+    typer.echo("  hmn orchestrator enqueue --title '巡检服务' --scope ops --priority 5")
+    typer.echo("  hmn orchestrator worker register --id miskrobot --transport bridge --label standby")
+    typer.echo("  hmn orchestrator worker update --id miskrobot --status offline")
+    typer.echo("  hmn orchestrator backlog --repo . --base feat/v1-1-useful-ops-mvp")
+    typer.echo("  hmn orchestrator status")
+    typer.echo("  hmn orchestrator tick")
+    typer.echo("  hmn orchestrator report")
     typer.echo("  hmn telegram-gateway poll-once")
     typer.echo("  hmn component list")
     typer.echo("  hmn component plan reverse-proxy --node node1 --set domain=example.com --set upstream=http://127.0.0.1:3000")
@@ -390,7 +473,9 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("12) hmn network node tags set  设置节点 tag（审批）")
         typer.echo("13) hmn task run      下发任务")
         typer.echo("14) hmn task list    查看任务")
+        typer.echo("    hmn task recover-stuck  恢复过期 running 任务")
         typer.echo("    hmn task ssh-run-next  执行 SSH 任务")
+        typer.echo("    hmn service discover   服务发现 dry-run/apply")
         typer.echo("15) hmn component list   查看组件")
         typer.echo("16) hmn component status 组件状态")
         typer.echo("17) hmn component apply  记录组件状态")
@@ -538,6 +623,147 @@ def menu(plain: bool = typer.Option(False, "--plain", help="只打印快捷命�
         _show_interactive_menu()
 
 
+@backup_app.command("service-plan")
+def backup_service_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    adapter: str | None = typer.Option(
+        None,
+        "--adapter",
+        help="只输出指定 backup adapter（restic|borgmatic|kopia）。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 backup dry-run plan JSON。"),
+) -> None:
+    rendered = render_backup_plan_json(
+        service_registry,
+        service_id=service_id,
+        adapter=adapter,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
+@backup_app.command("provider-apply")
+def backup_provider_apply_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    adapter: list[str] = typer.Option([], "--adapter", help="目标 backup adapter，可重复。"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    request_by: str = typer.Option("hmn", "--request-by", help="审批请求发起者。"),
+    as_json: bool = typer.Option(False, "--json", help="输出 backup provider apply dry-run JSON。"),
+) -> None:
+    registry = ServiceRegistry.load(service_registry)
+    payload = build_backup_apply_request(
+        registry,
+        service_id=service_id,
+        adapters=list(adapter),
+    )
+    approval = _store(db).create_approval_request(
+        subject_type="backup_provider",
+        subject_id=service_id or str(service_registry),
+        action="backup.apply",
+        risk="high",
+        requested_by=request_by,
+        details={
+            "provider": payload["provider"],
+            "tool_candidates": payload["tool_candidates"],
+            "service_count": payload["service_count"],
+            "execution": payload["execution"],
+        },
+    )
+    payload["approval_id"] = approval.approval_id
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
+@migration_app.command("plan")
+def migration_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    source_node: str | None = typer.Option(None, "--source-node", help="只输出指定 source node。"),
+    target_node: str | None = typer.Option(None, "--target-node", help="覆盖 migration 目标节点。"),
+    strategy: str | None = typer.Option(
+        None,
+        "--strategy",
+        help="指定迁移策略（backup-restore|redeploy|manual-copy）。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 migration dry-run plan JSON。"),
+) -> None:
+    rendered = render_migration_plan_json(
+        service_registry,
+        service_id=service_id,
+        source_node=source_node,
+        target_node=target_node,
+        strategy=strategy,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
+@restore_app.command("plan")
+def restore_plan_command(
+    service_registry: Path = typer.Option(
+        DEFAULT_SERVICE_REGISTRY_PATH,
+        "--service-registry",
+        help="service registry JSON 路径。",
+    ),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定 service_id。"),
+    target_node: str | None = typer.Option(None, "--target-node", help="覆盖 restore 目标节点。"),
+    snapshot: str | None = typer.Option(None, "--snapshot", help="指定恢复快照（latest 或 snapshot_id）。"),
+    as_json: bool = typer.Option(False, "--json", help="输出 restore dry-run plan JSON。"),
+) -> None:
+    rendered = render_restore_plan_json(
+        service_registry,
+        service_id=service_id,
+        target_node=target_node,
+        snapshot=snapshot,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+@onboarding_app.command("plan")
+def onboarding_plan_command(
+    nodes: Path = typer.Option(..., "--nodes", help="nodes inventory JSON 路径。"),
+    service_registry: Path | None = typer.Option(None, "--service-registry", help="可选 service registry JSON 路径。"),
+    target_role: str | None = typer.Option(
+        None,
+        "--target-role",
+        help="目标角色（full-worker|lite-worker|beacon-only|proxy-managed）。",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="输出 onboarding dry-run plan JSON。"),
+) -> None:
+    rendered = render_onboarding_plan_json(
+        nodes,
+        service_registry_path=service_registry,
+        target_role=target_role,
+    )
+    if as_json:
+        typer.echo(rendered)
+        return
+    typer.echo(rendered)
+
+
 @app.command("version")
 def version() -> None:
     """查看当前 hmn 版本。"""
@@ -608,12 +834,14 @@ def doctor_install(
     typer.echo("生产巡检")
     master_env_path = etc_dir / "master.env"
     master_env = _read_master_env(master_env_path)
+    typer.echo("安装状态")
     typer.echo(_status_line("master.env", bool(master_env), str(master_env_path)))
 
     db_path = Path(master_env.get("HMN_DB", "/var/lib/hermes-managed-network/control-plane.db"))
     typer.echo(_status_line("database path", db_path.parent.exists(), str(db_path)))
     typer.echo(_status_line("database file", db_path.exists(), str(db_path)))
 
+    typer.echo("服务状态")
     control_service = service_dir / SERVICE_NAME
     typer.echo(_status_line("control plane service", control_service.exists(), str(control_service)))
 
@@ -632,9 +860,11 @@ def doctor_install(
     if host in {"0.0.0.0", "::", ""}:
         host = "127.0.0.1"
     base_url = f"http://{host}:{port}"
+    typer.echo("接口状态")
     typer.echo(_doctor_url_status("healthz", health_url or f"{base_url}/healthz"))
     typer.echo(_doctor_url_status("api version", version_url or f"{base_url}/api/v1/version"))
 
+    typer.echo("upgrade/rollback readiness")
     manifest = etc_dir / "upgrade-manifest.env"
     manifest_values = _read_master_env(manifest)
     typer.echo(_status_line("upgrade manifest", manifest.exists(), str(manifest) if manifest.exists() else "will be created by installer upgrade"))
@@ -1426,7 +1656,13 @@ def docs_generate(
     output_root: Path = typer.Option(DEFAULT_DOCS_ROOT, "--output-root", help="机器文档根目录"),
     service_root: Path = typer.Option(DEFAULT_SERVICE_ROOT, "--service-root", help="服务文档根目录"),
     runbook_root: Path | None = typer.Option(None, "--runbook-root", help="Runbook 源目录"),
+    registry: Path | None = typer.Option(None, "--registry", help="service registry JSON 路径"),
+    output_dir: Path | None = typer.Option(None, "--output-dir", help="service registry 文档输出目录"),
 ) -> None:
+    if registry is not None:
+        generated_dir = load_registry_and_generate_docs(registry, output_dir or Path("docs"))
+        typer.echo(str(generated_dir))
+        return
     result = generate_docs(_store(db), output_root, service_root, runbook_root)
     typer.echo(f"生成机器文档: {result.server_count}")
     if result.service_index:
@@ -1448,7 +1684,19 @@ def docs_service(
     url: str = typer.Option("", "--url", help="对外 URL"),
     port: str = typer.Option("", "--port", help="监听端口"),
     summary: str = typer.Option("", "--summary", help="服务简介"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    from_registry: bool = typer.Option(False, "--from-registry", help="从服务登记表生成"),
 ) -> None:
+    if from_registry:
+        service = _store(db).load_service_record(service_id)
+        if service is None:
+            typer.echo(f"service not found: {service_id}", err=True)
+            raise typer.Exit(1)
+        title = title or service.name
+        node = node or service.node_id
+        url = url or service.health_check_url or (f"https://{service.domains[0]}" if service.domains else "")
+        port = port or (",".join(str(item) for item in service.ports))
+        summary = summary or f"kind={service.kind} runtime={service.runtime or '-'}"
     path = write_service_doc(
         ServiceDoc(
             service_id=service_id,
@@ -1486,6 +1734,527 @@ def docs_runbook_index(
 ) -> None:
     path = write_runbook_index(service_root, runbook_root)
     typer.echo(str(path))
+
+
+@docs_sync_app.command("plan")
+def docs_sync_plan(
+    service_registry: Path = typer.Option(DEFAULT_SERVICE_REGISTRY_PATH, "--service-registry", help="service registry JSON 路径"),
+    server_doc_root: Path = typer.Option(DEFAULT_SERVER_DOC_ROOT, "--server-doc-root", help="机器文档根目录"),
+    service_doc_root: Path = typer.Option(DEFAULT_SERVICE_DOC_ROOT, "--service-doc-root", help="服务文档根目录"),
+    rename_host: list[str] = typer.Option([], "--rename-host", help="主机改名映射 OLD=NEW，可重复"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
+) -> None:
+    """生成 docs-center 同步 dry-run 计划，不写入 /srv/files。"""
+    try:
+        rename_mapping = parse_rename_host_args(rename_host)
+        if db is not None:
+            registry = registry_from_storage_records(_store(db).list_service_records())
+            payload = build_docs_sync_plan_from_registry(
+                registry,
+                server_doc_root=server_doc_root,
+                service_doc_root=service_doc_root,
+                rename_hosts=rename_mapping,
+            )
+            rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        else:
+            rendered = render_docs_sync_plan_json(
+                service_registry,
+                server_doc_root=server_doc_root,
+                service_doc_root=service_doc_root,
+                rename_hosts=rename_mapping,
+            )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    if json_output:
+        typer.echo(rendered)
+        return
+    payload = json.loads(rendered)
+    typer.echo(f"docs sync plan: services={payload['service_count']} servers={payload['server_count']}")
+    typer.echo(f"server_doc_root: {payload['server_doc_root']}")
+    typer.echo(f"service_doc_root: {payload['service_doc_root']}")
+    if payload.get("rename_actions"):
+        typer.echo(f"rename_actions: {len(payload['rename_actions'])}")
+
+
+@docs_sync_app.command("apply")
+def docs_sync_apply(
+    service_registry: Path = typer.Option(DEFAULT_SERVICE_REGISTRY_PATH, "--service-registry", help="service registry JSON 路径"),
+    server_doc_root: Path = typer.Option(DEFAULT_SERVER_DOC_ROOT, "--server-doc-root", help="机器文档根目录"),
+    service_doc_root: Path = typer.Option(DEFAULT_SERVICE_DOC_ROOT, "--service-doc-root", help="服务文档根目录"),
+    root: Path | None = typer.Option(None, "--root", help="文档中心根目录；默认 dry-run，不直接写 /srv/files"),
+    execute: bool = typer.Option(False, "--execute", help="显式执行写入；默认只输出 dry-run apply 结果"),
+    rename_host: list[str] = typer.Option([], "--rename-host", help="主机改名映射 OLD=NEW，可重复"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    """生成 docs-center apply 结果；旧式无 --root/--execute 调用仍只创建审批。"""
+    try:
+        rename_mapping = parse_rename_host_args(rename_host)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    if root is not None or execute or json_output:
+        try:
+            if db is not None:
+                registry = registry_from_storage_records(_store(db).list_service_records())
+                payload = apply_docs_sync_from_registry(
+                    registry,
+                    root=root or DEFAULT_DOCS_CENTER_ROOT,
+                    execute=execute,
+                    rename_hosts=rename_mapping,
+                )
+                rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+            else:
+                rendered = render_docs_sync_apply_json(
+                    service_registry,
+                    root=root or DEFAULT_DOCS_CENTER_ROOT,
+                    execute=execute,
+                    rename_hosts=rename_mapping,
+                )
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+        if json_output:
+            typer.echo(rendered)
+            return
+        payload = json.loads(rendered)
+        typer.echo(
+            f"docs sync apply: services={payload['service_count']} servers={payload['server_count']} changed={payload['changed']}"
+        )
+        typer.echo(f"root: {payload['root']}")
+        typer.echo("dry-run，未写入文件" if payload["dry_run"] else "已写入 docs-center")
+        return
+
+    try:
+        plan = build_docs_sync_plan_from_path(
+            service_registry,
+            server_doc_root=server_doc_root,
+            service_doc_root=service_doc_root,
+            rename_hosts=rename_mapping,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    store = _store(db)
+    approval = store.create_approval_request(
+        subject_type="docs_sync",
+        subject_id=str(service_registry),
+        action="docs.sync.apply",
+        risk="high",
+        requested_by="hmn",
+        details={"plan": plan, "service_registry": str(service_registry)},
+    )
+    typer.echo(f"需要审批: {approval.approval_id}")
+    typer.echo("未写入 docs-center；审批通过后才会 apply。")
+    typer.echo(f"services={plan['service_count']} servers={plan['server_count']}")
+    raise typer.Exit(1)
+
+
+def _service_record_from_payload(payload: dict[str, object]) -> ServiceRecord:
+    return ServiceRecord(
+        service_id=str(payload["service_id"]),
+        name=str(payload.get("name") or payload["service_id"]),
+        node_id=str(payload.get("node_id", "")),
+        kind=str(payload.get("kind", "unknown")),
+        runtime=str(payload.get("runtime", "")),
+        domains=[str(item) for item in payload.get("domains", [])],
+        ports=[int(item) for item in payload.get("ports", [])],
+        deploy_path=str(payload.get("deploy_path", "")),
+        config_paths=[str(item) for item in payload.get("config_paths", [])],
+        env_paths=[str(item) for item in payload.get("env_paths", [])],
+        data_paths=[str(item) for item in payload.get("data_paths", [])],
+        health_check_url=str(payload.get("health_check_url", "")),
+        monitor_enabled=bool(payload.get("monitor_enabled", False)),
+        docs_path=str(payload.get("docs_path", "")),
+        source=str(payload.get("source", "discover")),
+        status=str(payload.get("status", "active")),
+        metadata=dict(payload.get("metadata", {})),
+    )
+
+
+def _uptime_monitor_for_service(service: ServiceRecord) -> dict[str, object] | None:
+    url = service.health_check_url
+    if not url and service.domains:
+        url = f"https://{service.domains[0]}"
+    if not url or not service.monitor_enabled:
+        return None
+    return {
+        "service_id": service.service_id,
+        "name": service.name,
+        "type": "http",
+        "url": url,
+        "tags": ["hmn", f"service:{service.service_id}"],
+    }
+
+
+@discover_app.callback(invoke_without_command=True)
+def discover_services(
+    ctx: typer.Context,
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    from_json: Path | None = typer.Option(None, "--from-json", help="从 JSON 清单导入服务资产（dry-run 发现入口）"),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if from_json is None:
+        raise typer.BadParameter("需要传入 --from-json；或使用 hmn discover services --inventory ...")
+    payload = json.loads(from_json.read_text(encoding="utf-8"))
+    services_payload = payload.get("services", []) if isinstance(payload, dict) else payload
+    store = _store(db)
+    count = 0
+    for item in services_payload:
+        store.save_service_record(_service_record_from_payload(item))
+        count += 1
+    typer.echo(f"discovered services: {count}")
+
+
+@inspect_app.command("node")
+def inspect_node(
+    local: bool = typer.Option(False, "--local", help="盘点本机资产"),
+    node: str | None = typer.Option(None, "--node", help="预留远程节点 ID；当前 MVP 不执行远程 SSH"),
+    output: Path | None = typer.Option(None, "--output", help="写入 inventory JSON 文件"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    if node and not local:
+        typer.echo("remote inspect is reserved for a future SSH/worker provider; use --local for this MVP")
+        raise typer.Exit(2)
+    if not local:
+        raise typer.BadParameter("当前 MVP 需要显式传入 --local")
+    inventory = collect_local_inventory(node=node or "local")
+    rendered = inventory_to_json(inventory)
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered + "\n", encoding="utf-8")
+        if not json_output:
+            typer.echo(str(output))
+    if json_output or not output:
+        typer.echo(rendered)
+
+
+@discover_app.command("services")
+def discover_services_command(
+    inventory: Path = typer.Option(..., "--inventory", help="inspect node 生成的 inventory JSON"),
+    output: Path | None = typer.Option(None, "--output", help="写入 service registry JSON 文件"),
+    json_output: bool = typer.Option(False, "--json", help="输出 registry JSON"),
+) -> None:
+    registry = discover_services_from_file(inventory)
+    if output:
+        registry.save(output)
+        if not json_output:
+            typer.echo(str(output))
+    rendered = json.dumps(registry.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    if json_output or not output:
+        typer.echo(rendered)
+
+
+
+@uptime_app.command("plan")
+def uptime_plan(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    service_registry: Path | None = typer.Option(None, "--service-registry", help="service registry JSON 路径"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    if service_registry is not None:
+        rendered = render_uptime_plan_json(service_registry)
+        payload = json.loads(rendered)
+    else:
+        services = _store(db).list_service_records()
+        registry = registry_from_storage_records(services)
+        payload = build_uptime_plan(registry)
+        payload["provider"] = "uptime-kuma"
+        payload["dry_run"] = True
+        payload["monitors"] = [monitor for service in services if (monitor := _uptime_monitor_for_service(service))]
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    if json_output:
+        typer.echo(rendered)
+        return
+    typer.echo(
+        f"uptime kuma dry-run create={len(payload.get('create', []))} "
+        f"update={len(payload.get('update', []))} skip={len(payload.get('skip', []))}"
+    )
+    for item in payload.get("create", []):
+        monitor = item.get("monitor", {}) if isinstance(item, dict) else {}
+        target = monitor.get("url") or f"{monitor.get('host')}:{monitor.get('port')}"
+        typer.echo(f"- {item['service_id']} {target}")
+
+
+@uptime_app.command("sync")
+def uptime_sync(
+    service_registry: Path | None = typer.Option(None, "--service-registry", help="service registry JSON 路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    """为 Uptime Kuma upsert 创建审批；审批前不写 provider。"""
+    if service_registry is not None:
+        plan = json.loads(render_uptime_plan_json(service_registry))
+    else:
+        monitors = [monitor for service in _store(db).list_service_records() if (monitor := _uptime_monitor_for_service(service))]
+        plan = {"provider": "uptime-kuma", "dry_run": True, "monitors": monitors}
+    store = _store(db)
+    approval = store.create_approval_request(
+        subject_type="uptime_sync",
+        subject_id=str(service_registry or "hmn-db-services"),
+        action="uptime.sync.apply",
+        risk="high",
+        requested_by="hmn",
+        details={"plan": plan, "service_registry": str(service_registry) if service_registry else ""},
+    )
+    typer.echo(f"需要审批: {approval.approval_id}")
+    typer.echo("未写入 Uptime Kuma；审批通过后才会 upsert monitor。")
+    typer.echo(f"create={len(plan.get('create', plan.get('monitors', [])))} update={len(plan.get('update', []))} skip={len(plan.get('skip', []))}")
+    raise typer.Exit(1)
+
+
+@deploy_app.command("plan")
+def deploy_plan(
+    service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
+    provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    if db is not None:
+        registry = registry_from_storage_records(_store(db).list_service_records())
+        payload = build_deploy_plan(registry, service_id=service_id, provider_fixture_dir=provider_fixture_dir)
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    else:
+        rendered = render_deploy_plan_json(
+            service_registry,
+            service_id=service_id,
+            provider_fixture_dir=provider_fixture_dir,
+        )
+        payload = json.loads(rendered)
+    if json_output:
+        typer.echo(rendered)
+        return
+    typer.echo(f"deploy plan services: {payload['service_count']}")
+
+
+@deploy_app.command("status")
+def deploy_status(
+    service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
+    provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
+    service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    if db is not None:
+        registry = registry_from_storage_records(_store(db).list_service_records())
+        payload = build_deploy_status(registry, service_id=service_id, provider_fixture_dir=provider_fixture_dir)
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    else:
+        rendered = render_deploy_status_json(
+            service_registry,
+            service_id=service_id,
+            provider_fixture_dir=provider_fixture_dir,
+        )
+        payload = json.loads(rendered)
+    if json_output:
+        typer.echo(rendered)
+        return
+    typer.echo(f"deploy status services: {payload['service_count']}")
+
+
+@config_provider_inventory_app.command("plan")
+def config_provider_inventory_plan(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    payload = plan_config_inventory_export(nodes=_store(db).list_nodes(), services=_store(db).list_service_records())
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+@config_provider_playbook_app.command("apply")
+def config_provider_playbook_apply(
+    playbook_name: str,
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    limit_node: list[str] = typer.Option([], "--limit-node", help="限制目标节点，可重复。"),
+    tag: list[str] = typer.Option([], "--tag", help="Ansible tag，可重复。"),
+    extra_var: list[str] = typer.Option([], "--extra-var", help="额外变量 KEY=VALUE，可重复。"),
+    request_by: str = typer.Option("hmn", "--request-by", help="审批请求发起者。"),
+) -> None:
+    store = _store(db)
+    payload = plan_config_playbook_apply(
+        playbook_name=playbook_name,
+        nodes=store.list_nodes(),
+        services=store.list_service_records(),
+        limit_nodes=list(limit_node),
+        tags=list(tag),
+        extra_vars=list(extra_var),
+    )
+    approval = store.create_approval_request(
+        subject_type="config_provider",
+        subject_id=playbook_name,
+        action="config_provider.playbook_apply",
+        risk="high",
+        requested_by=request_by,
+        details={
+            "playbook": payload["playbook"],
+            "inventory": payload["inventory"],
+            "execution": payload["execution"],
+            "provider_id": payload["provider_id"],
+        },
+    )
+    payload["approval_id"] = approval.approval_id
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _format_service_summary(service: ServiceRecord) -> str:
+    domains = ",".join(service.domains) if service.domains else "-"
+    return f"{service.service_id}\t{service.name}\t{service.node_id or '-'}\t{service.kind}\t{domains}"
+
+
+def _echo_service_detail(service: ServiceRecord) -> None:
+    typer.echo(f"service: {service.service_id}")
+    typer.echo(f"name: {service.name}")
+    typer.echo(f"node: {service.node_id or '-'}")
+    typer.echo(f"kind: {service.kind}")
+    typer.echo(f"runtime: {service.runtime or '-'}")
+    typer.echo(f"domains: {', '.join(service.domains) if service.domains else '-'}")
+    typer.echo(f"ports: {', '.join(str(port) for port in service.ports) if service.ports else '-'}")
+    typer.echo(f"deploy_path: {service.deploy_path or '-'}")
+    typer.echo(f"health_check_url: {service.health_check_url or '-'}")
+    typer.echo(f"monitor_enabled: {service.monitor_enabled}")
+
+
+@service_app.command("add")
+def service_add(
+    service_id: str,
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    name: str = typer.Option(..., "--name", help="服务名称"),
+    node_id: str = typer.Option("", "--node", help="所属节点 ID"),
+    kind: str = typer.Option("unknown", "--kind", help="服务类型"),
+    runtime: str = typer.Option("", "--runtime", help="运行方式"),
+    domain: list[str] = typer.Option([], "--domain", help="绑定域名，可重复"),
+    port: list[int] = typer.Option([], "--port", help="暴露端口，可重复"),
+    deploy_path: str = typer.Option("", "--deploy-path", help="部署路径"),
+    config_path: list[str] = typer.Option([], "--config-path", help="配置文件路径，可重复"),
+    env_path: list[str] = typer.Option([], "--env-path", help="环境文件路径，可重复"),
+    data_path: list[str] = typer.Option([], "--data-path", help="数据目录路径，可重复"),
+    health_check_url: str = typer.Option("", "--health-check-url", help="健康检查 URL"),
+    monitor_enabled: bool = typer.Option(False, "--monitor-enabled", help="纳入监控规划"),
+) -> None:
+    service = ServiceRecord(
+        service_id=service_id,
+        name=name,
+        node_id=node_id,
+        kind=kind,
+        runtime=runtime,
+        domains=list(domain),
+        ports=list(port),
+        deploy_path=deploy_path,
+        config_paths=list(config_path),
+        env_paths=list(env_path),
+        data_paths=list(data_path),
+        health_check_url=health_check_url,
+        monitor_enabled=monitor_enabled,
+    )
+    _store(db).save_service_record(service)
+    typer.echo(f"service saved: {service_id}")
+
+
+def _read_optional_text_fixture(path: Path | None) -> str:
+    return path.read_text(encoding="utf-8") if path is not None else ""
+
+
+@service_app.command("discover")
+def service_discover(
+    node_id: str = typer.Option(..., "--node-id", help="目标节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    dry_run: bool = typer.Option(True, "--dry-run", help="只输出候选服务，不写入数据库"),
+    apply: bool = typer.Option(False, "--apply", help="写入 service registry 并记录审计"),
+    systemd_output: Path | None = typer.Option(None, "--systemd-output", help="systemctl 输出文本 fixture 路径"),
+    docker_output: Path | None = typer.Option(None, "--docker-output", help="docker ps JSONL 输出文本 fixture 路径"),
+    ports_output: Path | None = typer.Option(None, "--ports-output", help="ss -ltnp 输出文本 fixture 路径"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    if apply:
+        dry_run = False
+    records = discover_services_from_text(
+        node_id,
+        systemd_output=_read_optional_text_fixture(systemd_output),
+        docker_output=_read_optional_text_fixture(docker_output),
+        ports_output=_read_optional_text_fixture(ports_output),
+    )
+    store = _store(db)
+    planned_records, changes = plan_discovered_services(store, node_id, records, source="discovery")
+    if apply:
+        records = apply_discovered_services(store, node_id, records, source="discovery")
+        action = "applied"
+    else:
+        records = planned_records
+        action = "discovered"
+    payload = {
+        "dry_run": dry_run and not apply,
+        "apply": apply,
+        "node_id": node_id,
+        "service_count": len(records),
+        "changes": changes,
+        "services": [
+            {
+                "service_id": record.service_id,
+                "name": record.name,
+                "node_id": record.node_id,
+                "kind": record.kind,
+                "runtime": record.runtime,
+                "ports": record.ports,
+                "source": record.source,
+                "metadata": record.metadata,
+            }
+            for record in records
+        ],
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    typer.echo(f"{action} services: {len(records)}")
+    for change in changes:
+        typer.echo(f"{change['change']}: {change['service_id']}")
+        for field, values in change["diff"].items():
+            typer.echo(f"  {field}: {values['before']} -> {values['after']}")
+    for record in records:
+        typer.echo(_format_service_summary(record))
+
+
+@service_app.command("list")
+def service_list(
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    node_id: str = typer.Option("", "--node", help="按节点过滤"),
+) -> None:
+    services = _store(db).list_service_records(node_id or None)
+    for service in services:
+        typer.echo(_format_service_summary(service))
+
+
+@service_app.command("show")
+def service_show(service_id: str, db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    service = _store(db).load_service_record(service_id)
+    if service is None:
+        typer.echo(f"service not found: {service_id}", err=True)
+        raise typer.Exit(1)
+    _echo_service_detail(service)
+
+
+@service_app.command("coolify-sync")
+def service_coolify_sync(
+    fixture: Path = typer.Option(..., "--fixture", help="Coolify fixture JSON 路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    apply: bool = typer.Option(False, "--apply", help="写入 HMN service registry 并记录审计"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    store = _store(db)
+    if apply:
+        payload = sync_coolify_registry_from_fixture(store, fixture, source_label="coolify-sync")
+        payload["dry_run"] = False
+        payload["apply"] = True
+    else:
+        payload = build_coolify_sync_dry_run(fixture)
+        payload["dry_run"] = True
+        payload["apply"] = False
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    typer.echo(f"coolify sync dry_run={payload['dry_run']} service_count={payload['service_count']}")
 
 
 @node_app.command("list")
@@ -2438,6 +3207,17 @@ def list_task_commands(db: Path = typer.Option(None, "--db", help="SQLite 数据
         typer.echo(f"{task.task_id}\t{task.node_id}\t{task.status}\texecutor={task.executor}\trisk={task.risk}\t{task.command}")
 
 
+@task_app.command("recover-stuck")
+def recover_stuck_tasks_command(
+    older_than: int = typer.Option(..., "--older-than", help="只恢复 lease 至少已过期 N 秒的 running worker 任务"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    expired = _store(db).expire_stuck_tasks(older_than_seconds=older_than)
+    typer.echo(f"expired count: {len(expired)}")
+    for task_id in expired:
+        typer.echo(task_id)
+
+
 @task_app.command("ssh-run-next")
 def ssh_run_next(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
     store = _store(db)
@@ -2496,6 +3276,146 @@ def ssh_run_next(db: Path = typer.Option(None, "--db", help="SQLite 数据库路
     typer.echo(f"已执行任务: {completed.task_id}")
     typer.echo(f"节点: {completed.node_id}")
     typer.echo(f"退出码: {completed.exit_code}")
+
+
+def _orchestrator_service(db: Path | None) -> OrchestratorService:
+    return OrchestratorService(_store(db))
+
+
+def _fmt_orch_item(item: dict, *keys: str) -> str:
+    values = [str(item.get(key, "")) for key in keys if item.get(key, "") not in {None, ""}]
+    return " | ".join(values) if values else "-"
+
+
+@orchestrator_app.command("enqueue")
+def orchestrator_enqueue(
+    title: str = typer.Option(..., "--title", help="任务标题"),
+    scope: str = typer.Option("", "--scope", help="任务范围"),
+    risk: str = typer.Option("low", "--risk", help="风险级别：low/medium/high/critical"),
+    priority: int = typer.Option(5, "--priority", help="优先级，数字越大越先做"),
+    worker_hint: str = typer.Option("", "--worker", help="建议 worker，可留空"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    if risk not in {"low", "medium", "high", "critical"}:
+        typer.echo("风险级别只允许 low/medium/high/critical。")
+        raise typer.Exit(1)
+    task_id = _orchestrator_service(db).enqueue(
+        title=title,
+        scope=scope,
+        risk=risk,
+        priority=priority,
+        worker_hint=worker_hint,
+        source="cli",
+    )
+    typer.echo(f"已入队: {task_id}")
+
+
+@orchestrator_worker_app.command("register")
+def orchestrator_worker_register(
+    worker_id: str = typer.Option(..., "--id", help="worker ID"),
+    transport: str = typer.Option("bridge", "--transport", help="分发通道：bridge/webhook/queue/ssh"),
+    status: str = typer.Option("online", "--status", help="worker 状态"),
+    labels: list[str] = typer.Option([], "--label", help="worker 标签，可重复"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    _orchestrator_service(db).register_worker(
+        worker_id=worker_id,
+        transport=transport,
+        status=status,
+        labels=list(labels),
+    )
+    typer.echo(f"worker 已登记: {worker_id} | {status} | {transport}")
+
+
+@orchestrator_worker_app.command("update")
+def orchestrator_worker_update(
+    worker_id: str = typer.Option(..., "--id", help="worker ID"),
+    status: str = typer.Option(..., "--status", help="worker 状态"),
+    transport: str | None = typer.Option(None, "--transport", help="可选：更新分发通道"),
+    labels: list[str] | None = typer.Option(None, "--label", help="可选：覆盖 worker 标签，可重复"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    _orchestrator_service(db).update_worker(
+        worker_id=worker_id,
+        status=status,
+        transport=transport,
+        labels=list(labels) if labels is not None else None,
+    )
+    typer.echo(f"worker 已更新: {worker_id} | {status}")
+
+
+@orchestrator_app.command("status")
+def orchestrator_status(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    snapshot = _orchestrator_service(db).snapshot()
+    typer.echo("队列:")
+    for item in snapshot.get("queue", []):
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "status", "title", "priority"))
+    if not snapshot.get("queue"):
+        typer.echo("  空")
+    typer.echo("worker:")
+    for item in snapshot.get("workers", []):
+        line = _fmt_orch_item(item, "worker_id", "status", "transport")
+        labels = item.get("labels") or []
+        if labels:
+            line += " | labels=" + ",".join(str(label) for label in labels)
+        typer.echo("  " + line)
+    if not snapshot.get("workers"):
+        typer.echo("  空")
+    typer.echo("assignment:")
+    for item in snapshot.get("assignments", []):
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "worker_id", "status"))
+    if not snapshot.get("assignments"):
+        typer.echo("  空")
+    typer.echo("最近 report:")
+    for item in snapshot.get("reports", [])[:5]:
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "status", "summary"))
+    if not snapshot.get("reports"):
+        typer.echo("  暂无")
+
+
+@orchestrator_app.command("backlog")
+def orchestrator_backlog(
+    repo: Path = typer.Option(Path("."), "--repo", help="Git 仓库路径"),
+    base: str = typer.Option("feat/v1-1-useful-ops-mvp", "--base", help="判重基线分支"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    backlog = _orchestrator_service(db).branch_backlog(repo_path=repo, base=base)
+    typer.echo(f"base: {backlog.get('base', base)}")
+    typer.echo(f"分支总数: {backlog.get('total', 0)}")
+    typer.echo(f"WIP: {backlog.get('wip_count', 0)}/{backlog.get('wip_limit', 3)}")
+    buckets = backlog.get("buckets", {})
+    for status in ["generated", "needs-review", "merge-ready", "merged", "duplicate", "conflict", "stale", "abandoned"]:
+        typer.echo(f"{status}:")
+        items = buckets.get(status, [])
+        if not items:
+            typer.echo("  空")
+            continue
+        for item in items:
+            line = _fmt_orch_item(item, "branch", "ref", "sha", "reason")
+            typer.echo("  " + line)
+    cleanup = backlog.get("cleanup", [])
+    typer.echo("可清理: " + (", ".join(cleanup) if cleanup else "无"))
+
+
+@orchestrator_app.command("tick")
+def orchestrator_tick(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    result = _orchestrator_service(db).tick()
+    typer.echo("已分发:")
+    for item in result.get("dispatched", []):
+        typer.echo(f"  {item.get('task_id', '-')} -> {item.get('worker_id', '-')}")
+    if not result.get("dispatched"):
+        typer.echo("  无")
+    typer.echo("阻塞:")
+    for item in result.get("blocked", []):
+        typer.echo("  " + _fmt_orch_item(item, "task_id", "reason"))
+    if not result.get("blocked"):
+        typer.echo("  无")
+    typer.echo(f"下一步：{result.get('next', '暂无')}")
+
+
+@orchestrator_app.command("report")
+def orchestrator_report(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
+    typer.echo(_orchestrator_service(db).report())
 
 
 @approval_app.command("list")

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from pathlib import Path
 from typing import Any, Iterator
@@ -12,6 +12,10 @@ from typing import Any, Iterator
 from .inventory import Node
 from .tokens import JoinToken
 from .components import ComponentManifest
+
+TASK_OUTPUT_MAX_BYTES = 64 * 1024
+TASK_OUTPUT_TRUNCATED_MARKER = "\n[hmn: output truncated to 65536 bytes]"
+TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 @dataclass
@@ -61,6 +65,29 @@ class MonitorSnapshot:
 
 
 @dataclass
+class ServiceRecord:
+    service_id: str
+    name: str
+    node_id: str = ""
+    kind: str = "unknown"
+    runtime: str = ""
+    domains: list[str] = field(default_factory=list)
+    ports: list[int] = field(default_factory=list)
+    deploy_path: str = ""
+    config_paths: list[str] = field(default_factory=list)
+    env_paths: list[str] = field(default_factory=list)
+    data_paths: list[str] = field(default_factory=list)
+    health_check_url: str = ""
+    monitor_enabled: bool = False
+    docs_path: str = ""
+    source: str = "manual"
+    status: str = "active"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass
 class Task:
     task_id: str
     node_id: str
@@ -75,6 +102,10 @@ class Task:
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    claimed_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    attempt_count: int = 0
+    failure_reason: str = ""
 
 
 @dataclass
@@ -200,7 +231,11 @@ class SQLiteStore:
                     completed_at TEXT,
                     exit_code INTEGER,
                     stdout TEXT NOT NULL DEFAULT '',
-                    stderr TEXT NOT NULL DEFAULT ''
+                    stderr TEXT NOT NULL DEFAULT '',
+                    claimed_at TEXT,
+                    lease_expires_at TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    failure_reason TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -282,6 +317,28 @@ class SQLiteStore:
                     facts_summary_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS services (
+                    service_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    node_id TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'unknown',
+                    runtime TEXT NOT NULL DEFAULT '',
+                    domains_json TEXT NOT NULL DEFAULT '[]',
+                    ports_json TEXT NOT NULL DEFAULT '[]',
+                    deploy_path TEXT NOT NULL DEFAULT '',
+                    config_paths_json TEXT NOT NULL DEFAULT '[]',
+                    env_paths_json TEXT NOT NULL DEFAULT '[]',
+                    data_paths_json TEXT NOT NULL DEFAULT '[]',
+                    health_check_url TEXT NOT NULL DEFAULT '',
+                    monitor_enabled INTEGER NOT NULL DEFAULT 0,
+                    docs_path TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             for statement in (
@@ -294,12 +351,132 @@ class SQLiteStore:
                 "ALTER TABLE nodes ADD COLUMN network_tags_json TEXT NOT NULL DEFAULT '[]'",
                 "ALTER TABLE nodes ADD COLUMN network_online INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE tasks ADD COLUMN executor TEXT NOT NULL DEFAULT 'worker'",
+                "ALTER TABLE tasks ADD COLUMN claimed_at TEXT",
+                "ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT",
+                "ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE tasks ADD COLUMN failure_reason TEXT NOT NULL DEFAULT ''",
             ):
                 try:
                     conn.execute(statement)
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc):
                         raise
+
+    def save_service_record(self, service: ServiceRecord) -> ServiceRecord:
+        now = datetime.now(timezone.utc)
+        existing = self.load_service_record(service.service_id)
+        created_at = service.created_at or (existing.created_at if existing else now)
+        saved = ServiceRecord(
+            service_id=service.service_id,
+            name=service.name,
+            node_id=service.node_id,
+            kind=service.kind,
+            runtime=service.runtime,
+            domains=list(service.domains),
+            ports=list(service.ports),
+            deploy_path=service.deploy_path,
+            config_paths=list(service.config_paths),
+            env_paths=list(service.env_paths),
+            data_paths=list(service.data_paths),
+            health_check_url=service.health_check_url,
+            monitor_enabled=service.monitor_enabled,
+            docs_path=service.docs_path,
+            source=service.source,
+            status=service.status,
+            metadata=dict(service.metadata),
+            created_at=created_at,
+            updated_at=now,
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO services (
+                    service_id, name, node_id, kind, runtime, domains_json, ports_json,
+                    deploy_path, config_paths_json, env_paths_json, data_paths_json,
+                    health_check_url, monitor_enabled, docs_path, source, status,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(service_id) DO UPDATE SET
+                    name=excluded.name,
+                    node_id=excluded.node_id,
+                    kind=excluded.kind,
+                    runtime=excluded.runtime,
+                    domains_json=excluded.domains_json,
+                    ports_json=excluded.ports_json,
+                    deploy_path=excluded.deploy_path,
+                    config_paths_json=excluded.config_paths_json,
+                    env_paths_json=excluded.env_paths_json,
+                    data_paths_json=excluded.data_paths_json,
+                    health_check_url=excluded.health_check_url,
+                    monitor_enabled=excluded.monitor_enabled,
+                    docs_path=excluded.docs_path,
+                    source=excluded.source,
+                    status=excluded.status,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    saved.service_id,
+                    saved.name,
+                    saved.node_id,
+                    saved.kind,
+                    saved.runtime,
+                    json.dumps(saved.domains),
+                    json.dumps(saved.ports),
+                    saved.deploy_path,
+                    json.dumps(saved.config_paths),
+                    json.dumps(saved.env_paths),
+                    json.dumps(saved.data_paths),
+                    saved.health_check_url,
+                    1 if saved.monitor_enabled else 0,
+                    saved.docs_path,
+                    saved.source,
+                    saved.status,
+                    json.dumps(saved.metadata, sort_keys=True),
+                    _dt(saved.created_at),
+                    _dt(saved.updated_at),
+                ),
+            )
+        return saved
+
+    def _service_record_from_row(self, row) -> ServiceRecord:
+        return ServiceRecord(
+            service_id=row["service_id"],
+            name=row["name"],
+            node_id=row["node_id"],
+            kind=row["kind"],
+            runtime=row["runtime"],
+            domains=json.loads(row["domains_json"]),
+            ports=[int(port) for port in json.loads(row["ports_json"])],
+            deploy_path=row["deploy_path"],
+            config_paths=json.loads(row["config_paths_json"]),
+            env_paths=json.loads(row["env_paths_json"]),
+            data_paths=json.loads(row["data_paths_json"]),
+            health_check_url=row["health_check_url"],
+            monitor_enabled=bool(row["monitor_enabled"]),
+            docs_path=row["docs_path"],
+            source=row["source"],
+            status=row["status"],
+            metadata=json.loads(row["metadata_json"]),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    def load_service_record(self, service_id: str) -> ServiceRecord | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM services WHERE service_id = ?", (service_id,)).fetchone()
+        return self._service_record_from_row(row) if row else None
+
+    def list_service_records(self, node_id: str | None = None) -> list[ServiceRecord]:
+        with self.connect() as conn:
+            if node_id:
+                rows = conn.execute(
+                    "SELECT * FROM services WHERE node_id = ? ORDER BY service_id",
+                    (node_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM services ORDER BY service_id").fetchall()
+        return [self._service_record_from_row(row) for row in rows]
 
     def record_audit(
         self,
@@ -946,8 +1123,9 @@ class SQLiteStore:
                 """
                 INSERT INTO tasks (
                     task_id, node_id, command, risk, status, created_by, created_at,
-                    executor, started_at, completed_at, exit_code, stdout, stderr
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    executor, started_at, completed_at, exit_code, stdout, stderr,
+                    claimed_at, lease_expires_at, attempt_count, failure_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     node_id=excluded.node_id,
                     command=excluded.command,
@@ -960,7 +1138,11 @@ class SQLiteStore:
                     completed_at=excluded.completed_at,
                     exit_code=excluded.exit_code,
                     stdout=excluded.stdout,
-                    stderr=excluded.stderr
+                    stderr=excluded.stderr,
+                    claimed_at=excluded.claimed_at,
+                    lease_expires_at=excluded.lease_expires_at,
+                    attempt_count=excluded.attempt_count,
+                    failure_reason=excluded.failure_reason
                 """,
                 (
                     task.task_id,
@@ -976,6 +1158,10 @@ class SQLiteStore:
                     task.exit_code,
                     task.stdout,
                     task.stderr,
+                    _dt(task.claimed_at),
+                    _dt(task.lease_expires_at),
+                    task.attempt_count,
+                    task.failure_reason,
                 ),
             )
 
@@ -994,6 +1180,10 @@ class SQLiteStore:
             exit_code=row["exit_code"],
             stdout=row["stdout"],
             stderr=row["stderr"],
+            claimed_at=_parse_dt(row["claimed_at"]) if "claimed_at" in row.keys() else None,
+            lease_expires_at=_parse_dt(row["lease_expires_at"]) if "lease_expires_at" in row.keys() else None,
+            attempt_count=row["attempt_count"] if "attempt_count" in row.keys() else 0,
+            failure_reason=row["failure_reason"] if "failure_reason" in row.keys() else "",
         )
 
     def load_task(self, task_id: str) -> Task | None:
@@ -1007,7 +1197,13 @@ class SQLiteStore:
         return [self._task_from_row(row) for row in rows]
 
     def next_pending_task(self, node_id: str, *, executor: str = "worker") -> Task | None:
+        return self.claim_next_task(node_id, executor=executor)
+
+    def claim_next_task(self, node_id: str, executor: str = "worker", lease_seconds: int = 900) -> Task | None:
+        now = datetime.now(timezone.utc)
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             node_row = conn.execute("SELECT status FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
             if node_row is None or node_row["status"] != "managed":
                 return None
@@ -1015,41 +1211,124 @@ class SQLiteStore:
                 "SELECT * FROM tasks WHERE node_id = ? AND executor = ? AND status = 'pending' ORDER BY created_at LIMIT 1",
                 (node_id, executor),
             ).fetchone()
-        if row is None:
-            return None
-        task = self._task_from_row(row)
-        task.status = "running"
-        task.started_at = datetime.now(timezone.utc)
-        self.save_task(task)
-        self.record_audit(
-            event_type="task",
-            subject_type="task",
-            subject_id=task.task_id,
-            action="dispatch",
-            outcome="ok",
-            details={"node_id": node_id},
-        )
-        return task
+            if row is None:
+                return None
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'running', started_at = COALESCE(started_at, ?), claimed_at = ?,
+                    lease_expires_at = ?, attempt_count = attempt_count + 1
+                WHERE task_id = ? AND status = 'pending'
+                """,
+                (_dt(now), _dt(now), _dt(lease_expires_at), row["task_id"]),
+            )
+            updated = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (row["task_id"],)).fetchone()
+            conn.execute(
+                """
+                INSERT INTO audit_events (
+                    event_type, subject_type, subject_id, action, outcome, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "task",
+                    "task",
+                    row["task_id"],
+                    "dispatch",
+                    "ok",
+                    json.dumps({"node_id": node_id, "executor": executor, "lease_seconds": lease_seconds}, sort_keys=True),
+                    _dt(now),
+                ),
+            )
+        return self._task_from_row(updated)
+
+    def expire_stuck_tasks(self, *, older_than_seconds: int | None = None, now: datetime | None = None) -> list[str]:
+        now = now or datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=older_than_seconds) if older_than_seconds is not None else now
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status = 'running' AND executor = 'worker'
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+                ORDER BY lease_expires_at, created_at
+                """,
+                (_dt(cutoff),),
+            ).fetchall()
+            expired_ids = [row["task_id"] for row in rows]
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'failed', completed_at = ?, failure_reason = ?
+                    WHERE task_id = ? AND status = 'running'
+                    """,
+                    (_dt(now), "worker_lease_expired", row["task_id"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_events (
+                        event_type, subject_type, subject_id, action, outcome, details_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "task",
+                        "task",
+                        row["task_id"],
+                        "watchdog/expire",
+                        "failed",
+                        json.dumps({"node_id": row["node_id"], "lease_expires_at": row["lease_expires_at"]}, sort_keys=True),
+                        _dt(now),
+                    ),
+                )
+        return expired_ids
+
+    def _cap_task_output(self, value: str) -> str:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= TASK_OUTPUT_MAX_BYTES:
+            return value
+        room = TASK_OUTPUT_MAX_BYTES - len(TASK_OUTPUT_TRUNCATED_MARKER.encode("utf-8"))
+        return encoded[:room].decode("utf-8", errors="ignore") + TASK_OUTPUT_TRUNCATED_MARKER
 
     def complete_task(self, task_id: str, *, exit_code: int, stdout: str, stderr: str) -> Task | None:
-        task = self.load_task(task_id)
-        if task is None:
-            return None
-        task.exit_code = exit_code
-        task.stdout = stdout
-        task.stderr = stderr
-        task.completed_at = datetime.now(timezone.utc)
-        task.status = "succeeded" if exit_code == 0 else "failed"
-        self.save_task(task)
-        self.record_audit(
-            event_type="task",
-            subject_type="task",
-            subject_id=task.task_id,
-            action="task_result",
-            outcome=task.status,
-            details={"node_id": task.node_id, "exit_code": exit_code},
-        )
-        return task
+        now = datetime.now(timezone.utc)
+        status = "succeeded" if exit_code == 0 else "failed"
+        failure_reason = "" if status == "succeeded" else "exit_code_nonzero"
+        capped_stdout = self._cap_task_output(stdout)
+        capped_stderr = self._cap_task_output(stderr)
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            if row is None or row["status"] != "running":
+                return None
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, completed_at = ?, exit_code = ?, stdout = ?, stderr = ?, failure_reason = ?
+                WHERE task_id = ? AND status = 'running'
+                """,
+                (status, _dt(now), exit_code, capped_stdout, capped_stderr, failure_reason, task_id),
+            )
+            if conn.total_changes == 0:
+                return None
+            updated = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            conn.execute(
+                """
+                INSERT INTO audit_events (
+                    event_type, subject_type, subject_id, action, outcome, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "task",
+                    "task",
+                    task_id,
+                    "task_result",
+                    status,
+                    json.dumps({"node_id": updated["node_id"], "exit_code": exit_code}, sort_keys=True),
+                    _dt(now),
+                ),
+            )
+        return self._task_from_row(updated)
 
     def save_component(self, component: ComponentManifest) -> None:
         with self.connect() as conn:

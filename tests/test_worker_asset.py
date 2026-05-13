@@ -5,6 +5,13 @@ import subprocess
 from pathlib import Path
 
 
+def test_join_scripts_are_identical_between_repo_and_package_asset():
+    repo_script = Path("scripts/join.sh").read_text()
+    asset_script = Path("src/hermes_managed_network/assets/join.sh").read_text()
+
+    assert repo_script == asset_script
+
+
 def test_worker_scripts_are_identical_between_repo_and_package_asset():
     repo_script = Path("scripts/worker.sh").read_text()
     asset_script = Path("src/hermes_managed_network/assets/worker.sh").read_text()
@@ -212,6 +219,15 @@ def test_worker_json_payloads_escape_special_characters(tmp_path):
     assert payloads["next"]["fingerprint"] == 'sha256:quote" slash \\ line\\n tab\\t snowman ☃'
     assert payloads["result"]["fingerprint"] == 'sha256:quote" slash \\ line\\n tab\\t snowman ☃'
     assert payloads["result"]["stderr"] == "execution disabled; set HMN_ENABLE_EXEC=1"
+
+
+def test_worker_exec_uses_optional_timeout_wrapper():
+    script = Path("src/hermes_managed_network/assets/worker.sh").read_text()
+
+    assert "HMN_TASK_TIMEOUT_SEC" in script
+    assert "command -v timeout" in script
+    assert 'timeout --kill-after=5s "${HMN_TASK_TIMEOUT_SEC}" bash -lc "$command"' in script
+    assert "hmn worker timeout after ${HMN_TASK_TIMEOUT_SEC}s" in script
 
 
 def test_worker_verifies_task_signature_before_execution():
