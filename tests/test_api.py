@@ -104,6 +104,90 @@ def test_join_endpoint_records_node_join_audit_event(tmp_path):
     )
 
 
+def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_console",
+            fingerprint="sha256:console",
+            hostname="console-node",
+            addresses=["100.64.0.11"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe", "task"],
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_console",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "os": "Debian",
+                "uptime": "3h",
+                "cpu_percent": 12,
+                "memory_percent": 34,
+                "disk_percent": 56,
+                "load_average": 0.42,
+                "exec_enabled": True,
+            },
+        },
+    )
+    task = store.create_task(node_id="node_console", command="uptime", risk="low", created_by="test")
+    approval = store.create_approval_request(
+        subject_type="task",
+        subject_id=task.task_id,
+        action="task.run",
+        risk="high",
+        requested_by="test",
+        details={"node_id": "node_console", "command": "reboot"},
+    )
+    client = TestClient(create_app(db))
+
+    response = client.get("/api/v1/console/summary")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["metrics"] == {
+        "online_nodes": 1,
+        "total_nodes": 1,
+        "managed_nodes": 1,
+        "pending_nodes": 0,
+        "pending_approvals": 1,
+        "running_tasks": 0,
+    }
+    assert data["nodes"] == [
+        {
+            "id": "node_console",
+            "name": "console-node",
+            "status": "managed",
+            "live": "online",
+            "trust": "B",
+            "role": "worker",
+            "ip": "100.64.0.11",
+            "os": "Debian",
+            "uptime": "3h",
+            "cpu": 12,
+            "memory": 34,
+            "disk": 56,
+            "load": 0.42,
+            "hb": "刚刚",
+            "exec": True,
+        }
+    ]
+    assert data["tasks"][0]["id"] == task.task_id
+    assert data["tasks"][0]["status"] == "pending"
+    assert data["approvals"][0]["id"] == approval.approval_id
+    assert data["approvals"][0]["status"] == "pending"
+
+
 def test_control_plane_serves_join_script(tmp_path):
     client = TestClient(create_app(tmp_path / "hmn.db"))
 

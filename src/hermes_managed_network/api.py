@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import hermes_managed_network
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Any
 
@@ -60,6 +62,62 @@ class VersionResponse(BaseModel):
     package_version: str
     api_version: str
     worker_protocol_version: str
+
+
+class ConsoleNodeResponse(BaseModel):
+    id: str
+    name: str
+    status: str
+    live: str
+    trust: str
+    role: str
+    ip: str
+    os: str
+    uptime: str
+    cpu: int | float
+    memory: int | float
+    disk: int | float
+    load: int | float
+    hb: str
+    exec: bool
+
+
+class ConsoleTaskResponse(BaseModel):
+    id: str
+    node_id: str
+    node_name: str
+    command: str
+    risk: str
+    status: str
+    created_by: str
+    created_at: str
+
+
+class ConsoleApprovalResponse(BaseModel):
+    id: str
+    subject_type: str
+    subject_id: str
+    action: str
+    risk: str
+    status: str
+    requested_by: str
+    created_at: str
+
+
+class ConsoleMetricsResponse(BaseModel):
+    online_nodes: int
+    total_nodes: int
+    managed_nodes: int
+    pending_nodes: int
+    pending_approvals: int
+    running_tasks: int
+
+
+class ConsoleSummaryResponse(BaseModel):
+    metrics: ConsoleMetricsResponse
+    nodes: list[ConsoleNodeResponse]
+    tasks: list[ConsoleTaskResponse]
+    approvals: list[ConsoleApprovalResponse]
 
 
 class NodeAuthRequest(BaseModel):
@@ -137,6 +195,69 @@ class TelegramCallbackResponse(BaseModel):
     dispatched_task_id: str | None = None
 
 
+def _iso(value: object) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _latest_heartbeat_event(store: SQLiteStore, node_id: str):
+    for event in reversed(store.list_audit_events()):
+        if event.event_type == "node" and event.subject_id == node_id and event.action == "heartbeat":
+            return event
+    return None
+
+
+def _heartbeat_label(age_seconds: int | None) -> str:
+    if age_seconds is None:
+        return "无"
+    if age_seconds < 60:
+        return "刚刚"
+    if age_seconds < 3600:
+        return f"{age_seconds // 60} 分钟前"
+    return f"{age_seconds // 3600} 小时前"
+
+
+def _fact_number(facts: dict[str, Any], *keys: str, default: int | float = 0) -> int | float:
+    for key in keys:
+        value = facts.get(key)
+        if isinstance(value, (int, float)):
+            return value
+    return default
+
+
+def _console_node_response(store: SQLiteStore, node) -> ConsoleNodeResponse:
+    event = _latest_heartbeat_event(store, node.node_id)
+    facts = event.details.get("facts", {}) if event else {}
+    facts = facts if isinstance(facts, dict) else {}
+    now = datetime.now(timezone.utc)
+    age_seconds = int((now - event.created_at).total_seconds()) if event else None
+    if node.status == "pending":
+        live = "unknown"
+    elif event is not None and event.outcome == "ok" and age_seconds is not None and age_seconds <= 300:
+        live = "online"
+    elif event is not None and age_seconds is not None and age_seconds <= 900:
+        live = "stale"
+    else:
+        live = "offline"
+    return ConsoleNodeResponse(
+        id=node.node_id,
+        name=node.hostname,
+        status=node.status,
+        live=live,
+        trust=node.trust_level,
+        role=(node.labels[0] if node.labels else "node"),
+        ip=(node.network_ip or (node.addresses[0] if node.addresses else "-")),
+        os=str(facts.get("os") or facts.get("platform") or "unknown"),
+        uptime=str(facts.get("uptime") or "-"),
+        cpu=_fact_number(facts, "cpu_percent", "cpu"),
+        memory=_fact_number(facts, "memory_percent", "memory"),
+        disk=_fact_number(facts, "disk_percent", "disk"),
+        load=_fact_number(facts, "load_average", "load"),
+        hb=_heartbeat_label(age_seconds),
+        exec=bool(facts.get("exec_enabled") or "task" in node.permission_bundles),
+    )
+
+
+
 def _notification_response(notification: Notification) -> NotificationResponse:
     return NotificationResponse(
         notification_id=notification.notification_id,
@@ -150,6 +271,12 @@ def _notification_response(notification: Notification) -> NotificationResponse:
 
 def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
     app = FastAPI(title="Hermes Managed Network", version="0.2.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     store = SQLiteStore(db_path)
 
     @app.get("/healthz")
@@ -163,6 +290,50 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             package_version=info.package_version,
             api_version=info.api_version,
             worker_protocol_version=info.worker_protocol_version,
+        )
+
+    @app.get("/api/v1/console/summary", response_model=ConsoleSummaryResponse)
+    def console_summary() -> ConsoleSummaryResponse:
+        nodes = [_console_node_response(store, node) for node in store.list_nodes()]
+        tasks = store.list_tasks()[:8]
+        approvals = store.list_approval_requests()[:8]
+        node_names = {node.id: node.name for node in nodes}
+        return ConsoleSummaryResponse(
+            metrics=ConsoleMetricsResponse(
+                online_nodes=sum(1 for node in nodes if node.live == "online"),
+                total_nodes=len(nodes),
+                managed_nodes=sum(1 for node in nodes if node.status == "managed"),
+                pending_nodes=sum(1 for node in nodes if node.status == "pending"),
+                pending_approvals=sum(1 for approval in approvals if approval.status == "pending"),
+                running_tasks=sum(1 for task in tasks if task.status == "running"),
+            ),
+            nodes=nodes,
+            tasks=[
+                ConsoleTaskResponse(
+                    id=task.task_id,
+                    node_id=task.node_id,
+                    node_name=node_names.get(task.node_id, task.node_id),
+                    command=task.command,
+                    risk=task.risk,
+                    status=task.status,
+                    created_by=task.created_by,
+                    created_at=_iso(task.created_at),
+                )
+                for task in tasks
+            ],
+            approvals=[
+                ConsoleApprovalResponse(
+                    id=approval.approval_id,
+                    subject_type=approval.subject_type,
+                    subject_id=approval.subject_id,
+                    action=approval.action,
+                    risk=approval.risk,
+                    status=approval.status,
+                    requested_by=approval.requested_by,
+                    created_at=_iso(approval.created_at),
+                )
+                for approval in approvals
+            ],
         )
 
     def _asset_script(name: str) -> Response:
