@@ -444,7 +444,9 @@ def _render_service_index_readme(service_entries: list[dict[str, object]]) -> st
 
 def _render_server_readme(server_entry: dict[str, object], service_entries: list[dict[str, object]]) -> str:
     host = str(server_entry["host"])
-    lines = [f"# {host}", "", "## 机器概览", f"- hostname：`{host}`"]
+    target_path = Path(str(server_entry["target_path"]))
+    docs_root = target_path.parents[2]
+    lines = [f"# {host}", "", "## 机器概览", f"- hostname：`{host}`", f"- 文档中心根目录：`{docs_root.parent}`"]
     if server_entry.get("source_host"):
         lines.append(f"- 原 hostname：`{server_entry['source_host']}`")
     lines.extend(["", "## 承载服务", ""])
@@ -464,6 +466,14 @@ def _render_service_readme(entry: dict[str, object], service: ServiceRecord) -> 
     domains = ", ".join(f"`{domain}`" for domain in service.domains) if service.domains else "无"
     ports = ", ".join(f"`{port}`" for port in service.ports) if service.ports else "无"
     docs_path = _redact_text(service.docs_path) if service.docs_path else str(entry["target_path"])
+    target_path = Path(str(entry["target_path"]))
+    docs_root = target_path.parents[2]
+    config_paths = _render_inline_paths(service.config_paths)
+    env_paths = _render_inline_paths(service.env_paths)
+    data_paths = _render_inline_paths(service.data_paths)
+    dependencies = _render_inline_strings(_metadata_string_list(service.metadata, "dependencies"))
+    operations = _operation_sections(service)
+    troubleshooting = _metadata_string_list(service.metadata, "troubleshooting")
     lines = [
         f"# {service.name}",
         "",
@@ -471,12 +481,29 @@ def _render_service_readme(entry: dict[str, object], service: ServiceRecord) -> 
         f"- service_id：`{service.service_id}`",
         f"- slug：`{entry['service_slug']}`",
         f"- host：`{entry['host']}`",
+        f"- 文档中心根目录：`{docs_root}`",
         f"- kind：`{service.kind}`",
         f"- runtime：`{service.runtime or 'unknown'}`",
         f"- domains：{domains}",
         f"- ports：{ports}",
         f"- source：`{_redact_text(service.source)}`",
         f"- docs_path：`{docs_path}`",
+        "",
+        "## 部署信息",
+        f"- 文档中心根目录：`{docs_root}`",
+        f"- 部署路径：`{_redact_text(service.deploy_path) or '未登记'}`",
+        f"- 配置文件：{config_paths}",
+        f"- 环境文件：{env_paths}",
+        f"- 数据目录：{data_paths}",
+        f"- 依赖：{dependencies}",
+        f"- 健康检查：`{_redact_text(service.health_check_url) or '未登记'}`",
+        "",
+        "## 启停命令",
+        "### 启动",
+        *_render_bullets(operations.get("start") or ["未登记"]),
+        "",
+        "### 停止",
+        *_render_bullets(operations.get("stop") or ["未登记"]),
         "",
         "## 风险 / 提示",
         warnings_text,
@@ -485,6 +512,31 @@ def _render_service_readme(entry: dict[str, object], service: ServiceRecord) -> 
         "```json",
         monitor_text,
         "```",
+        "",
+        "## 维护 Runbook",
+        "### 巡检",
+        *_render_bullets(operations.get("inspect") or [service.health_check_url or "未登记"]),
+        "",
+        "### 日志",
+        *_render_bullets(operations.get("logs") or ["journalctl -u <service> -n 200 --no-pager"]),
+        "",
+        "### 重启",
+        *_render_bullets(operations.get("restart") or ["未登记"]),
+        "",
+        "### 升级",
+        *_render_bullets(operations.get("upgrade") or ["未登记"]),
+        "",
+        "### 备份",
+        *_render_bullets(operations.get("backup") or ["未登记"]),
+        "",
+        "### 恢复",
+        *_render_bullets(operations.get("restore") or ["未登记"]),
+        "",
+        "### 回滚",
+        *_render_bullets(operations.get("rollback") or ["未登记"]),
+        "",
+        "### 常见故障处理",
+        *_render_bullets(troubleshooting or ["未登记"]),
         "",
         "## 后续接入架构",
         "- 节点后续通过 master API / worker 上报 facts/service registry",
@@ -497,6 +549,67 @@ def _render_service_readme(entry: dict[str, object], service: ServiceRecord) -> 
 
 def _json_dumps(payload: object) -> str:
     return json.dumps(_sanitize_value(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _render_inline_paths(values: list[str]) -> str:
+    return _render_inline_strings(values)
+
+
+def _render_inline_strings(values: list[str]) -> str:
+    cleaned = [_redact_text(str(value)) for value in values if str(value).strip()]
+    if not cleaned:
+        return "未登记"
+    return ", ".join(f"`{value}`" for value in cleaned)
+
+
+def _render_bullets(values: list[str]) -> list[str]:
+    items = [str(value).strip() for value in values if str(value).strip()]
+    if not items:
+        return ["- 未登记"]
+    rendered: list[str] = []
+    for item in items:
+        text = _redact_text(item)
+        if _looks_like_command(item):
+            rendered.append(f"- `{text}`")
+        else:
+            rendered.append(f"- {text}")
+    return rendered
+
+
+def _looks_like_command(value: str) -> bool:
+    stripped = value.strip()
+    command_prefixes = (
+        "curl ",
+        "docker ",
+        "systemctl ",
+        "git ",
+        "restic ",
+        "journalctl ",
+        "ss ",
+        "cat ",
+        "python ",
+        "bash ",
+        "sh ",
+    )
+    return stripped.startswith(command_prefixes)
+
+
+def _metadata_string_list(metadata: dict[str, object], key: str) -> list[str]:
+    raw = metadata.get(key)
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item).strip()]
+
+
+def _operation_sections(service: ServiceRecord) -> dict[str, list[str]]:
+    raw = service.metadata.get("operations") if isinstance(service.metadata, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    sections: dict[str, list[str]] = {}
+    for key, value in raw.items():
+        if isinstance(value, list):
+            sections[str(key)] = [str(item) for item in value if str(item).strip()]
+    return sections
 
 
 def _relative_from_root(root_resolved: Path, target_path: Path) -> Path:

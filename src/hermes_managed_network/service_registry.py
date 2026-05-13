@@ -18,10 +18,16 @@ class ServiceRecord:
     domains: list[str] = field(default_factory=list)
     ports: list[int] = field(default_factory=list)
     runtime: str | None = ""
+    deploy_path: str = ""
+    config_paths: list[str] = field(default_factory=list)
+    env_paths: list[str] = field(default_factory=list)
+    data_paths: list[str] = field(default_factory=list)
+    health_check_url: str = ""
     source: str = "manual"
     docs_path: str | None = ""
     monitor: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -36,10 +42,16 @@ class ServiceRecord:
             domains=[str(domain) for domain in payload.get("domains", [])],
             ports=[int(port) for port in payload.get("ports", [])],
             runtime=None if payload.get("runtime") is None else str(payload.get("runtime", "")),
+            deploy_path=str(payload.get("deploy_path") or ""),
+            config_paths=[str(path) for path in payload.get("config_paths", [])],
+            env_paths=[str(path) for path in payload.get("env_paths", [])],
+            data_paths=[str(path) for path in payload.get("data_paths", [])],
+            health_check_url=str(payload.get("health_check_url") or ""),
             source=str(payload.get("source") or "manual"),
             docs_path=None if payload.get("docs_path") is None else str(payload.get("docs_path", "")),
             monitor=dict(payload.get("monitor") or {}),
             warnings=[str(warning) for warning in payload.get("warnings", [])],
+            metadata=dict(payload.get("metadata") or {}),
         )
 
 
