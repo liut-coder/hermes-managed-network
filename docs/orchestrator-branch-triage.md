@@ -87,18 +87,24 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Note: do not broad-merge; keep current HEAD implementation.
 
 7. `feat/production-readiness-p0` / `fix/production-p0-readiness`
-   - Production readiness docs/install/CLI tests.
-   - Status: `needs-review`; choose one, do not merge both blindly.
+   - Status: `absorbed-with-mainline-hardening` / cleanup candidate.
+   - Reason: both remote branch heads are still not ancestors because they were cut from stale base `b3e7089`, but their production-readiness slice has already been extracted to HEAD in smaller commits.
+   - Extracted coverage on HEAD:
+     - public raw install URLs now point to `main/install.sh` in README/deployment/headscale docs;
+     - `hmn doctor` renders production sections for install/service/API/upgrade rollback readiness;
+     - installer upgrade manifest records backup DB/env/config/metadata and `ROLLBACK_COMMAND`;
+     - `docs/production-readiness.md`, roadmap checkboxes, and `tests/test_production_readiness_docs.py` are present.
+   - Verification: `.venv/bin/python -m pytest -q tests/test_production_readiness_docs.py tests/test_linux_install.py::test_master_installer_detects_existing_version_policy_and_rollback_metadata tests/test_cli.py::test_doctor_command_reports_full_production_readiness tests/test_cli.py::test_doctor_command_reports_installer_readiness` passed.
+   - Note: do not broad-merge either branch; two-dot diff would delete newer mainline CLI/provider/docs-sync code.
 
 ## Next action
 
-Next merge-first action: inspect `fix/production-p0-readiness` against `feat/production-readiness-p0`, choose the fresher/smaller production-readiness slice, and extract only missing docs/install/test hunks if HEAD does not already contain them. Do not merge both blindly.
+Next merge-first action: with all named priority branches now classified as absorbed/stale cleanup candidates, do not dispatch new development yet; first add the native `hmn orchestrator backlog` / merge-queue status surface from the P0 plan so future cron runs can persist and display this classification instead of relying on this manual document.
 
 Suggested gate:
 
 ```bash
-git diff --name-status feat/v1-1-useful-ops-mvp...fix/production-p0-readiness
-.venv/bin/python -m pytest -q tests/test_linux_install.py tests/test_production_readiness_docs.py tests/test_cli.py
+.venv/bin/python -m pytest -q tests/test_orchestrator.py tests/test_cli.py
 .venv/bin/python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check

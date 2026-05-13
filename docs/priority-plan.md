@@ -96,13 +96,13 @@ Managed Nodes / NAS
 
 - 当前主线：`feat/v1-1-useful-ops-mvp`
 - 许多 worktree 分支其实已被主线吸收，属于“未清理的完成态分支”。
-- 仍有未吸收/需判重的分支：
-  - `hmn-task12-coolify`：Coolify provider skeleton
-  - `hmn-config-provider-merge-check`：config provider，可能与主线重复，需判重
-  - `hmn-docs-center-apply`：docs center apply + restore/migration/onboarding 合集，部分已吸收
-  - `hmn-task17-restore-plan` / `hmn-task18-migration-plan` / `hmn-task19-onboarding-plan`：大概率部分已吸收，需按文件/commit 判重
-  - `feat/monitor-closed-loop`：monitor/backup/docs-sync manifests + CLI，仍有价值但 diff 较大
-  - `feat/production-readiness-p0` / `fix/production-p0-readiness`：production readiness 分支，可能与已有修复重叠
+- 最新判重结论已沉淀在 `docs/orchestrator-branch-triage.md`：原优先级分支均已吸收或属于 stale-base cleanup candidate。
+  - `hmn-task12-coolify`：Coolify provider skeleton 已吸收。
+  - `hmn-config-provider-merge-check`：config provider 已吸收。
+  - `hmn-docs-center-apply`：docs center apply 已抽取；剩余为 stale-base cleanup candidate。
+  - `hmn-task17-restore-plan` / `hmn-task18-migration-plan` / `hmn-task19-onboarding-plan`：已吸收或被主线 hardening 覆盖。
+  - `feat/monitor-closed-loop`：monitor/backup/docs-sync 相关切片已在主线，旧分支不应 broad-merge。
+  - `feat/production-readiness-p0` / `fix/production-p0-readiness`：production readiness 切片已抽取；旧分支不应 broad-merge。
 
 ### 根因
 
