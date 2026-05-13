@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 08:38 EDT
+## Latest cron reconciliation — 2026-05-13 09:14 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -144,39 +144,35 @@ Manual priority branch probes in this cron pass:
 - `hmn-task17-restore-plan`: absent locally and on origin.
 - `hmn-task18-migration-plan`: absent locally and on origin.
 - `hmn-task19-onboarding-plan`: absent locally and on origin.
-- `origin/feat/monitor-closed-loop`: still present as cleanup-only remote branch; task-specific monitor/component slices are already on HEAD.
-- `origin/feat/production-readiness-p0`: still present as cleanup-only remote branch; production readiness slice is already extracted on HEAD.
-- `origin/fix/production-p0-readiness`: still present as cleanup-only remote branch; same production readiness slice is already extracted on HEAD.
+- `origin/feat/monitor-closed-loop`: still present as cleanup-only remote branch; task-specific monitor/component slices are already on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
+- `origin/feat/production-readiness-p0`: still present as cleanup-only remote branch; production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
+- `origin/fix/production-p0-readiness`: still present as cleanup-only remote branch; same production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
 
 Cron state:
 
-- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 09:07 EDT.
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 09:41 EDT.
 - No active duplicate HMN merge-first cron was observed in the live cron list.
 
 Working tree state:
 
-- Existing dirty file cluster: HMN Web docs module in `src/hermes_managed_network/api.py` and `tests/test_api.py`.
+- No tracked code diff was present at the start of this pass.
 - Untracked generated artifacts remain:
-  - `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated plan; still outside current P0 priority unless explicitly promoted.
-  - `uv.lock` — generated lockfile; leave uncommitted until the project explicitly adopts uv lockfile policy.
+  - `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated implementation plan; outside current P0 merge-first priority, so left uncommitted.
+  - `uv.lock` — generated lockfile; left uncommitted until the project explicitly adopts uv lockfile policy.
 
-This pass did not dispatch new worker development because the working tree already contains an uncommitted docs-center/API file cluster. It was treated as the one bounded file cluster for validation rather than opening another slice.
+This pass treated the branch-triage refresh itself as the bounded file cluster. No new worker development was dispatched because merge-first hygiene still requires clearing or explicitly abandoning remote cleanup branches before opening another implementation slice.
 
 Focused gate passed:
 
 ```bash
-.venv/bin/python -m pytest -q \
-  tests/test_api.py::test_hmn_web_docs_module_serves_docs_index_and_markdown \
-  tests/test_api.py::test_hmn_web_docs_module_rejects_path_traversal \
-  tests/test_api.py::test_hmn_web_docs_index_api_lists_server_and_service_docs \
-  tests/test_api.py::test_hmn_web_docs_view_page_wraps_markdown
+.venv/bin/python -m pytest -q tests/test_orchestrator_cli.py
 .venv/bin/python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check
 ```
 
-Result: `4 passed`; compileall, shell syntax, and diff-check passed.
+Result: orchestrator CLI focused tests passed; compileall, shell syntax, and diff-check passed.
 
 ## Next action
 
-Commit or explicitly discard the validated HMN Web docs module file cluster before starting P0 Worker timeout / heartbeat / cancel / watch. Merge-first branch debt remains clear, but dirty worktree hygiene blocks opening a new implementation slice.
+Commit this refreshed triage note if the worktree remains clean except generated artifacts, then proceed to remote cleanup recommendation: delete absorbed remote branches after operator approval or continue P0 Worker timeout / heartbeat / cancel / watch only once cleanup policy is explicit.
