@@ -38,7 +38,13 @@ def _monitor_payload_from_storage(record: StorageServiceRecord, metadata: dict[s
         monitor["providers"] = merged
     monitor.setdefault("enabled", record.monitor_enabled)
     monitor["registry_status"] = record.status
-    monitor["metadata"] = _sanitize_value(metadata)
+    sanitized_metadata = _sanitize_value(metadata)
+    if isinstance(sanitized_metadata, dict):
+        if record.health_check_url:
+            sanitized_metadata["health_check_url"] = record.health_check_url
+        monitor["metadata"] = sanitized_metadata
+    else:
+        monitor["metadata"] = {"health_check_url": record.health_check_url} if record.health_check_url else {}
     return monitor
 
 

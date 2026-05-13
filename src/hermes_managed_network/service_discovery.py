@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import replace
+from pathlib import PurePosixPath
 from typing import Any
 
 from .storage import SQLiteStore, ServiceRecord
@@ -19,6 +20,17 @@ def _service_id(node_id: str, name: str) -> str:
 
 def _merge_unique_ints(left: list[int], right: list[int]) -> list[int]:
     return sorted({int(item) for item in [*left, *right]})
+
+
+def _merge_unique_strings(left: list[str], right: list[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for item in [*left, *right]:
+        normalized = str(item).strip()
+        if normalized and normalized not in seen:
+            merged.append(normalized)
+            seen.add(normalized)
+    return merged
 
 
 def _merge_metadata(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -63,7 +75,13 @@ def _add_or_merge(records: dict[str, ServiceRecord], record: ServiceRecord) -> N
         return
     records[record.service_id] = replace(
         existing,
+        domains=_merge_unique_strings(existing.domains, record.domains),
         ports=_merge_unique_ints(existing.ports, record.ports),
+        deploy_path=_prefer_existing(existing.deploy_path, record.deploy_path),
+        config_paths=_merge_unique_strings(existing.config_paths, record.config_paths),
+        env_paths=_merge_unique_strings(existing.env_paths, record.env_paths),
+        data_paths=_merge_unique_strings(existing.data_paths, record.data_paths),
+        health_check_url=_prefer_existing(existing.health_check_url, record.health_check_url),
         metadata=_merge_metadata(existing.metadata, record.metadata),
     )
 
@@ -106,7 +124,7 @@ def _parse_systemd(systemd_output: str, node_id: str) -> list[ServiceRecord]:
 
 def _extract_docker_ports(value: str) -> list[int]:
     ports: set[int] = set()
-    for match in re.finditer(r"(?:(?:\d{1,3}\.){3}\d{1,3}|::|\[?:::\]?|0\.0\.0\.0|localhost)?:(\d+)->\d+/(?:tcp|udp)", value):
+    for match in re.finditer(r"(?:(?:\d{1,3}\.){3}\d{1,3}|::|\[?:::\]?|0\.0\.0\.0|localhost|127\.0\.0\.1)?:(\d+)->\d+/(?:tcp|udp)", value):
         ports.add(int(match.group(1)))
     return sorted(ports)
 
@@ -142,6 +160,113 @@ def _parse_docker(docker_output: str, node_id: str) -> list[ServiceRecord]:
                 },
             )
         )
+    return records
+
+
+def _extract_urls(value: str) -> list[str]:
+    return re.findall(r"https?://[^\s'\"\],;]+", value)
+
+
+def _parse_compose(compose_output: str, node_id: str) -> list[ServiceRecord]:
+    records: list[ServiceRecord] = []
+    current_name = ""
+    current_image = ""
+    env_paths: list[str] = []
+    data_paths: list[str] = []
+    config_paths: list[str] = []
+    health_check_url = ""
+    in_env_file = False
+    in_volumes = False
+    in_healthcheck = False
+
+    def flush() -> None:
+        nonlocal current_name, current_image, env_paths, data_paths, config_paths, health_check_url
+        if not current_name:
+            return
+        deploy_path = ""
+        candidates = [*env_paths, *data_paths, *config_paths]
+        if candidates:
+            deploy_path = str(PurePosixPath(candidates[0]).parent)
+            if deploy_path.endswith("/config"):
+                deploy_path = str(PurePosixPath(deploy_path).parent)
+        metadata: dict[str, Any] = {
+            "compose": {
+                "service": current_name,
+                "image": current_image,
+            }
+        }
+        if health_check_url:
+            metadata["health_check"] = {"source": "compose"}
+        records.append(
+            ServiceRecord(
+                service_id=_service_id(node_id, current_name),
+                name=current_name,
+                node_id=node_id,
+                kind="compose",
+                runtime=current_image or "compose",
+                deploy_path=deploy_path,
+                config_paths=list(config_paths),
+                env_paths=list(env_paths),
+                data_paths=list(data_paths),
+                health_check_url=health_check_url,
+                source="discovery",
+                metadata=metadata,
+            )
+        )
+        current_name = ""
+        current_image = ""
+        env_paths = []
+        data_paths = []
+        config_paths = []
+        health_check_url = ""
+
+    for raw_line in compose_output.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.match(r"^  [A-Za-z0-9_.-]+:\s*$", line) and stripped != "services:":
+            flush()
+            current_name = stripped.removesuffix(":")
+            in_env_file = False
+            in_volumes = False
+            in_healthcheck = False
+            continue
+        if not current_name:
+            continue
+        if stripped.startswith("image:"):
+            current_image = stripped.split(":", 1)[1].strip()
+            continue
+        if stripped == "env_file:":
+            in_env_file = True
+            in_volumes = False
+            in_healthcheck = False
+            continue
+        if stripped == "volumes:":
+            in_env_file = False
+            in_volumes = True
+            in_healthcheck = False
+            continue
+        if stripped == "healthcheck:":
+            in_env_file = False
+            in_volumes = False
+            in_healthcheck = True
+            continue
+        if stripped.startswith("-") and in_env_file:
+            env_paths.append(stripped.removeprefix("-").strip())
+            continue
+        if stripped.startswith("-") and in_volumes:
+            host_path = stripped.removeprefix("-").strip().split(":", 1)[0].strip()
+            if host_path.endswith((".conf", ".yaml", ".yml", ".json", ".toml", ".ini", ".env")):
+                config_paths.append(host_path)
+            else:
+                data_paths.append(host_path)
+            continue
+        if in_healthcheck and "http://" in stripped:
+            urls = _extract_urls(stripped)
+            if urls:
+                health_check_url = urls[0]
+    flush()
     return records
 
 
@@ -185,11 +310,65 @@ def _parse_ports(ports_output: str, node_id: str) -> list[ServiceRecord]:
     return records
 
 
+def _port_index(records: dict[str, ServiceRecord]) -> dict[int, ServiceRecord]:
+    mapping: dict[int, ServiceRecord] = {}
+    for record in records.values():
+        for port in record.ports:
+            mapping.setdefault(port, record)
+    return mapping
+
+
+def _apply_proxy_enrichment(records: dict[str, ServiceRecord], caddy_output: str = "", nginx_output: str = "") -> None:
+    def bind(record: ServiceRecord, domain: str, target_port: int, health_check_url: str, source: str, scope: str = "public") -> None:
+        metadata = _merge_metadata(
+            record.metadata,
+            {
+                "reverse_proxy": {"source": source, "domain": domain, "target_port": target_port},
+                "exposure": {"scope": scope},
+            },
+        )
+        if health_check_url:
+            metadata = _merge_metadata(metadata, {"health_check": {"source": source}})
+        records[record.service_id] = replace(
+            record,
+            domains=_merge_unique_strings(record.domains, [domain]),
+            health_check_url=_prefer_existing(record.health_check_url, health_check_url),
+            metadata=metadata,
+        )
+
+    port_map = _port_index(records)
+    for domain, port_text in re.findall(r"([A-Za-z0-9_.-]+)\s*\{[^}]*?reverse_proxy\s+127\.0\.0\.1:(\d+)", caddy_output, re.DOTALL):
+        target = port_map.get(int(port_text))
+        if target is None:
+            continue
+        scope = "status-page" if "status" in domain else "public"
+        bind(target, domain, int(port_text), "", "caddy", scope=scope)
+
+    for server_block in re.findall(r"server\s*\{.*?\}", nginx_output, re.DOTALL):
+        domain_groups = re.findall(r"server_name\s+([^;]+);", server_block)
+        urls = _extract_urls(server_block)
+        if not domain_groups or not urls:
+            continue
+        target_url = urls[0]
+        port_match = re.search(r":(\d+)", target_url)
+        if not port_match:
+            continue
+        target = port_map.get(int(port_match.group(1)))
+        if target is None:
+            continue
+        for domain_group in domain_groups:
+            for domain in [item.strip() for item in domain_group.split() if item.strip()]:
+                bind(target, domain, int(port_match.group(1)), target_url, "nginx")
+
+
 def discover_services_from_text(
     node_id: str,
     systemd_output: str = "",
     docker_output: str = "",
     ports_output: str = "",
+    compose_output: str = "",
+    caddy_output: str = "",
+    nginx_output: str = "",
 ) -> list[ServiceRecord]:
     """Discover ServiceRecord candidates from command output text fixtures."""
     records: dict[str, ServiceRecord] = {}
@@ -199,6 +378,9 @@ def discover_services_from_text(
         _add_or_merge(records, record)
     for record in _parse_ports(ports_output, node_id):
         _add_or_merge(records, record)
+    for record in _parse_compose(compose_output, node_id):
+        _add_or_merge(records, record)
+    _apply_proxy_enrichment(records, caddy_output=caddy_output, nginx_output=nginx_output)
     return [records[key] for key in sorted(records)]
 
 

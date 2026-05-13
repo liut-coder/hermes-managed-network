@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 
 from .sanitize import _redact_text, _sanitize_value
 from .service_registry import ServiceRecord, ServiceRegistry
+from .storage import SQLiteStore, ServiceRecord as StorageServiceRecord
 
 Transport = Callable[[str, str], object]
 
@@ -125,6 +126,128 @@ def build_coolify_sync_dry_run(path: Path) -> dict[str, object]:
         "services": [service.to_dict() for service in registry.list_services()],
         "registry": registry.to_dict(),
     }
+
+
+def sync_coolify_registry_from_fixture(
+    store: SQLiteStore,
+    path: Path,
+    *,
+    source_label: str = "coolify-fixture",
+) -> dict[str, object]:
+    payload = load_coolify_fixture(path)
+    server_name = _server_name(payload)
+    project_name = _project_name(payload)
+    environment_name = _environment_name(payload)
+    source = f"{source_label}:{path}"
+    saved: list[StorageServiceRecord] = []
+
+    for app in payload.get("applications", []):
+        if not isinstance(app, dict):
+            continue
+        saved.append(
+            store.save_service_record(
+                _storage_record_from_application(
+                    app,
+                    server_name=server_name,
+                    project_name=project_name,
+                    environment_name=environment_name,
+                    source=source,
+                )
+            )
+        )
+
+    store.record_audit(
+        event_type="service",
+        subject_type="provider",
+        subject_id="coolify",
+        action="coolify_registry_sync",
+        outcome="ok",
+        details={
+            "source": source,
+            "service_count": len(saved),
+            "service_ids": [record.service_id for record in saved],
+            "services": [
+                {
+                    "service_id": record.service_id,
+                    "name": record.name,
+                    "node_id": record.node_id,
+                    "domains": list(record.domains),
+                    "status": record.status,
+                    "monitor_enabled": record.monitor_enabled,
+                    "metadata": record.metadata,
+                }
+                for record in saved
+            ],
+        },
+    )
+    return {
+        "provider": "coolify",
+        "mode": "apply",
+        "write": True,
+        "audit_action": "coolify_registry_sync",
+        "service_count": len(saved),
+        "service_ids": [record.service_id for record in saved],
+        "source": source,
+    }
+
+
+def _storage_record_from_application(
+    app: dict[str, object],
+    *,
+    server_name: str,
+    project_name: str,
+    environment_name: str,
+    source: str,
+) -> StorageServiceRecord:
+    app_name = str(app.get("name") or app.get("uuid") or "coolify-app")
+    instance_id = str(app.get("uuid") or app_name)
+    domains = _domains(app.get("domains"))
+    ports = _ports(app.get("ports"))
+    status = str(app.get("status") or "unknown")
+    runtime = _runtime_summary(app)
+    deploy_target = _sanitize_deploy_target(dict(app.get("deploy_target", {})))
+    env_summary = _sanitize_env(dict(app.get("env", {})))
+    health_check_url = f"https://{domains[0]}" if domains else ""
+    repo = _sanitize_value(str(app.get("git_repository") or "unknown"))
+
+    metadata = {
+        "coolify": {
+            "project": project_name,
+            "environment": environment_name,
+            "repo": repo,
+            "repo_branch": str(app.get("git_branch") or "main"),
+            "deploy_target": deploy_target,
+        },
+        "env_summary": env_summary,
+        "service_instance": {
+            "provider": "coolify",
+            "instance_id": instance_id,
+            "node": server_name,
+            "status": status,
+        },
+    }
+    if domains:
+        metadata["exposure"] = {"scope": "public"}
+
+    return StorageServiceRecord(
+        service_id=f"svc_{server_name}_{_normalize_storage_name(app_name)}",
+        name=app_name,
+        node_id=server_name,
+        kind="coolify",
+        runtime=runtime,
+        domains=domains,
+        ports=ports,
+        deploy_path=str(deploy_target.get("destination") or ""),
+        env_paths=[],
+        data_paths=[],
+        config_paths=[],
+        health_check_url=health_check_url,
+        monitor_enabled=bool(domains) and status.lower() in {"running", "healthy", "ready"},
+        docs_path="",
+        source=source,
+        status=status,
+        metadata=metadata,
+    )
 
 
 def _service_from_application(
@@ -255,3 +378,9 @@ def _warnings(*, app_name: str, domains: list[str], ports: list[int], status: st
     if status.lower() not in {"running", "healthy", "ready"}:
         warnings.append(f"coolify app {app_name} status={status}")
     return warnings
+
+
+def _normalize_storage_name(value: str) -> str:
+    normalized = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in value.strip().lower())
+    normalized = normalized.strip("-")
+    return normalized or "unknown"

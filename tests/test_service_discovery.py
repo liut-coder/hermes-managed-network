@@ -16,6 +16,38 @@ DOCKER_OUTPUT = """
 {"Names":"postgresql","Image":"postgres:16","Ports":"5432/tcp"}
 """
 
+COMPOSE_OUTPUT = """
+services:
+  web-app:
+    image: nginx:alpine
+    env_file:
+      - /srv/web-app/.env
+    volumes:
+      - /srv/web-app/data:/var/lib/app
+      - /srv/web-app/config/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/readyz"]
+"""
+
+CADDY_OUTPUT = """
+app.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+
+status.example.com {
+    reverse_proxy 127.0.0.1:3001
+}
+"""
+
+NGINX_OUTPUT = """
+server {
+    server_name api.example.com;
+    location /healthz {
+        proxy_pass http://127.0.0.1:9000/healthz;
+    }
+}
+"""
+
 PORTS_OUTPUT = """
 State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess
 LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=123,fd=6))
@@ -183,3 +215,36 @@ def test_apply_discovered_services_preserves_curated_fields_and_merges_discovery
         {"address": "0.0.0.0", "port": 80, "process": "nginx"},
     ]
     assert stored.metadata["discovery_source"] == "unit-test"
+
+
+def test_discover_services_from_text_enriches_service_registry_with_compose_proxy_and_health_checks():
+    records = discover_services_from_text(
+        "node-a",
+        docker_output='{"Names":"web-app","Image":"nginx:alpine","Ports":"0.0.0.0:8080->80/tcp"}\n'
+        '{"Names":"hmn-status","Image":"louislam/uptime-kuma","Ports":"127.0.0.1:3001->3001/tcp"}\n'
+        '{"Names":"custom-api","Image":"ghcr.io/example/api","Ports":"127.0.0.1:9000->9000/tcp"}\n',
+        compose_output=COMPOSE_OUTPUT,
+        caddy_output=CADDY_OUTPUT,
+        nginx_output=NGINX_OUTPUT,
+    )
+
+    by_id = {record.service_id: record for record in records}
+
+    web = by_id["svc_node-a_web-app"]
+    assert web.deploy_path == "/srv/web-app"
+    assert web.env_paths == ["/srv/web-app/.env"]
+    assert web.data_paths == ["/srv/web-app/data"]
+    assert web.config_paths == ["/srv/web-app/config/nginx.conf"]
+    assert web.domains == ["app.example.com"]
+    assert web.health_check_url == "http://127.0.0.1:8080/readyz"
+    assert web.metadata["reverse_proxy"]["source"] == "caddy"
+    assert web.metadata["health_check"]["source"] == "compose"
+
+    api = by_id["svc_node-a_custom-api"]
+    assert api.domains == ["api.example.com"]
+    assert api.health_check_url == "http://127.0.0.1:9000/healthz"
+    assert api.metadata["reverse_proxy"]["source"] == "nginx"
+
+    status = by_id["svc_node-a_hmn-status"]
+    assert status.domains == ["status.example.com"]
+    assert status.metadata["exposure"]["scope"] == "status-page"

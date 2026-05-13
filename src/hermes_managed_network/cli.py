@@ -61,6 +61,7 @@ from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH, ServiceRegistry
 from .service_registry_adapters import registry_from_storage_records
 from .storage import SQLiteStore, ServiceRecord
 from .uptime import build_uptime_plan, render_uptime_plan_json
+from .coolify_provider import build_coolify_sync_dry_run, sync_coolify_registry_from_fixture
 from .approval_gateway import (
     ApprovalGatewayClientConfig,
     ApprovalGatewayHttpApiClient,
@@ -2221,6 +2222,28 @@ def service_show(service_id: str, db: Path = typer.Option(None, "--db", help="SQ
         typer.echo(f"service not found: {service_id}", err=True)
         raise typer.Exit(1)
     _echo_service_detail(service)
+
+
+@service_app.command("coolify-sync")
+def service_coolify_sync(
+    fixture: Path = typer.Option(..., "--fixture", help="Coolify fixture JSON 路径"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    apply: bool = typer.Option(False, "--apply", help="写入 HMN service registry 并记录审计"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    store = _store(db)
+    if apply:
+        payload = sync_coolify_registry_from_fixture(store, fixture, source_label="coolify-sync")
+        payload["dry_run"] = False
+        payload["apply"] = True
+    else:
+        payload = build_coolify_sync_dry_run(fixture)
+        payload["dry_run"] = True
+        payload["apply"] = False
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    typer.echo(f"coolify sync dry_run={payload['dry_run']} service_count={payload['service_count']}")
 
 
 @node_app.command("list")

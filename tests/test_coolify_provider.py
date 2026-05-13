@@ -6,6 +6,7 @@ from hermes_managed_network.coolify_provider import (
     CoolifyProvider,
     build_coolify_sync_dry_run,
     discover_coolify_services_from_fixture,
+    sync_coolify_registry_from_fixture,
 )
 
 
@@ -198,5 +199,58 @@ def test_build_coolify_sync_dry_run_returns_sanitized_summary(tmp_path):
     assert "super-secret-token" not in rendered
     assert "top-secret" not in rendered
     assert "refresh-secret" not in rendered
+    assert "repo-token" not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_sync_coolify_registry_from_fixture_maps_to_hmn_storage_records_and_audits(tmp_path):
+    fixture_path = tmp_path / "coolify.json"
+    fixture_path.write_text(json.dumps(_fixture_payload()), encoding="utf-8")
+
+    db = tmp_path / "hmn.db"
+    from hermes_managed_network.storage import SQLiteStore
+
+    store = SQLiteStore(db)
+
+    payload = sync_coolify_registry_from_fixture(store, fixture_path, source_label="coolify-sync")
+
+    assert payload["provider"] == "coolify"
+    assert payload["mode"] == "apply"
+    assert payload["write"] is True
+    assert payload["service_count"] == 2
+    assert payload["audit_action"] == "coolify_registry_sync"
+
+    web = store.load_service_record("svc_edge-01_demo-web")
+    assert web is not None
+    assert web.kind == "coolify"
+    assert web.node_id == "edge-01"
+    assert web.domains == ["demo.example.com", "www.demo.example.com"]
+    assert web.deploy_path == "root@10.0.0.8:/srv/demo"
+    assert web.monitor_enabled is True
+    assert web.status == "running"
+    assert web.health_check_url == "https://demo.example.com"
+    assert web.metadata["coolify"]["repo"] == "[REDACTED]"
+    assert web.metadata["coolify"]["deploy_target"]["name"] == "edge-01-docker"
+    assert web.metadata["env_summary"]["API_KEY"] == "[REDACTED]"
+    assert web.metadata["service_instance"]["provider"] == "coolify"
+    assert web.metadata["service_instance"]["instance_id"] == "app-1"
+
+    worker = store.load_service_record("svc_edge-01_worker")
+    assert worker is not None
+    assert worker.monitor_enabled is False
+    assert worker.health_check_url == ""
+    assert worker.status == "stopped"
+    assert worker.metadata["coolify"]["repo_branch"] == "develop"
+
+    audits = store.list_audit_events()
+    assert len(audits) == 1
+    assert audits[0].action == "coolify_registry_sync"
+    assert audits[0].subject_type == "provider"
+    assert audits[0].subject_id == "coolify"
+    assert audits[0].details["service_ids"] == ["svc_edge-01_demo-web", "svc_edge-01_worker"]
+    assert audits[0].details["source"] == f"coolify-sync:{fixture_path}"
+    rendered = json.dumps(audits[0].details, ensure_ascii=False)
+    assert "secret-api-key" not in rendered
+    assert "super-secret-password" not in rendered
     assert "repo-token" not in rendered
     assert "[REDACTED]" in rendered

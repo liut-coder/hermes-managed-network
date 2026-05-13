@@ -155,11 +155,11 @@
 
 ### 服务自动发现与状态页同步
 
-- [>] 节点服务自动发现：后台实现中（worktree `/tmp/hmn-service-discovery-status-sync`），完成后回填。
-- [>] 建立 service registry：后台实现中（worktree `/tmp/hmn-service-discovery-status-sync`），完成后回填。
-- [>] 从 Coolify 同步 service registry：后台实现中（worktree `/tmp/hmn-service-discovery-status-sync`），完成后回填。
+- [x] 节点服务自动发现：识别 systemd unit、Docker / Compose、Caddy / Nginx 入口、监听端口、公开 URL 和本地健康检查路径。（已完成 captured text deterministic discovery，保留 dry-run/apply 边界）
+- [x] 建立 service registry：服务绑定 node、runtime、端口、域名、部署路径、配置文件、env 文件、数据目录、反代入口和健康检查策略。（已完成发现结果写入 DB，并保留 curated/manual top-level 字段）
+- [x] 从 Coolify 同步 service registry：把 Coolify app、domain、repo、deploy target、env 摘要和运行状态映射成 HMN service/service_instance。（已完成 fixture/dry-run/apply，同步写 audit 且敏感值脱敏）
 - [x] Uptime Kuma Provider：把已发现服务自动 upsert 到 Uptime Kuma，并绑定状态页分组；新增、变更、下线都写 audit。（阶段性完成：`hmn uptime plan` 生成 upsert 计划，`hmn uptime sync` 创建高风险审批且审批前不触达 provider）
-- [>] 监控策略自动生成：后台实现中（worktree `/tmp/hmn-service-discovery-status-sync`），完成后回填。
+- [x] 监控策略自动生成：根据服务类型选择 HTTP / keyword / TCP / ping 检查，避免把状态页自身或内部-only 服务错误公开。
 
 ### 部署与流水线编排
 
@@ -203,29 +203,4 @@
 - [ ] 为常见操作建立任务模板：接入、巡检、服务发现、文档刷新、备份计划、恢复计划、迁移计划。
 - [ ] 把高频成功 runbook 固化为 `hmn ... plan/apply/verify` 命令。
 - [ ] 为一键自动化保留安全边界：plan 可自动生成，apply 按风险进入 approval，执行结果写 audit，并提供 verify / rollback hint。
-- [ ] Orchestrator 定期扫描“仍依赖 Hermes 手工判断”的流程，生成自动化候选 backlog。
-
-### 部署与流水线编排
-
-- [ ] `hmn deploy plan <service>`：读取 service registry 和 Deployment/CI Provider，生成非变更部署计划、风险等级、验证步骤和 rollback hint。
-- [ ] `hmn deploy apply <service>`：按风险走 approval，触发 GitHub Actions / Coolify / SSH fallback，并写 deployment record 与 audit。
-- [ ] `hmn deploy status <service|run_id>`：聚合 GitHub Actions、Coolify、Uptime Kuma 和 HMN verify 结果。
-- [ ] `hmn deploy rollback <service|run_id>`：优先调用 Coolify rollback；高风险必须 approval，并在 rollback 后 verify/monitor/docs sync。
-- [ ] Webhook 接入：支持 GitHub/Coolify webhook 回写 deployment 状态。
-- [ ] 不实现通用 DAG pipeline runner；复杂 stage/dependency 仅以外部 CI/CD Provider 或轻量 orchestrator adapter 接入。
-
-### 备份、恢复与迁移
-
-- [ ] 服务级备份策略：基于 service registry 自动生成 include/exclude、停机/热备要求、数据库 dump 策略、保留周期和校验策略。
-- [ ] 集中备份归档：备份产物、manifest、checksum、恢复说明集中保存到指定备份目录/文档中心。
-- [ ] 自动生成迁移文档：为每个服务生成源节点、目标节点、依赖、数据目录、端口/域名、备份包、恢复步骤、验证步骤和回滚步骤。
-- [ ] 一键恢复 MVP：显式审批后的单服务恢复；恢复前校验 checksum、目标路径、权限、端口冲突和运行时依赖。
-- [ ] 一键迁移 MVP：plan → backup → transfer → restore → verify → switch traffic → rollback hint。
-- [ ] 低停机/无损迁移增强：维护窗口、增量同步、最终一致性校验、流量切换和失败回滚；不能默认承诺所有服务无损。
-
-### 一次部署与网内机器托管
-
-- [ ] 主控一次部署后批量接入网内机器：结合 Headscale/Tailscale preauth key、join token、worker installer 和 approval 完成批量 onboarding。
-- [ ] 网内节点能力盘点：接入后自动识别 full-worker / lite-worker / beacon-only / proxy-managed，以及可用 service manager。
-- [ ] 跨节点迁移计划：根据目标节点能力、网络可达性、磁盘空间、服务依赖和已有备份，推荐迁移目标与迁移策略。
-- [ ] 迁移后自动收口：更新 Uptime Kuma、服务文档、机器文档、域名索引、Runbook、backup manifest 和 audit。
+- [ ] Orchestrator 定期扫描“仍依赖 Hermes 手工判断”的流程，生成自动化候选 backlog.
