@@ -155,11 +155,11 @@
 
 ### 服务自动发现与状态页同步
 
-- [ ] 节点服务自动发现：识别 systemd unit、Docker / Compose、Caddy / Nginx 入口、监听端口、公开 URL 和本地健康检查路径。
-- [ ] 建立 service registry：服务绑定 node、runtime、端口、域名、部署路径、配置文件、env 文件、数据目录、反代入口和健康检查策略。
-- [ ] 从 Coolify 同步 service registry：把 Coolify app、domain、repo、deploy target、env 摘要和运行状态映射成 HMN service/service_instance。
+- [x] 节点服务自动发现：识别 systemd unit、Docker / Compose、Caddy / Nginx 入口、监听端口、公开 URL 和本地健康检查路径。（已完成 captured text deterministic discovery，保留 dry-run/apply 边界）
+- [x] 建立 service registry：服务绑定 node、runtime、端口、域名、部署路径、配置文件、env 文件、数据目录、反代入口和健康检查策略。（已完成发现结果写入 DB，并保留 curated/manual top-level 字段）
+- [x] 从 Coolify 同步 service registry：把 Coolify app、domain、repo、deploy target、env 摘要和运行状态映射成 HMN service/service_instance。（已完成 fixture/dry-run/apply，同步写 audit 且敏感值脱敏）
 - [x] Uptime Kuma Provider：把已发现服务自动 upsert 到 Uptime Kuma，并绑定状态页分组；新增、变更、下线都写 audit。（阶段性完成：`hmn uptime plan` 生成 upsert 计划，`hmn uptime sync` 创建高风险审批且审批前不触达 provider）
-- [ ] 监控策略自动生成：根据服务类型选择 HTTP / keyword / TCP / ping 检查，避免把状态页自身或内部-only 服务错误公开。
+- [x] 监控策略自动生成：根据服务类型选择 HTTP / keyword / TCP / ping 检查，避免把状态页自身或内部-only 服务错误公开。
 
 ### 部署与流水线编排
 

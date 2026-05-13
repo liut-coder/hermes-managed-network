@@ -176,3 +176,107 @@ def test_uptime_plan_uses_domain_before_port_when_both_exist(tmp_path):
     ]
     assert payload["skip"] == []
     assert payload["update"] == []
+
+
+
+def test_uptime_plan_auto_selects_http_keyword_tcp_and_ping_without_exposing_internal_only_services(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="svc_web",
+            name="web",
+            node_id="node-a",
+            kind="docker",
+            domains=["app.example.com"],
+            ports=[8080],
+            health_check_url="https://app.example.com/readyz",
+            monitor_enabled=True,
+            metadata={"monitor": {"keyword": "ready"}},
+        )
+    )
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="svc_tcp",
+            name="smtp",
+            node_id="node-b",
+            kind="systemd",
+            ports=[25],
+            monitor_enabled=True,
+            metadata={},
+        )
+    )
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="svc_ping",
+            name="backup-host",
+            node_id="node-c",
+            kind="host",
+            monitor_enabled=True,
+            metadata={"monitor": {"strategy": "ping"}},
+        )
+    )
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="svc_internal",
+            name="internal-api",
+            node_id="node-d",
+            kind="docker",
+            ports=[9000],
+            monitor_enabled=True,
+            metadata={"exposure": {"scope": "internal-only"}},
+        )
+    )
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="svc_status",
+            name="hmn-status",
+            node_id="node-e",
+            kind="docker",
+            domains=["status.example.com"],
+            ports=[3001],
+            monitor_enabled=True,
+            metadata={"exposure": {"scope": "status-page"}},
+        )
+    )
+
+    result = CliRunner().invoke(app, ["uptime", "plan", "--db", str(db), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["create"] == [
+        {
+            "service_id": "svc_web",
+            "name": "web",
+            "monitor": {
+                "type": "keyword",
+                "name": "web (node-a)",
+                "url": "https://app.example.com/readyz",
+                "keyword": "ready",
+            },
+        },
+        {
+            "service_id": "svc_tcp",
+            "name": "smtp",
+            "monitor": {
+                "type": "tcp",
+                "name": "smtp (node-b)",
+                "host": "node-b",
+                "port": 25,
+            },
+        },
+        {
+            "service_id": "svc_ping",
+            "name": "backup-host",
+            "monitor": {
+                "type": "ping",
+                "name": "backup-host (node-c)",
+                "host": "node-c",
+            },
+        },
+    ]
+    assert payload["skip"] == [
+        {"service_id": "svc_internal", "name": "internal-api", "reason": "internal-only service"},
+        {"service_id": "svc_status", "name": "hmn-status", "reason": "status page service"},
+    ]
+    assert payload["update"] == []

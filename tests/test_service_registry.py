@@ -1,7 +1,30 @@
+import json
+
 from typer.testing import CliRunner
 
 from hermes_managed_network.cli import app
 from hermes_managed_network.storage import SQLiteStore, ServiceRecord
+
+
+def _coolify_fixture() -> dict[str, object]:
+    return {
+        "server": {"name": "edge-01"},
+        "project": {"name": "demo-project"},
+        "environment": {"name": "production"},
+        "applications": [
+            {
+                "uuid": "app-1",
+                "name": "demo-web",
+                "status": "running",
+                "domains": [{"domain": "demo.example.com"}],
+                "ports": [80, 443],
+                "git_repository": "https://token@github.com/example/demo-web.git",
+                "git_branch": "main",
+                "deploy_target": {"destination": "root@10.0.0.8:/srv/demo", "authorization": "Bearer secret"},
+                "env": {"API_KEY": "secret-key"},
+            }
+        ],
+    }
 
 
 def test_service_registry_save_load_list_roundtrip(tmp_path):
@@ -112,3 +135,49 @@ def test_service_add_list_show_roundtrip(tmp_path):
     assert "runtime: compose" in shown.stdout
     assert "domains: mail.example.invalid" in shown.stdout
     assert "ports: 443" in shown.stdout
+
+
+def test_service_coolify_sync_apply_writes_registry_and_audit(tmp_path):
+    db = tmp_path / "hmn.db"
+    fixture = tmp_path / "coolify.json"
+    fixture.write_text(json.dumps(_coolify_fixture()), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["service", "coolify-sync", "--db", str(db), "--fixture", str(fixture), "--apply", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is False
+    assert payload["apply"] is True
+    assert payload["provider"] == "coolify"
+    assert payload["service_count"] == 1
+
+    store = SQLiteStore(db)
+    saved = store.load_service_record("svc_edge-01_demo-web")
+    assert saved is not None
+    assert saved.node_id == "edge-01"
+    assert saved.deploy_path == "root@10.0.0.8:/srv/demo"
+    assert saved.metadata["coolify"]["repo"] == "[REDACTED]"
+
+    audits = store.list_audit_events()
+    assert len(audits) == 1
+    assert audits[0].action == "coolify_registry_sync"
+    assert audits[0].subject_id == "coolify"
+
+
+def test_service_coolify_sync_defaults_to_dry_run_without_writes(tmp_path):
+    db = tmp_path / "hmn.db"
+    fixture = tmp_path / "coolify.json"
+    fixture.write_text(json.dumps(_coolify_fixture()), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["service", "coolify-sync", "--db", str(db), "--fixture", str(fixture), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is True
+    assert payload["apply"] is False
+    assert payload["write"] is False
+    assert payload["service_count"] == 1
+
+    store = SQLiteStore(db)
+    assert store.list_service_records() == []
+    assert store.list_audit_events() == []
