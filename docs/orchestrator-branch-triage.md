@@ -241,6 +241,74 @@ bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check
 ```
 
+## Latest cron reconciliation — 2026-05-13 12:44 EDT
+
+Native backlog command was rerun after mandatory git/worktree/cron inspection:
+
+```bash
+.venv/bin/python -m hermes_managed_network.cli orchestrator backlog --repo . --base feat/v1-1-useful-ops-mvp
+```
+
+Observed branch state:
+
+- Branch total: 12.
+- Local branches: 2 (`feat/v1-1-useful-ops-mvp`, `main`).
+- Worktrees: 1 (`/root/hermes-managed-network`).
+- WIP: 0/3.
+- `generated`: empty.
+- `needs-review`: empty.
+- `merge-ready`: empty.
+- `conflict`: empty.
+- `stale`: empty.
+- `duplicate`: empty.
+- `abandoned`: empty.
+- `merged` / cleanup candidates:
+  - `docs/architecture-backlog`
+  - `feat/monitor-closed-loop`
+  - `feat/p1-remote-smoke-script`
+  - `feat/p1-telegram-approval-smoke-script`
+  - `feat/production-readiness-doctor`
+  - `feat/production-readiness-p0`
+  - `feat/useful-ops-mvp`
+  - `fix/production-p0-readiness`
+  - `hmn-task-provider-contract`
+  - `hmn-task20-config-provider`
+
+Manual priority branch probes in this cron pass:
+
+- `hmn-task12-coolify`: absent locally/remotely.
+- `hmn-config-provider-merge-check`: absent locally/remotely.
+- `hmn-docs-center-apply`: absent locally/remotely.
+- `hmn-task17-restore-plan`: absent locally/remotely.
+- `hmn-task18-migration-plan`: absent locally/remotely.
+- `hmn-task19-onboarding-plan`: absent locally/remotely.
+- `origin/feat/monitor-closed-loop`: still not a direct ancestor by raw `merge-base`, but native backlog classifies it as `merged` because its task-specific monitor/backup/docs-sync slice is already represented on HEAD; broad merge remains unsafe stale-base cleanup.
+- `origin/feat/production-readiness-p0` and `origin/fix/production-p0-readiness`: still not direct ancestors by raw `merge-base`, but production readiness code/docs/tests are already extracted on HEAD; broad merge remains unsafe stale-base cleanup.
+- `origin/hmn-task20-config-provider` and `origin/hmn-task-provider-contract`: direct ancestors / absorbed.
+
+Cron state:
+
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 13:12 EDT.
+- No active duplicate HMN merge-first cron was observed in the live cron list.
+
+Working tree state:
+
+- No tracked code diff was present at the start of this pass.
+- Untracked generated artifacts remain unchanged and intentionally outside this P0 merge-first cleanup slice:
+  - `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated implementation plan.
+  - `uv.lock` — generated lockfile; left uncommitted until the project explicitly adopts uv lockfile policy.
+
+This pass treated this triage-note refresh as the bounded file cluster. No new worker development was dispatched because cleanup-only remote branches still need an explicit delete/abandon policy before opening another implementation slice.
+
+Focused gate for this pass:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_orchestrator_cli.py
+.venv/bin/python -m compileall -q src
+bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
+git diff --check
+```
+
 ## Next action
 
 Delete the absorbed remote cleanup branches after operator approval, or explicitly mark them abandoned. Only after that should the orchestrator move to the next P0 Worker timeout / heartbeat / cancel / watch implementation slice.
