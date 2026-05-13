@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 09:49 EDT
+## Latest cron reconciliation — 2026-05-13 10:23 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -150,7 +150,7 @@ Manual priority branch probes in this cron pass:
 
 Cron state:
 
-- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 10:17 EDT.
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 10:52 EDT.
 - No active duplicate HMN merge-first cron was observed in the live cron list.
 
 Working tree state:
