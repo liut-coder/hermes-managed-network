@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 from hermes_managed_network.cli import app
 from hermes_managed_network.backup_provider import build_backup_plan_from_path
 from hermes_managed_network.service_registry import ServiceRecord, ServiceRegistry
+from hermes_managed_network.storage import SQLiteStore
 
 
 runner = CliRunner()
@@ -228,3 +229,89 @@ def test_backup_plan_cli_json_is_parseable_and_masks_sensitive_fields(tmp_path):
     assert "worker-secret" not in rendered
     assert "kopia-secret-token" not in rendered
     assert rendered.count("[REDACTED]") >= 1
+
+
+
+def test_backup_provider_apply_requires_approval_and_records_audit_without_execution(tmp_path):
+    registry_path = _write_registry(tmp_path)
+    db = tmp_path / "hmn.db"
+
+    result = runner.invoke(
+        app,
+        [
+            "backup",
+            "provider-apply",
+            "--service-registry",
+            str(registry_path),
+            "--service-id",
+            "svc-demo-web",
+            "--adapter",
+            "restic",
+            "--db",
+            str(db),
+            "--request-by",
+            "cron",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    store = SQLiteStore(db)
+    approvals = store.list_approval_requests()
+    audit_events = store.list_audit_events()
+
+    assert payload["mode"] == "apply_request"
+    assert payload["dry_run"] is True
+    assert payload["approval_required"] is True
+    assert payload["provider"] == "backup-provider"
+    assert payload["tool_candidates"] == ["restic"]
+    assert payload["execution"] == {
+        "requested": False,
+        "not_executed": True,
+        "external_writes_blocked": True,
+    }
+    assert payload["approval_id"].startswith("appr_")
+    assert len(approvals) == 1
+    assert approvals[0].action == "backup.apply"
+    assert approvals[0].risk == "high"
+    assert approvals[0].details["tool_candidates"] == ["restic"]
+    assert len(audit_events) >= 1
+    assert any(event.action == "approval/request" for event in audit_events)
+
+
+
+def test_backup_provider_apply_can_target_multiple_mature_tools_in_single_dry_run_request(tmp_path):
+    registry_path = _write_registry(tmp_path)
+    db = tmp_path / "hmn.db"
+
+    result = runner.invoke(
+        app,
+        [
+            "backup",
+            "provider-apply",
+            "--service-registry",
+            str(registry_path),
+            "--adapter",
+            "restic",
+            "--adapter",
+            "borgmatic",
+            "--adapter",
+            "kopia",
+            "--db",
+            str(db),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+
+    assert payload["tool_candidates"] == ["restic", "borgmatic", "kopia"]
+    assert payload["service_count"] == 3
+    assert payload["provider_capabilities"]["verify"] is True
+    assert payload["provider_capabilities"]["restore_docs"] is True
+    assert payload["provider_capabilities"]["external_execution_enabled"] is False
+    assert payload["services"][0]["approval"]["approval_required"] is True
+    assert payload["services"][0]["approval"]["not_executed"] is True
+    assert payload["services"][0]["approval"]["machine_changed"] is False
