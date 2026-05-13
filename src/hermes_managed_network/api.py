@@ -497,7 +497,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         if not is_worker_compatible(current_version_info().worker_protocol_version, request.worker_protocol_version):
             raise HTTPException(status_code=426, detail="worker protocol version mismatch; update node worker")
-        task = store.next_pending_task(node_id, executor="worker")
+        store.expire_stuck_tasks()
+        task = store.claim_next_task(node_id, executor="worker")
         if task is None:
             return NoTaskResponse(task=None)
         return TaskResponse(
@@ -527,6 +528,8 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         if node.fingerprint != request.fingerprint:
             raise HTTPException(status_code=403, detail="node fingerprint mismatch")
         updated = store.complete_task(task_id, exit_code=request.exit_code, stdout=request.stdout, stderr=request.stderr)
+        if updated is None:
+            raise HTTPException(status_code=409, detail="task is already terminal")
         return TaskResultResponse(task_id=updated.task_id, status=updated.status)
 
     def _resolve_approval(

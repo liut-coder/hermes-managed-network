@@ -382,6 +382,80 @@ def test_task_lifecycle_assigns_next_task_and_records_result(tmp_path):
     assert store.list_audit_events()[-1].action == "task_result"
 
 
+def test_task_next_expires_stuck_before_returning_pending_task(tmp_path):
+    from hermes_managed_network.inventory import Node
+    from datetime import datetime, timezone
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_watchdog_api",
+            fingerprint="sha256:watchdog-api",
+            hostname="watchdog-api",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    stuck = store.create_task(node_id="node_watchdog_api", command="stuck")
+    store.claim_next_task("node_watchdog_api", lease_seconds=1)
+    pending = store.create_task(node_id="node_watchdog_api", command="pending")
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET lease_expires_at = ? WHERE task_id = ?",
+            (datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc).isoformat(), stuck.task_id),
+        )
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        "/api/v1/nodes/node_watchdog_api/tasks/next",
+        json={"fingerprint": "sha256:watchdog-api", "worker_protocol_version": current_version_info().worker_protocol_version},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["task_id"] == pending.task_id
+    assert store.load_task(stuck.task_id).status == "failed"
+    assert store.load_task(stuck.task_id).failure_reason == "worker_lease_expired"
+    assert store.load_task(pending.task_id).status == "running"
+
+
+def test_late_task_result_is_rejected_after_watchdog_failure(tmp_path):
+    from hermes_managed_network.inventory import Node
+    from datetime import datetime, timedelta, timezone
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_late_result",
+            fingerprint="sha256:late-result",
+            hostname="late-result",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    task = store.create_task(node_id="node_late_result", command="slow")
+    store.claim_next_task("node_late_result", lease_seconds=1)
+    store.expire_stuck_tasks(now=datetime.now(timezone.utc) + timedelta(seconds=2))
+    client = TestClient(create_app(db))
+
+    response = client.post(
+        f"/api/v1/tasks/{task.task_id}/result",
+        json={"fingerprint": "sha256:late-result", "exit_code": 0, "stdout": "late", "stderr": ""},
+    )
+
+    assert response.status_code == 409
+    assert store.load_task(task.task_id).status == "failed"
+    assert store.load_task(task.task_id).failure_reason == "worker_lease_expired"
+    assert store.load_task(task.task_id).stdout == ""
+
+
 def test_task_next_returns_no_task_when_queue_empty(tmp_path):
     from hermes_managed_network.inventory import Node
 

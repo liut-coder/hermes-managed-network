@@ -6,6 +6,21 @@ from hermes_managed_network.storage import SQLiteStore
 from hermes_managed_network.tokens import JoinTokenStore
 
 
+def _save_managed_node(store: SQLiteStore, node_id: str = "node_watchdog") -> None:
+    store.save_node(
+        Node(
+            node_id=node_id,
+            fingerprint=f"sha256:{node_id}",
+            hostname=node_id,
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe", "task"],
+        )
+    )
+
+
 def test_sqlite_persists_join_tokens(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
@@ -34,6 +49,129 @@ def test_sqlite_marks_pending_expired_tokens(tmp_path):
     assert changed == [expired.value]
     assert store.load_token(expired.value).status == "expired"
     assert store.load_token(fresh.value).status == "pending"
+
+
+def test_expire_stuck_tasks_marks_only_expired_running_worker_tasks_failed_and_audits(tmp_path):
+    store = SQLiteStore(tmp_path / "hmn.db")
+    _save_managed_node(store)
+    old = store.create_task(node_id="node_watchdog", command="old")
+    store.claim_next_task("node_watchdog", lease_seconds=30)
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET lease_expires_at = ? WHERE task_id = ?",
+            (datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc).isoformat(), old.task_id),
+        )
+
+    expired = store.expire_stuck_tasks(now=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
+
+    assert expired == [old.task_id]
+    loaded = store.load_task(old.task_id)
+    assert loaded.status == "failed"
+    assert loaded.failure_reason == "worker_lease_expired"
+    assert loaded.completed_at is not None
+    assert store.list_audit_events()[-1].action == "watchdog/expire"
+
+
+def test_expire_stuck_tasks_does_not_touch_fresh_pending_or_terminal_tasks(tmp_path):
+    store = SQLiteStore(tmp_path / "hmn.db")
+    _save_managed_node(store)
+    fresh = store.create_task(node_id="node_watchdog", command="fresh")
+    store.claim_next_task("node_watchdog", lease_seconds=900)
+    terminal = store.create_task(node_id="node_watchdog", command="terminal")
+    # complete_task only accepts claimed/running tasks; claim the terminal task explicitly.
+    store.claim_next_task("node_watchdog", lease_seconds=900)
+    store.complete_task(terminal.task_id, exit_code=0, stdout="ok", stderr="")
+    pending = store.create_task(node_id="node_watchdog", command="pending")
+
+    expired = store.expire_stuck_tasks(now=datetime.now(timezone.utc))
+
+    assert expired == []
+    assert store.load_task(fresh.task_id).status == "running"
+    assert store.load_task(pending.task_id).status == "pending"
+    assert store.load_task(terminal.task_id).status == "succeeded"
+
+
+def test_claim_next_task_is_atomic_under_concurrent_workers(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _save_managed_node(store, "node_atomic")
+    task = store.create_task(node_id="node_atomic", command="uptime")
+
+    def claim_once():
+        return SQLiteStore(db).claim_next_task("node_atomic", lease_seconds=900)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        claimed = list(executor.map(lambda _: claim_once(), range(16)))
+
+    claimed_ids = [item.task_id for item in claimed if item is not None]
+    assert claimed_ids == [task.task_id]
+    loaded = SQLiteStore(db).load_task(task.task_id)
+    assert loaded.status == "running"
+    assert loaded.claimed_at is not None
+    assert loaded.lease_expires_at is not None
+    assert loaded.attempt_count == 1
+
+
+def test_complete_task_does_not_overwrite_terminal_watchdog_failure(tmp_path):
+    store = SQLiteStore(tmp_path / "hmn.db")
+    _save_managed_node(store)
+    task = store.create_task(node_id="node_watchdog", command="slow")
+    store.claim_next_task("node_watchdog", lease_seconds=1)
+    store.expire_stuck_tasks(now=datetime.now(timezone.utc) + timedelta(seconds=2))
+
+    completed = store.complete_task(task.task_id, exit_code=0, stdout="late", stderr="")
+
+    assert completed is None
+    loaded = store.load_task(task.task_id)
+    assert loaded.status == "failed"
+    assert loaded.failure_reason == "worker_lease_expired"
+    assert loaded.stdout == ""
+
+
+def test_complete_task_only_accepts_running_tasks(tmp_path):
+    store = SQLiteStore(tmp_path / "hmn.db")
+    _save_managed_node(store)
+    task = store.create_task(node_id="node_watchdog", command="pending")
+
+    completed = store.complete_task(task.task_id, exit_code=0, stdout="bad", stderr="")
+
+    assert completed is None
+    loaded = store.load_task(task.task_id)
+    assert loaded.status == "pending"
+    assert loaded.stdout == ""
+
+
+def test_complete_task_does_not_race_over_watchdog_expiry(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _save_managed_node(store)
+    task = store.create_task(node_id="node_watchdog", command="slow")
+    stale_loaded = store.claim_next_task("node_watchdog", lease_seconds=1)
+    assert stale_loaded is not None
+    store.expire_stuck_tasks(now=datetime.now(timezone.utc) + timedelta(seconds=2))
+
+    completed = SQLiteStore(db).complete_task(task.task_id, exit_code=0, stdout="late", stderr="")
+
+    assert completed is None
+    loaded = store.load_task(task.task_id)
+    assert loaded.status == "failed"
+    assert loaded.failure_reason == "worker_lease_expired"
+    assert loaded.stdout == ""
+
+
+def test_complete_task_caps_stdout_and_stderr(tmp_path):
+    store = SQLiteStore(tmp_path / "hmn.db")
+    _save_managed_node(store)
+    task = store.create_task(node_id="node_watchdog", command="noisy")
+    store.claim_next_task("node_watchdog")
+
+    completed = store.complete_task(task.task_id, exit_code=1, stdout="o" * 70000, stderr="e" * 70000)
+
+    assert completed is not None
+    assert len(completed.stdout) < 70000
+    assert len(completed.stderr) < 70000
+    assert "truncated" in completed.stdout
+    assert "truncated" in completed.stderr
 
 
 def test_sqlite_persists_nodes(tmp_path):

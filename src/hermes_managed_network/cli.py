@@ -98,6 +98,7 @@ app = typer.Typer(
         "  hmn network node tags set 设置节点 tag（审批）\n"
         "  hmn task run              下发任务（worker/ssh）\n"
         "  hmn task list             查看任务队列\n"
+        "  hmn task recover-stuck    恢复过期 running 任务\n"
         "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
         "  hmn service discover      服务发现 dry-run/apply\n"
         "  hmn deploy plan --db ./hmn.db 从 DB 生成部署计划\n"
@@ -376,6 +377,7 @@ def _show_menu() -> None:
     typer.echo("12. hmn network node tags set        设置节点 tag（审批）")
     typer.echo("13. hmn task run                     下发任务（worker/ssh）")
     typer.echo("14. hmn task list                    查看任务")
+    typer.echo("    hmn task recover-stuck           恢复过期 running 任务")
     typer.echo("    hmn task ssh-run-next            执行下一个 SSH 任务")
     typer.echo("15. hmn orchestrator enqueue         加入托管队列")
     typer.echo("    hmn orchestrator worker register 登记调度 worker")
@@ -414,6 +416,7 @@ def _show_menu() -> None:
     typer.echo("  hmn task run 'uptime'")
     typer.echo("  hmn task run 'uptime' --executor ssh --wait")
     typer.echo("  hmn task list")
+    typer.echo("  hmn task recover-stuck --older-than 900")
     typer.echo("  hmn task ssh-run-next")
     typer.echo("  hmn service discover --node-id node1 --systemd-output systemd.txt")
     typer.echo("  hmn service discover --node-id node1 --docker-output docker.jsonl --apply")
@@ -463,6 +466,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("12) hmn network node tags set  设置节点 tag（审批）")
         typer.echo("13) hmn task run      下发任务")
         typer.echo("14) hmn task list    查看任务")
+        typer.echo("    hmn task recover-stuck  恢复过期 running 任务")
         typer.echo("    hmn task ssh-run-next  执行 SSH 任务")
         typer.echo("    hmn service discover   服务发现 dry-run/apply")
         typer.echo("15) hmn component list   查看组件")
@@ -3087,6 +3091,17 @@ def create_task_command(
 def list_task_commands(db: Path = typer.Option(None, "--db", help="SQLite 数据库路径")) -> None:
     for task in _store(db).list_tasks():
         typer.echo(f"{task.task_id}\t{task.node_id}\t{task.status}\texecutor={task.executor}\trisk={task.risk}\t{task.command}")
+
+
+@task_app.command("recover-stuck")
+def recover_stuck_tasks_command(
+    older_than: int = typer.Option(..., "--older-than", help="只恢复 lease 至少已过期 N 秒的 running worker 任务"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    expired = _store(db).expire_stuck_tasks(older_than_seconds=older_than)
+    typer.echo(f"expired count: {len(expired)}")
+    for task_id in expired:
+        typer.echo(task_id)
 
 
 @task_app.command("ssh-run-next")
