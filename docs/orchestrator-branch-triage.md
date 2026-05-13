@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 09:14 EDT
+## Latest cron reconciliation — 2026-05-13 09:49 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -138,19 +138,19 @@ Observed branch state:
 
 Manual priority branch probes in this cron pass:
 
-- `hmn-task12-coolify`: absent locally and on origin.
-- `hmn-config-provider-merge-check`: absent locally and on origin.
-- `hmn-docs-center-apply`: absent locally and on origin.
-- `hmn-task17-restore-plan`: absent locally and on origin.
-- `hmn-task18-migration-plan`: absent locally and on origin.
-- `hmn-task19-onboarding-plan`: absent locally and on origin.
-- `origin/feat/monitor-closed-loop`: still present as cleanup-only remote branch; task-specific monitor/component slices are already on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
-- `origin/feat/production-readiness-p0`: still present as cleanup-only remote branch; production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
-- `origin/fix/production-p0-readiness`: still present as cleanup-only remote branch; same production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
+- `hmn-task12-coolify`: absent locally.
+- `hmn-config-provider-merge-check`: absent locally.
+- `hmn-docs-center-apply`: absent locally.
+- `hmn-task17-restore-plan`: absent locally.
+- `hmn-task18-migration-plan`: absent locally.
+- `hmn-task19-onboarding-plan`: absent locally.
+- `origin/feat/monitor-closed-loop`: still cleanup-only; task-specific monitor/component slices are already on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
+- `origin/feat/production-readiness-p0`: still cleanup-only; production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
+- `origin/fix/production-p0-readiness`: still cleanup-only; same production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
 
 Cron state:
 
-- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 09:41 EDT.
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 10:17 EDT.
 - No active duplicate HMN merge-first cron was observed in the live cron list.
 
 Working tree state:
@@ -160,9 +160,9 @@ Working tree state:
   - `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated implementation plan; outside current P0 merge-first priority, so left uncommitted.
   - `uv.lock` — generated lockfile; left uncommitted until the project explicitly adopts uv lockfile policy.
 
-This pass treated the branch-triage refresh itself as the bounded file cluster. No new worker development was dispatched because merge-first hygiene still requires clearing or explicitly abandoning remote cleanup branches before opening another implementation slice.
+This pass treated this triage-note refresh as the bounded file cluster. No new worker development was dispatched because merge-first hygiene still has cleanup-only remote branches that require an explicit delete/abandon policy before opening another implementation slice.
 
-Focused gate passed:
+Focused gate for this pass:
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_orchestrator_cli.py
@@ -175,4 +175,4 @@ Result: orchestrator CLI focused tests passed; compileall, shell syntax, and dif
 
 ## Next action
 
-Commit this refreshed triage note if the worktree remains clean except generated artifacts, then proceed to remote cleanup recommendation: delete absorbed remote branches after operator approval or continue P0 Worker timeout / heartbeat / cancel / watch only once cleanup policy is explicit.
+Either delete the absorbed remote cleanup branches after operator approval, or explicitly mark them abandoned. Only after that should the orchestrator move to the next P0 Worker timeout / heartbeat / cancel / watch implementation slice.
