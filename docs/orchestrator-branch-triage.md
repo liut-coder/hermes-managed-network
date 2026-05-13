@@ -56,9 +56,11 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Verification target: `tests/test_config_provider.py`.
 
 2. `hmn-docs-center-apply`
-   - Adds docs center apply mode plus restore/migration/onboarding stack.
-   - Status: `needs-review`; partially absorbed by mainline commits.
-   - Next: extract docs-center apply files only; do not broad-merge stale base.
+   - Status: `partially-extracted` / remaining stale-base cleanup candidate.
+   - Extracted files/hunks: `docs/docs-center.md`, `src/hermes_managed_network/docs_sync.py`, `tests/test_docs_sync_apply.py`, plus current-main CLI wiring for `hmn docs sync apply --root/--execute/--json`.
+   - Preserve current approval-only path when called without `--root`, `--execute`, or `--json`.
+   - Verification: `.venv/bin/python -m pytest -q tests/test_docs_sync.py tests/test_docs_sync_apply.py`, compileall, shell syntax, and diff-check passed.
+   - Remaining restore/migration/onboarding files are already present or handled by later duplicate checks; do not broad-merge stale branch.
 
 3. `hmn-task17-restore-plan`
    - Status: `duplicate-likely`; restore dry-run appears already merged as `a21e6dc`.
@@ -79,13 +81,13 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
 
 ## Next action
 
-Skip merging `hmn-config-provider-merge-check`; it is already absorbed and only shows stale-base CLI deletions when compared two-dot. The next merge-first action is `hmn-docs-center-apply`：extract docs-center apply files/hunks only, because restore/migration/onboarding are already partially present on HEAD.
+Next merge-first action: classify `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, and `hmn-task19-onboarding-plan` by blob/hash. They are expected duplicate/absorbed now that docs-center apply was extracted; verify before cleanup.
 
 Suggested gate:
 
 ```bash
-git diff --name-status feat/v1-1-useful-ops-mvp...hmn-docs-center-apply
-python -m pytest -q tests/test_docs_sync_apply.py
+for b in hmn-task17-restore-plan hmn-task18-migration-plan hmn-task19-onboarding-plan; do git diff --name-status feat/v1-1-useful-ops-mvp...$b; done
+.venv/bin/python -m pytest -q tests/test_restore_plan.py tests/test_migration_plan.py tests/test_onboarding_plan.py
 python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check

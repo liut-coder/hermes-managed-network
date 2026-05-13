@@ -23,10 +23,12 @@ from .deploy import render_deploy_plan_json, render_deploy_status_json
 from .discovery import discover_services_from_file
 from .docs_generate import load_registry_and_generate_docs
 from .docs_sync import (
+    DEFAULT_DOCS_CENTER_ROOT,
     DEFAULT_SERVER_DOC_ROOT,
     DEFAULT_SERVICE_DOC_ROOT,
     build_docs_sync_plan_from_path,
     parse_rename_host_args,
+    render_docs_sync_apply_json,
     render_docs_sync_plan_json,
 )
 from .docs import (
@@ -1705,16 +1707,47 @@ def docs_sync_apply(
     service_registry: Path = typer.Option(DEFAULT_SERVICE_REGISTRY_PATH, "--service-registry", help="service registry JSON 路径"),
     server_doc_root: Path = typer.Option(DEFAULT_SERVER_DOC_ROOT, "--server-doc-root", help="机器文档根目录"),
     service_doc_root: Path = typer.Option(DEFAULT_SERVICE_DOC_ROOT, "--service-doc-root", help="服务文档根目录"),
+    root: Path | None = typer.Option(None, "--root", help="文档中心根目录；默认 dry-run，不直接写 /srv/files"),
+    execute: bool = typer.Option(False, "--execute", help="显式执行写入；默认只输出 dry-run apply 结果"),
     rename_host: list[str] = typer.Option([], "--rename-host", help="主机改名映射 OLD=NEW，可重复"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
 ) -> None:
-    """为 docs-center 真实写入创建审批；审批前不写文件。"""
+    """生成 docs-center apply 结果；旧式无 --root/--execute 调用仍只创建审批。"""
+    try:
+        rename_mapping = parse_rename_host_args(rename_host)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    if root is not None or execute or json_output:
+        try:
+            rendered = render_docs_sync_apply_json(
+                service_registry,
+                root=root or DEFAULT_DOCS_CENTER_ROOT,
+                execute=execute,
+                rename_hosts=rename_mapping,
+            )
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+        if json_output:
+            typer.echo(rendered)
+            return
+        payload = json.loads(rendered)
+        typer.echo(
+            f"docs sync apply: services={payload['service_count']} servers={payload['server_count']} changed={payload['changed']}"
+        )
+        typer.echo(f"root: {payload['root']}")
+        typer.echo("dry-run，未写入文件" if payload["dry_run"] else "已写入 docs-center")
+        return
+
     try:
         plan = build_docs_sync_plan_from_path(
             service_registry,
             server_doc_root=server_doc_root,
             service_doc_root=service_doc_root,
-            rename_hosts=parse_rename_host_args(rename_host),
+            rename_hosts=rename_mapping,
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)

@@ -298,7 +298,7 @@ failed
 - GitHub Actions provider：主线大概率已吸收，需确认清理。
 - Deploy dry-run/status：主线大概率已吸收，需确认清理。
 - Config Provider inventory export：可能主线已吸收，需判重。
-- Docs Provider / docs-sync plan/apply：已有基础，docs-center apply 分支还需抽取。
+- Docs Provider / docs-sync plan/apply：docs-center apply 文件簇已抽取到主线，下一轮只需判重旧分支剩余 restore/migration/onboarding。
 - Restore / migration / onboarding dry-run：主线已部分吸收，需清理旧 worktree。
 
 ### 要做
