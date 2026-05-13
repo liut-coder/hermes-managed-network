@@ -97,11 +97,17 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Verification: `.venv/bin/python -m pytest -q tests/test_production_readiness_docs.py tests/test_linux_install.py::test_master_installer_detects_existing_version_policy_and_rollback_metadata tests/test_cli.py::test_doctor_command_reports_full_production_readiness tests/test_cli.py::test_doctor_command_reports_installer_readiness` passed.
    - Note: do not broad-merge either branch; two-dot diff would delete newer mainline CLI/provider/docs-sync code.
 
+8. `feat/useful-ops-mvp`
+   - Status: `absorbed-with-summary-doc-extracted` / cleanup candidate.
+   - Reason: branch is an old v1.1 dry-run integration branch. Its provider/backup/deploy/docs-sync/restore/migration/onboarding code is already represented on HEAD through newer hardened commits; broad merge reports many add/add and docs conflicts.
+   - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
+   - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
+
 ## Next action
 
-Latest cron slice added the first native `hmn orchestrator backlog` surface so merge-first runs can scan local/remote branches, bucket them into `generated` / `needs-review` / `merge-ready` / `merged` / `duplicate` / `conflict` / `stale` / `abandoned`, report WIP count, and print absorbed cleanup candidates. This turns the manual triage document into a CLI-visible operator loop.
+Latest cron slice ran the native `hmn orchestrator backlog` surface against the live repo and found one remaining WIP branch, `feat/useful-ops-mvp`. The branch was classified as stale-base after `merge-tree` showed broad add/add/docs conflicts; only the missing managed-ops summary doc was manually extracted and the backlog classifier now marks the branch as absorbed/cleanup candidate.
 
-Next merge-first action: run the new backlog command against the live repo each cron pass, then use the output to either clean absorbed remote/worktree branches or process exactly one remaining `needs-review` / `conflict` item. Do not dispatch new feature development while backlog WIP is non-zero.
+Next merge-first action: rerun `hmn orchestrator backlog --repo . --base feat/v1-1-useful-ops-mvp`. If WIP is zero, either clean absorbed remote/worktree branches or move to the highest priority Worker timeout / heartbeat / cancel slice. Do not dispatch new feature development if backlog reports any `needs-review` / `conflict` item.
 
 Suggested gate:
 

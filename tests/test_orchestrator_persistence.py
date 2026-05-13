@@ -197,3 +197,32 @@ def test_branch_backlog_marks_known_task_absorbed_stale_base_branches(tmp_path):
     assert "stale-base cleanup candidate" in merged["feat/monitor-closed-loop"]["reason"]
     assert "feat/monitor-closed-loop" in backlog["cleanup"]
     assert backlog["wip_count"] == 0
+
+
+def test_branch_backlog_marks_useful_ops_summary_branch_absorbed(tmp_path):
+    repo = tmp_path / "repo"
+    run = __import__("subprocess").run
+    run(["git", "init", "-b", "feat/v1-1-useful-ops-mvp", str(repo)], check=True, capture_output=True, text=True)
+    run(["git", "config", "user.email", "hmn@example.invalid"], cwd=repo, check=True)
+    run(["git", "config", "user.name", "HMN Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n")
+    run(["git", "add", "README.md"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "-b", "feat/useful-ops-mvp", "HEAD"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "summary.md").write_text("managed ops summary\n")
+    run(["git", "add", "summary.md"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "summary"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "feat/v1-1-useful-ops-mvp"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "mainline.md").write_text("newer mainline\n")
+    run(["git", "add", "mainline.md"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "mainline"], cwd=repo, check=True, capture_output=True, text=True)
+
+    backlog = OrchestratorService(SQLiteStore(tmp_path / "hmn.db")).branch_backlog(
+        repo_path=repo, base="feat/v1-1-useful-ops-mvp"
+    )
+
+    merged = {item["branch"]: item for item in backlog["buckets"]["merged"]}
+    assert "feat/useful-ops-mvp" in merged
+    assert "summary doc" in merged["feat/useful-ops-mvp"]["reason"]
+    assert "feat/useful-ops-mvp" in backlog["cleanup"]
+    assert backlog["wip_count"] == 0

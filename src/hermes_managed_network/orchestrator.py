@@ -330,6 +330,7 @@ class OrchestratorService:
             "hmn-task18-migration-plan": "migration plan slice already extracted with mainline hardening; stale-base cleanup candidate",
             "hmn-task19-onboarding-plan": "onboarding plan slice already extracted with mainline hardening; stale-base cleanup candidate",
             "hmn-config-provider-merge-check": "config provider slice already extracted; stale-base cleanup candidate",
+            "feat/useful-ops-mvp": "managed ops dry-run code already extracted; only summary doc was missing and has been manually copied",
         }
 
         seen: set[str] = set()

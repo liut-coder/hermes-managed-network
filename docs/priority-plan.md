@@ -1,6 +1,6 @@
 # HMN 优先级推进计划
 
-> 本文用于统一 HMN v1.1 后续推进顺序。当前判断：先关掉未合并分支/全托管统筹债务，再补 worker 可观测性与服务发现，最后推进 backup/docs/migration 的真实执行闭环。
+> 本文用于统一 HMN v1.1 后续推进顺序。当前判断：分支债务与 worker stuck recovery 已完成第一阶段，下一步继续补 worker timeout/heartbeat/cancel/watch，再推进核心安全、审批边界与服务发现主线。
 
 ## 当前判断
 
@@ -40,10 +40,11 @@ HMN 形成稳定控制面和可审计自动化
 
 当前 v1.1 已从“架构规划”推进到“可试点的全托管控制面雏形”，但还没到“所有机器/服务自动托管”的完整态。实时优先级要以可交付闭环为准：
 
-1. 先清理当前 worktree / 分支债务，避免 worker 空闲但成果不落地。
-2. 立刻补 worker watchdog / task watch / cancel，避免 BeroNas 这类长任务静默堵队列。
-3. 建立服务发现 → service registry → monitor/docs/backup/migration 的主线。
-4. 将每次使用 HMN 的经验沉淀成测试、文档、provider 或 orchestrator 策略；不好用的体验必须转成 backlog 并排优先级。
+1. 分支债务与 worker stuck recovery 第一阶段已落地，后续不再阻塞主线开发。
+2. 继续补 worker timeout / heartbeat / cancel / watch，避免长任务静默堵队列。
+3. 补齐 token/node/task 安全边界和 high-risk approval 状态机。
+4. 建立服务发现 → service registry → monitor/docs/backup/migration 的主线。
+5. 将每次使用 HMN 的经验沉淀成测试、文档、provider 或 orchestrator 策略；不好用的体验必须转成 backlog 并排优先级。
 
 ---
 
@@ -90,63 +91,31 @@ Managed Nodes / NAS
 
 ## P0：全托管统筹闭环与分支债务清理
 
+**状态：** 第一阶段已完成，剩余为 P0 收尾增强，不再阻塞主线开发。
+
 **目标：** 解决“worker 空了，但待合并分支还堆着”的统筹失效问题。先把已有成果落地，再继续派新任务。
 
-### 当前实测状态
+### 已完成
 
-- 当前主线：`feat/v1-1-useful-ops-mvp`
-- 许多 worktree 分支其实已被主线吸收，属于“未清理的完成态分支”。
-- 最新判重结论已沉淀在 `docs/orchestrator-branch-triage.md`：原优先级分支均已吸收或属于 stale-base cleanup candidate。
-  - `hmn-task12-coolify`：Coolify provider skeleton 已吸收。
-  - `hmn-config-provider-merge-check`：config provider 已吸收。
-  - `hmn-docs-center-apply`：docs center apply 已抽取；剩余为 stale-base cleanup candidate。
-  - `hmn-task17-restore-plan` / `hmn-task18-migration-plan` / `hmn-task19-onboarding-plan`：已吸收或被主线 hardening 覆盖。
-  - `feat/monitor-closed-loop`：monitor/backup/docs-sync 相关切片已在主线，旧分支不应 broad-merge。
-  - `feat/production-readiness-p0` / `fix/production-p0-readiness`：production readiness 切片已抽取；旧分支不应 broad-merge。
+- 当前主线：`feat/v1-1-useful-ops-mvp`。
+- 本地分支已收敛到主线与 `main`，worktree 已清理到单 worktree。
+- 原优先级分支已在 `docs/orchestrator-branch-triage.md` 判重：大多已吸收或属于 stale-base cleanup candidate。
+- 已完成多轮全量测试门禁；最近一次完整门禁为 `375 passed`。
+- 生产 readiness、monitor、docs-center apply、service registry useful ops 等切片已抽取到主线。
 
-### 根因
+### 剩余收尾
 
-- Orchestrator/cron 更偏“推进任务”，缺少“分支收割/验收/合并”的硬性状态机。
-- worker 完成任务后，没有自动进入 merge queue。
-- 没有统一 dashboard 显示：pending / running / review / merge-ready / merged / stale。
-- 合并遇到旧基线/冲突时，没有升级成必须处理的 blocking item。
-- cron 任务 `a664a1c7cc73` 已暂停；仍运行的 `b2f723639ca7` 和 `9b36e7b758d9` 没有强制 WIP limit 和 merge-first 策略。
-
-### 要做
-
-- 建立 `hmn orchestrator backlog` / `hmn orchestrator merge-queue`：扫描 worktree、分支、PR、cron job、orchestrator assignment。
-- 每个分支记录状态：
-  - `generated`
-  - `needs-review`
-  - `merge-ready`
-  - `merged`
-  - `duplicate`
-  - `conflict`
-  - `stale`
-  - `abandoned`
-- cron 统筹规则改为 **merge-first**：只要有 merge-ready / needs-review 分支，禁止继续派发新开发任务。
+- 补 `hmn orchestrator backlog` / `hmn orchestrator merge-queue`，把人工判重经验沉淀为原生命令。
+- 每个分支记录状态：`generated` / `needs-review` / `merge-ready` / `merged` / `duplicate` / `conflict` / `stale` / `abandoned`。
+- cron 统筹规则保持 **merge-first**：只要有 merge-ready / needs-review 分支，禁止继续派发新开发任务。
 - 设置 WIP limit：同一 repo 同时未合并 feature 分支 ≤ 3。
-- 每轮 cron 必须输出：
-  - 本轮发现了哪些分支
-  - 合并了哪些
-  - 哪些被判重/废弃
-  - 哪个分支阻塞，阻塞原因是什么
-  - 下一轮只做哪一件事
 - 自动判重规则：若 `git merge-base --is-ancestor <branch> <base>` 为真，标记 merged/absorbed，并提示清理 worktree。
-- 对未吸收分支执行：`git diff --name-status base...branch`、窄测试、cherry-pick 或人工抽取。
-- 合并后跑轻量门禁：
-  - `pytest -q` 或相关窄测试
-  - `python -m compileall -q src`
-  - `bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh`
-  - `git diff --check`
-- 分支合并/判重结果写入 `docs/roadmap.md` 或 `docs/priority-plan.md`，避免下轮重复处理。
 
-### 验收
+### 收尾验收
 
 - `hmn orchestrator status` 能看见未合并分支数量和最老分支年龄。
 - cron 连续两轮不能只汇报“ok”却没有 merge/判重/阻塞结论。
 - worker 空闲时，orchestrator 自动转向 review/merge，而不是继续等待。
-- 被吸收的 worktree 有清理清单，未吸收分支有明确 owner 和下一步。
 
 ---
 
@@ -158,9 +127,20 @@ Managed Nodes / NAS
 
 - BeroNas 实测中，长耗时 `pip install` 任务占住 worker 约 1 小时 49 分钟。
 - worker 当前偏串行：一个 running 任务未结束时，后续任务只能 pending。
-- 控制面只能看到任务仍在 running，缺少实时进度、idle 判断、自动取消和主动告警。
+- 控制面此前只能看到任务仍在 running，缺少实时进度、idle 判断、自动取消和主动告警。
 
-### 要做
+### 已完成第一阶段
+
+- 提交：`3a5e907 fix(worker): add task watchdog recovery`。
+- `Task` / SQLite schema 已增加：`claimed_at`、`lease_expires_at`、`attempt_count`、`failure_reason`。
+- `/api/v1/nodes/{node_id}/tasks/next` 已改为原子 claim，同一节点并发 poll 不会重复领取同一 pending task。
+- `tasks/next` claim 前会先执行 stuck recovery，过期 running worker task 标记为 `failed` / `worker_lease_expired`。
+- `complete_task` 已改为事务内只允许 `running -> succeeded/failed`，迟到 result 不会覆盖 terminal 状态。
+- stdout/stderr 已有 64KiB server-side cap，避免巨大输出撑爆 SQLite。
+- 新增 `hmn task recover-stuck --older-than SECONDS`。
+- 完整测试门禁：`375 passed`。
+
+### 下一阶段要做
 
 - worker 执行命令时使用独立 process group，超时可整体 kill。
 - task 增加/预留：
@@ -171,17 +151,16 @@ Managed Nodes / NAS
   - `cancel_requested_at`
   - `claimed_by`
   - `worker_pid`
-  - `attempt`
   - `max_attempts`
   - `log_path`
   - `output_truncated`
-- `tasks/next` claim 要原子化：同一节点并发 poll 不应重复领取同一任务。
 - `TaskResponse` 下发 timeout / idle timeout / attempt / cancel token，worker 不靠硬编码默认值。
 - 新增任务进度/日志 API：worker 可增量 PATCH stdout/stderr tail、heartbeat、last_output_at。
-- 对 stdout/stderr 做 ring buffer 或大小上限，完整日志写节点本地 `log_path`，避免控制面 DB 被大输出撑爆。
+- 对 stdout/stderr 做 ring buffer 或大小上限，完整日志写节点本地 `log_path`。
 - worker 定期上报 running heartbeat，不依赖任务结束后一次性回传。
 - 控制面 stuck detector：running 超过阈值且无输出/heartbeat 时标记 stalled。
 - 支持 `hmn task cancel <task_id>`，取消后 worker kill 当前任务并继续处理队列。
+- `hmn task watch <task_id>` 查看 running heartbeat / stdout tail / timeout 剩余时间。
 - `hmn task list` 显示 duration、started_at、last_output_at、当前 running 阻塞队列数量。
 - `hmn node worker-status` 显示 current_task、duration、queue_depth、last_output_at、timeout 剩余时间。
 - worker 启动/重启时清理 orphan child process，并把遗留 running 任务标记为 interrupted/stalled。
@@ -446,25 +425,26 @@ failed
 
 ## 推荐实际推进顺序
 
-1. `chore(orchestrator): classify stale and absorbed HMN worktrees`
-2. `feat(orchestrator): add merge queue and branch backlog status`
-3. `feat(worker): add task timeout, heartbeat and cancel`
-4. `feat(task): add watch command and queue diagnostics`
-5. `feat(discovery): build service discovery dry-run`
-6. `feat(registry): persist service registry and diff`
-7. `feat(provider): merge coolify/config/docs-center remaining slices`
-8. `feat(monitor): generate uptime kuma plan from service registry`
-9. `feat(job): add install step runner and artifact cleanup`
-10. `feat(backup): add provider dry-run from service registry`
-11. `feat(docs): enrich docs-sync from service registry`
-12. `feat(migration): generate migration plan from service registry`
+1. `feat(worker): add task timeout, heartbeat and cancel`
+2. `feat(task): add watch command and queue diagnostics`
+3. `feat(security): enforce token and revoked node boundaries`
+4. `feat(approval): add approval state machine and high-risk boundaries`
+5. `feat(orchestrator): add merge queue and branch backlog status`
+6. `feat(discovery): build service discovery dry-run`
+7. `feat(registry): persist service registry and diff`
+8. `feat(provider): complete backup/config/deploy provider apply/status loops`
+9. `feat(monitor): generate uptime kuma plan from service registry`
+10. `feat(job): add install step runner and artifact cleanup`
+11. `feat(backup): add provider dry-run from service registry`
+12. `feat(docs): enrich docs-sync from service registry`
+13. `feat(migration): generate migration plan from service registry`
 
 ---
 
 ## 时间预估
 
-- 分支债务清理 / merge queue MVP：0.5～1 天。
-- Worker watchdog / task cancel / diagnostics：1～3 天。
+- Orchestrator merge queue / branch backlog 收尾：0.5～1 天。
+- Worker timeout / heartbeat / cancel / diagnostics：1～3 天。
 - 服务发现 + service registry MVP：2～5 天。
 - Provider 剩余分支合并/判重：0.5～2 天。
 - Uptime Kuma 从 registry 同步：1～2 天。
@@ -473,7 +453,7 @@ failed
 
 较现实的里程碑：
 
-- **1～2 天内：** 分支债务清楚、worker 不再静默卡队列。
+- **1～2 天内：** worker timeout / heartbeat / cancel / watch 第一轮闭环。
 - **一周内：** 服务发现 + registry + 监控计划闭环。
 - **两周内：** docs/backup/migration 从 registry 自动生成。
 - **一个月内：** NAS、monitor、backup、docs-sync 形成较完整托管闭环。
