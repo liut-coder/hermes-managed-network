@@ -103,9 +103,9 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 10:58 EDT
+## Latest cron reconciliation — 2026-05-13 11:34 EDT
 
-Native backlog command was rerun on the live repository:
+Native backlog command was rerun after `git fetch --prune origin`:
 
 ```bash
 .venv/bin/python -m hermes_managed_network.cli orchestrator backlog --repo . --base feat/v1-1-useful-ops-mvp
@@ -138,19 +138,19 @@ Observed branch state:
 
 Manual priority branch probes in this cron pass:
 
-- `hmn-task12-coolify`: absent locally.
-- `hmn-config-provider-merge-check`: absent locally.
-- `hmn-docs-center-apply`: absent locally.
-- `hmn-task17-restore-plan`: absent locally.
-- `hmn-task18-migration-plan`: absent locally.
-- `hmn-task19-onboarding-plan`: absent locally.
-- `origin/feat/monitor-closed-loop`: still cleanup-only; task-specific monitor/component slices are already on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
-- `origin/feat/production-readiness-p0`: still cleanup-only; production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
-- `origin/fix/production-p0-readiness`: still cleanup-only; same production readiness slice is already extracted on HEAD. `merge-base --is-ancestor` is false only because it is stale-base.
+- `hmn-task12-coolify`: absent locally/remotely.
+- `hmn-config-provider-merge-check`: absent locally/remotely.
+- `hmn-docs-center-apply`: absent locally/remotely.
+- `hmn-task17-restore-plan`: absent locally/remotely.
+- `hmn-task18-migration-plan`: absent locally/remotely.
+- `hmn-task19-onboarding-plan`: absent locally/remotely.
+- `origin/feat/monitor-closed-loop`: `merge-base --is-ancestor` is false, but the remaining commit is a stale-base backup CLI exposure patch already represented on HEAD. Current HEAD already exposes `hmn backup plan/run/verify/status` plus monitor CLI/menu/help coverage, so this remains cleanup-only.
+- `origin/feat/production-readiness-p0`: `merge-base --is-ancestor` is false only because it is stale-base; production readiness slice is already extracted on HEAD.
+- `origin/fix/production-p0-readiness`: same production readiness slice is already extracted on HEAD.
 
 Cron state:
 
-- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 11:27 EDT.
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 12:02 EDT.
 - Older HMN orchestrator crons remain paused: `a664a1c7cc73`, `b2f723639ca7`.
 - No active duplicate HMN merge-first cron was observed in the live cron list.
 
@@ -161,18 +161,18 @@ Working tree state:
   - `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated implementation plan; outside current P0 merge-first priority, so left uncommitted.
   - `uv.lock` — generated lockfile; left uncommitted until the project explicitly adopts uv lockfile policy.
 
-This pass treated this triage-note refresh as the bounded file cluster. No new worker development was dispatched because merge-first hygiene still has cleanup-only remote branches that require an explicit delete/abandon policy before opening another implementation slice.
+This pass treated this triage-note refresh and the `feat/monitor-closed-loop` recheck as the bounded file cluster. No new worker development was dispatched because merge-first hygiene still has cleanup-only remote branches that require an explicit delete/abandon policy before opening another implementation slice.
 
 Focused gate for this pass:
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_orchestrator_cli.py
+.venv/bin/python -m pytest -q tests/test_orchestrator_cli.py tests/test_monitor_cli.py tests/test_backup_provider.py
 .venv/bin/python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check
 ```
 
-Result: orchestrator CLI focused tests passed; compileall, shell syntax, and diff-check passed.
+Result: orchestrator CLI, monitor CLI, and backup provider focused tests passed; compileall, shell syntax, and diff-check passed.
 
 ## Next action
 
