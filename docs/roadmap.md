@@ -140,7 +140,7 @@
 - [x] Orchestrator 数据模型：维护 task queue、worker registry、assignment、lease、progress report 和 audit 事件。（已落地 SQLite 持久化、snapshot/report、attempt 计数和 audit）
 - [x] `hmn orchestrator tick/status/enqueue/report`：支持巡检调度、自动分发、状态查询和简短进度汇报。
 - [x] Worker/bridge adapter：默认通过 worker / bridge / webhook / queue 分发任务，raw SSH 仅作 fallback；连续多次失败后才暂停。（已支持 bridge adapter、retry 计数、lease timeout 回收；webhook/queue 为后续 transport 扩展）
-- [ ] 第二 Hermes / 多 Agent worktree 隔离：并行任务必须隔离工作区，Orchestrator 负责验收、合并和冲突解决。
+- [x] 第二 Hermes / 多 Agent worktree 隔离：并行任务必须隔离工作区，Orchestrator 负责验收、合并和冲突解决。（已落地每任务独立 git worktree/branch、SQLite worktree registry、非破坏性 merge_queue 验收与 conflict/missing 分类）
 - [x] Orchestrator approval gate：低风险代码/测试/文档自动推进；生产写入、真实 provider 变更、凭据、生产部署和合并 main 必须审批。（已在 provider apply、Uptime sync、docs-sync apply 等真实写入口保持审批边界）
 
 ### Provider 化托管控制面

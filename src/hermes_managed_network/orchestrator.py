@@ -17,6 +17,14 @@ def _dt(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _safe_task_id(value: str) -> str:
+    if not value or any(part in {"", ".", ".."} for part in value.replace("\\", "/").split("/")):
+        raise ValueError("task_id must not contain path separators or traversal segments")
+    if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in value):
+        raise ValueError("task_id may only contain letters, digits, '-' and '_'")
+    return value
+
+
 @dataclass
 class OrchestratorTask:
     task_id: str
@@ -85,6 +93,18 @@ class OrchestratorService:
                     status TEXT NOT NULL,
                     summary TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS orchestrator_worktrees (
+                    task_id TEXT PRIMARY KEY,
+                    worker_id TEXT NOT NULL,
+                    repo_path TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    branch TEXT NOT NULL,
+                    base TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -207,7 +227,7 @@ class OrchestratorService:
 
     def snapshot(self) -> dict[str, list[dict[str, Any]]]:
         if not hasattr(self.store, "connect"):
-            return {"queue": [], "workers": [], "assignments": [], "reports": self._audit_reports()}
+            return {"queue": [], "workers": [], "assignments": [], "worktrees": [], "reports": self._audit_reports()}
 
         with self.store.connect() as conn:
             task_rows = conn.execute(
@@ -239,6 +259,13 @@ class OrchestratorService:
                 LIMIT 5
                 """
             ).fetchall()
+            worktree_rows = conn.execute(
+                """
+                SELECT task_id, worker_id, branch, path, base, status
+                FROM orchestrator_worktrees
+                ORDER BY created_at ASC, task_id ASC
+                """
+            ).fetchall()
 
         reports = [dict(row) for row in report_rows]
         if not reports:
@@ -259,6 +286,7 @@ class OrchestratorService:
                 for row in worker_rows
             ],
             "assignments": [dict(row) for row in assignment_rows],
+            "worktrees": [dict(row) for row in worktree_rows],
             "reports": reports,
         }
 
@@ -371,6 +399,164 @@ class OrchestratorService:
             "wip_count": wip_count,
             "wip_limit": wip_limit,
         }
+
+
+    def _git(self, repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    def _worktree_paths(self, repo: Path) -> set[Path]:
+        output = self._git(repo, "worktree", "list", "--porcelain", check=False)
+        paths: set[Path] = set()
+        for line in output.stdout.splitlines():
+            if line.startswith("worktree "):
+                paths.add(Path(line.removeprefix("worktree ")).resolve())
+        return paths
+
+    def _validate_worktree(self, *, repo: Path, path: Path, branch: str) -> None:
+        if not path.exists():
+            raise RuntimeError(f"worktree path missing: {path}")
+        branch_check = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if branch_check.returncode != 0 or branch_check.stdout.strip() != branch:
+            raise RuntimeError(f"worktree path already exists but is not branch {branch}: {path}")
+        if path.resolve() not in self._worktree_paths(repo):
+            raise RuntimeError(f"worktree path is not registered for repo {repo}: {path}")
+
+    def prepare_agent_worktree(
+        self,
+        *,
+        task_id: str,
+        worker_id: str,
+        repo_path: str | Path = ".",
+        base: str = "main",
+        worktree_root: str | Path | None = None,
+    ) -> dict[str, str]:
+        """Create or reuse an isolated git worktree for one agent task.
+
+        This is intentionally limited to preparing an isolated branch/worktree and
+        recording audit metadata. It does not merge into main.
+        """
+        if not hasattr(self.store, "connect"):
+            raise RuntimeError("prepare_agent_worktree requires persistent storage")
+        safe_task = _safe_task_id(task_id)
+        repo = Path(repo_path).resolve()
+        root = Path(worktree_root).resolve() if worktree_root is not None else repo.parent / ".hmn-worktrees"
+        path = (root / safe_task).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError("worktree path must stay under worktree_root")
+        branch = f"hmn/agent/{safe_task}"
+        now = _dt(_now())
+
+        root.mkdir(parents=True, exist_ok=True)
+        with self.store.connect() as conn:
+            current = conn.execute("SELECT * FROM orchestrator_worktrees WHERE task_id = ?", (task_id,)).fetchone()
+            if current is not None:
+                current_repo = Path(current["repo_path"]).resolve()
+                current_path = Path(current["path"]).resolve()
+                if current_repo != repo or current["base"] != base or current["worker_id"] != worker_id:
+                    raise RuntimeError("existing worktree record does not match requested repo/base/worker")
+                self._validate_worktree(repo=repo, path=current_path, branch=current["branch"])
+                return {
+                    "task_id": current["task_id"],
+                    "worker_id": current["worker_id"],
+                    "branch": current["branch"],
+                    "path": current["path"],
+                    "base": current["base"],
+                    "status": current["status"],
+                }
+
+        if not path.exists():
+            self._git(repo, "worktree", "add", "-b", branch, str(path), base)
+        else:
+            self._validate_worktree(repo=repo, path=path, branch=branch)
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO orchestrator_worktrees (
+                    task_id, worker_id, repo_path, path, branch, base, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (task_id, worker_id, str(repo), str(path), branch, base, "prepared", now, now),
+            )
+
+        self._record_audit(
+            subject_id=task_id,
+            action="worktree/prepare",
+            outcome="prepared",
+            details={"worker_id": worker_id, "repo_path": str(repo), "path": str(path), "branch": branch, "base": base},
+        )
+        return {"task_id": task_id, "worker_id": worker_id, "branch": branch, "path": str(path), "base": base, "status": "prepared"}
+
+    def merge_queue(self, *, repo_path: str | Path = ".", base: str = "main") -> dict[str, Any]:
+        """Plan worktree branch review/merge readiness without mutating base."""
+        repo = Path(repo_path).resolve()
+        result: dict[str, Any] = {"base": base, "repo_path": str(repo), "merge_ready": [], "conflict": [], "missing": []}
+        if not hasattr(self.store, "connect"):
+            return result
+
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT task_id, worker_id, branch, path, base, status
+                FROM orchestrator_worktrees
+                WHERE repo_path = ? AND base = ? AND status IN ('prepared', 'ready', 'conflict')
+                ORDER BY created_at ASC, task_id ASC
+                """,
+                (str(repo), base),
+            ).fetchall()
+
+        updates: list[tuple[str, str]] = []
+        for row in rows:
+            item = {
+                "task_id": row["task_id"],
+                "worker_id": row["worker_id"],
+                "branch": row["branch"],
+                "path": row["path"],
+                "base": row["base"],
+            }
+            branch_exists = self._git(repo, "rev-parse", "--verify", f"refs/heads/{row['branch']}", check=False)
+            try:
+                self._validate_worktree(repo=repo, path=Path(row["path"]).resolve(), branch=row["branch"])
+            except RuntimeError as exc:
+                result["missing"].append({**item, "reason": str(exc)})
+                updates.append(("missing", row["task_id"]))
+                continue
+            if branch_exists.returncode != 0:
+                result["missing"].append({**item, "reason": "branch missing"})
+                updates.append(("missing", row["task_id"]))
+                continue
+            merge_base = self._git(repo, "merge-base", base, row["branch"], check=False)
+            if merge_base.returncode != 0 or not merge_base.stdout.strip():
+                result["conflict"].append({**item, "reason": "merge-base failed"})
+                updates.append(("conflict", row["task_id"]))
+                continue
+            merge_tree = self._git(repo, "merge-tree", merge_base.stdout.strip(), base, row["branch"], check=False)
+            if "<<<<<<<" in merge_tree.stdout or "changed in both" in merge_tree.stdout:
+                result["conflict"].append({**item, "reason": "merge-tree conflict"})
+                updates.append(("conflict", row["task_id"]))
+            else:
+                result["merge_ready"].append(item)
+                updates.append(("ready", row["task_id"]))
+
+        if updates:
+            now = _dt(_now())
+            with self.store.connect() as conn:
+                for status, task_id in updates:
+                    conn.execute(
+                        "UPDATE orchestrator_worktrees SET status = ?, updated_at = ? WHERE task_id = ?",
+                        (status, now, task_id),
+                    )
+        return result
 
     def tick(
         self,
