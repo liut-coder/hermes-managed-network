@@ -81,8 +81,10 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Note: keep HEAD version; do not reintroduce old `docs_generate` helper coupling.
 
 6. `feat/monitor-closed-loop`
-   - Adds monitor closed loop, backup/docs-sync component manifests, backup dry-run CLI.
-   - Status: `merge-candidate` but broad diff; handle after smaller provider slices.
+   - Status: `absorbed-with-mainline-hardening` / cleanup candidate.
+   - Reason: task-specific files are already present on HEAD: `tests/test_monitor_cli.py`, backup/docs-sync component manifests, monitor snapshot storage, and monitor/backup CLI surfaces. The branch still reports not-ancestor because it is stale-base and lacks later docs-sync/restore/migration/onboarding hardening.
+   - Verification: `.venv/bin/python -m pytest -q tests/test_components.py tests/test_monitor_cli.py` passed; compileall, shell syntax, and diff-check passed in the cron pass that marked it absorbed.
+   - Note: do not broad-merge; keep current HEAD implementation.
 
 7. `feat/production-readiness-p0` / `fix/production-p0-readiness`
    - Production readiness docs/install/CLI tests.
@@ -90,13 +92,13 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
 
 ## Next action
 
-Next merge-first action: inspect `feat/monitor-closed-loop` by task-specific file clusters. Do not broad-merge the stale branch. Start with component manifests and monitor/backup CLI tests; extract only one low-risk cluster if it is not already represented on HEAD.
+Next merge-first action: inspect `fix/production-p0-readiness` against `feat/production-readiness-p0`, choose the fresher/smaller production-readiness slice, and extract only missing docs/install/test hunks if HEAD does not already contain them. Do not merge both blindly.
 
 Suggested gate:
 
 ```bash
-git diff --name-status feat/v1-1-useful-ops-mvp...feat/monitor-closed-loop
-.venv/bin/python -m pytest -q tests/test_components.py tests/test_monitor_cli.py
+git diff --name-status feat/v1-1-useful-ops-mvp...fix/production-p0-readiness
+.venv/bin/python -m pytest -q tests/test_linux_install.py tests/test_production_readiness_docs.py tests/test_cli.py
 .venv/bin/python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check

@@ -125,6 +125,16 @@
 
 目标：让机器接入 HMN 后，逐步形成“Orchestrator 统筹 → 服务发现 → 外部部署系统 → 监控同步 → 文档中心 → 备份 → 迁移”的集中托管闭环。HMN 不自研完整 CI/CD 流水线引擎，而是接入成熟工具；HMN 负责统一入口、长期任务统筹、service registry、provider 编排、approval、audit 和文档中心。所有高风险变更仍必须走 approval / audit，不允许因为自动化而绕过安全边界。
 
+长期原则：Hermes/AI 是早期全托管探索层和自动化孵化器，不是 HMN 的最终拐杖。复杂、低频、非结构化运维可以先由 Hermes 代管；但每次成功操作都要沉淀为 HMN 原生能力，包括 CLI、worker task、provider、playbook、shell script、docs template 和 test case。高频、稳定、可验证流程必须逐步脱离 AI，会收敛成用户可一键执行的接入、巡检、备份、恢复、迁移和文档刷新能力。AI 后期只作为解释、规划、异常兜底和复杂场景助手，不能成为核心自动化路径的唯一依赖。
+
+### Hermes 经验沉淀到 HMN 原生自动化
+
+- [ ] 建立“AI 运维 → HMN 自动化”沉淀规则：每次 Hermes 处理完机器接入、排障、部署、备份、迁移，都必须判断是否转成 CLI / provider / playbook / worker task / 测试。
+- [ ] 为常见操作建立可复用任务模板：接入、巡检、服务发现、文档刷新、备份计划、恢复计划、迁移计划。
+- [ ] 把高频成功 runbook 固化为 `hmn ... plan/apply/verify` 命令，避免长期依赖会话上下文和提示词。
+- [ ] 为一键自动化保留安全边界：plan 可自动生成，apply 按风险进入 approval，执行结果必须写 audit，并提供 verify / rollback hint。
+- [ ] Orchestrator 定期扫描“仍依赖 Hermes 手工判断”的流程，生成自动化候选 backlog。
+
 ### Orchestrator 全自动托管统筹
 
 - [x] Orchestrator 数据模型：维护 task queue、worker registry、assignment、lease、progress report 和 audit 事件。（已落地 SQLite 持久化、snapshot/report、attempt 计数和 audit）

@@ -4,12 +4,39 @@
 
 ## 当前判断
 
-HMN 不重复造底层组网轮子。
+HMN 不重复造底层组网轮子，也不把 AI 作为长期唯一执行路径。
 
 - **Headscale/Tailscale** 负责机器之间的网络连通、虚拟网络身份、ACL、tag、NAT 穿透。
 - **HMN Core** 负责节点登记、授权、审批、审计、任务、组件生命周期和资产文档。
 - **Worker Pull** 负责无公网节点/NAS 主动出站接入，不要求节点开放入站端口。
 - **Orchestrator** 负责全托管开发/运维统筹：发现待办、分配 worker、验收、合并、沉淀经验。
+- **Hermes/AI** 负责早期复杂运维探索、异常兜底和经验抽取；成熟流程必须沉淀为 HMN 原生 CLI、provider、playbook、worker task、脚本和测试，最终实现脱离 AI 的一键自动化。
+
+## 长期自动化原则
+
+Hermes 是 HMN 的自动化孵化器，不是最终拐杖。
+
+长期目标：
+
+```text
+Hermes 先代管复杂运维
+  ↓
+把成功操作沉淀为脚本 / provider / playbook / worker task / 测试
+  ↓
+HMN 形成稳定控制面和可审计自动化
+  ↓
+普通用户一键接入、一键巡检、一键备份、一键迁移
+```
+
+原则：
+
+1. 短期允许依赖 Hermes/AI 处理非结构化、临时性、复杂运维问题。
+2. 每次成功操作都必须判断是否可沉淀为：CLI 命令、worker task、provider、playbook、shell script、docs template 或 test case。
+3. 高频、稳定、可验证流程必须从 Hermes 经验迁移到 HMN 原生自动化。
+4. 核心路径不能长期依赖模型上下文、人工提示词或临时会话记忆。
+5. AI 后期保留为解释、规划、异常兜底和低频复杂场景助手；常规执行应由 HMN 自动化闭环完成。
+6. 所有自动化仍要保留 approval、audit、verify、rollback hint，不因“一键化”绕过安全边界。
+
 
 当前 v1.1 已从“架构规划”推进到“可试点的全托管控制面雏形”，但还没到“所有机器/服务自动托管”的完整态。实时优先级要以可交付闭环为准：
 
