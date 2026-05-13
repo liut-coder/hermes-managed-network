@@ -43,16 +43,17 @@ Additional task-specific absorption verified in the latest cron pass:
   - Verification: `python -m pytest -q tests/test_coolify_provider.py` passed via `.venv/bin/python`; compileall, shell syntax, and diff-check passed.
   - Note: branch itself is `stale-base`; broad two-dot diff would remove many newer mainline files, so do not merge the whole branch.
 
-Current absorbed count: 14 branches/worktrees.
+Current absorbed count: 15 branches/worktrees, including `hmn-config-provider-merge-check`.
 
 ### needs-review / merge candidates
 
 Process one at a time. Prefer cherry-pick or manual extraction over broad merge when branch base is old.
 
 1. `hmn-config-provider-merge-check`
-   - Adds/updates config provider files.
-   - Status: `duplicate-likely`; mainline already has `feat(config): add dry-run inventory export planner`.
-   - Next: compare only `src/hermes_managed_network/config_provider.py`, `tests/test_config_provider.py`, and CLI registration before deciding cleanup vs extraction.
+   - Status: `absorbed` / cleanup candidate.
+   - Reason: branch is already ancestor of current HEAD; `config_provider.py` and `tests/test_config_provider.py` blob hashes are identical to HEAD.
+   - CLI diff is stale-base only: broad-merging would delete newer restore/migration/onboarding CLI code from HEAD.
+   - Verification target: `tests/test_config_provider.py`.
 
 2. `hmn-docs-center-apply`
    - Adds docs center apply mode plus restore/migration/onboarding stack.
@@ -78,13 +79,13 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
 
 ## Next action
 
-Skip merging `hmn-task12-coolify`; it is already represented on HEAD with safer sanitizer changes. The next merge-first action is `hmn-config-provider-merge-check`判重：compare its `config_provider.py` and tests against current HEAD, then either mark duplicate or extract only missing hunks.
+Skip merging `hmn-config-provider-merge-check`; it is already absorbed and only shows stale-base CLI deletions when compared two-dot. The next merge-first action is `hmn-docs-center-apply`：extract docs-center apply files/hunks only, because restore/migration/onboarding are already partially present on HEAD.
 
 Suggested gate:
 
 ```bash
-git diff --name-status feat/v1-1-useful-ops-mvp...hmn-config-provider-merge-check
-python -m pytest -q tests/test_config_provider.py
+git diff --name-status feat/v1-1-useful-ops-mvp...hmn-docs-center-apply
+python -m pytest -q tests/test_docs_sync_apply.py
 python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check
