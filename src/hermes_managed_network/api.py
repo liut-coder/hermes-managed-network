@@ -18,6 +18,7 @@ from .approval_telegram_flow import handle_telegram_approval_callback
 from .network_acl import dispatch_approved_network_acl_apply
 from .network_base import NetworkProviderError
 from .version import current_version_info, is_worker_compatible
+from .web_console import register_web_console
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_DOCS_ROOT = Path("/srv/files")
@@ -290,7 +291,7 @@ def _notification_response(notification: Notification) -> NotificationResponse:
 
 
 def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFAULT_DOCS_ROOT) -> FastAPI:
-    app = FastAPI(title="Hermes Managed Network", version="0.2.0")
+    app = FastAPI(title="Hermes Managed Network", version="0.2.0", docs_url="/api/docs", redoc_url="/api/redoc")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -299,6 +300,7 @@ def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFA
     )
     store = SQLiteStore(db_path)
     docs_base = Path(docs_root).expanduser().resolve()
+    register_web_console(app, store, docs_base)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
