@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 06:20 EDT
+## Latest cron reconciliation — 2026-05-13 06:55 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -136,13 +136,18 @@ Observed branch state:
 
 Manual priority branch probes found the old local task branches (`hmn-task12-coolify`, `hmn-config-provider-merge-check`, `hmn-docs-center-apply`, `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, `hmn-task19-onboarding-plan`) still absent locally and on origin.
 
-The remaining priority remote heads are not literal ancestors, but are cleanup-only by task-specific diff:
+The remaining priority remote heads are still not literal ancestors, but remain cleanup-only by task-specific diff:
 
-- `origin/feat/monitor-closed-loop`: ahead=3 / behind=126 from base; `tests/test_monitor_cli.py` is identical to HEAD and monitor/component backup/docs-sync slices are already present. Keep HEAD storage/roadmap/CLI hardening; do not broad-merge stale branch.
-- `origin/feat/production-readiness-p0`: ahead=1 / behind=125 from base; production readiness slice is already extracted on HEAD.
-- `origin/fix/production-p0-readiness`: ahead=1 / behind=125 from base; same production readiness slice is already extracted on HEAD.
+- `origin/feat/monitor-closed-loop`: not absorbed by ancestor check; backlog command marks it merged because the task-specific monitor/component slices are already present on HEAD. Do not broad-merge stale branch.
+- `origin/feat/production-readiness-p0`: not absorbed by ancestor check; production readiness slice is already extracted on HEAD.
+- `origin/fix/production-p0-readiness`: not absorbed by ancestor check; same production readiness slice is already extracted on HEAD.
 
-Untracked generated artifacts observed in the working tree:
+Cron state:
+
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 07:23 EDT.
+- Older duplicate HMN orchestrator jobs remain paused: `a664a1c7cc73`, `b2f723639ca7`.
+
+Untracked generated artifacts observed again in the working tree:
 
 - `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated plan; do not execute while P0 merge-first/worker watchdog work is the priority.
 - `uv.lock` — generated lockfile; leave uncommitted until the project explicitly adopts uv lockfile policy.
