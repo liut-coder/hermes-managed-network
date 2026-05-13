@@ -774,12 +774,14 @@ def doctor_install(
     typer.echo("生产巡检")
     master_env_path = etc_dir / "master.env"
     master_env = _read_master_env(master_env_path)
+    typer.echo("安装状态")
     typer.echo(_status_line("master.env", bool(master_env), str(master_env_path)))
 
     db_path = Path(master_env.get("HMN_DB", "/var/lib/hermes-managed-network/control-plane.db"))
     typer.echo(_status_line("database path", db_path.parent.exists(), str(db_path)))
     typer.echo(_status_line("database file", db_path.exists(), str(db_path)))
 
+    typer.echo("服务状态")
     control_service = service_dir / SERVICE_NAME
     typer.echo(_status_line("control plane service", control_service.exists(), str(control_service)))
 
@@ -798,9 +800,11 @@ def doctor_install(
     if host in {"0.0.0.0", "::", ""}:
         host = "127.0.0.1"
     base_url = f"http://{host}:{port}"
+    typer.echo("接口状态")
     typer.echo(_doctor_url_status("healthz", health_url or f"{base_url}/healthz"))
     typer.echo(_doctor_url_status("api version", version_url or f"{base_url}/api/v1/version"))
 
+    typer.echo("upgrade/rollback readiness")
     manifest = etc_dir / "upgrade-manifest.env"
     manifest_values = _read_master_env(manifest)
     typer.echo(_status_line("upgrade manifest", manifest.exists(), str(manifest) if manifest.exists() else "will be created by installer upgrade"))

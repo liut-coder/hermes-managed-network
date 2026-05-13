@@ -507,14 +507,18 @@ def test_doctor_command_reports_full_production_readiness(tmp_path):
 
     assert result.exit_code == 0
     assert "生产巡检" in result.stdout
+    assert "安装状态" in result.stdout
     assert "master.env: OK" in result.stdout
     assert "database path: OK" in result.stdout
     assert "database file: OK" in result.stdout
+    assert "服务状态" in result.stdout
     assert "control plane service: OK" in result.stdout
     assert "approval gateway service: OK" in result.stdout
     assert "headscale config: OK" in result.stdout
+    assert "接口状态" in result.stdout
     assert "healthz: SKIP" in result.stdout
     assert "api version: SKIP" in result.stdout
+    assert "upgrade/rollback readiness" in result.stdout
     assert "upgrade backup: OK" in result.stdout
     assert "rollback command: hmn rollback --stamp 20260101-010203" in result.stdout
     assert "最近日志提示" in result.stdout
@@ -745,11 +749,15 @@ def test_doctor_command_reports_installer_readiness(tmp_path):
 
     assert result.exit_code == 0
     assert "生产巡检" in result.stdout
+    assert "安装状态" in result.stdout
     assert "master.env: OK" in result.stdout
     assert "database path: OK" in result.stdout
+    assert "服务状态" in result.stdout
     assert "control plane service: OK" in result.stdout
     assert "approval gateway service: OK" in result.stdout
     assert "headscale config: OK" in result.stdout
+    assert "接口状态" in result.stdout
+    assert "upgrade/rollback readiness" in result.stdout
     assert "upgrade backup: WARN" in result.stdout
     assert "/var/backups/hermes-managed-network" in result.stdout
     assert "hmn update" in result.stdout
