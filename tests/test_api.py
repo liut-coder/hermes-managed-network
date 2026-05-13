@@ -1,5 +1,40 @@
 from fastapi.testclient import TestClient
 
+
+def test_hmn_web_docs_module_serves_docs_index_and_markdown(tmp_path):
+    docs_root = tmp_path / "files"
+    server_dir = docs_root / "docs" / "server"
+    service_dir = docs_root / "service"
+    server_dir.mkdir(parents=True)
+    service_dir.mkdir(parents=True)
+    (server_dir / "README.md").write_text("# Servers\n\n- demo\n", encoding="utf-8")
+    (service_dir / "demo.md").write_text("# Demo Service\n", encoding="utf-8")
+
+    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+
+    index_response = client.get("/hmn-web/docs")
+    assert index_response.status_code == 200
+    assert "HMN 文档中心" in index_response.text
+    assert "/hmn-web/docs/file/docs/server/README.md" in index_response.text
+    assert "/hmn-web/docs/file/service/demo.md" in index_response.text
+
+    markdown_response = client.get("/hmn-web/docs/file/docs/server/README.md")
+    assert markdown_response.status_code == 200
+    assert markdown_response.headers["content-type"].startswith("text/markdown")
+    assert markdown_response.text == "# Servers\n\n- demo\n"
+
+
+def test_hmn_web_docs_module_rejects_path_traversal(tmp_path):
+    docs_root = tmp_path / "files"
+    docs_root.mkdir()
+    (tmp_path / "secret.md").write_text("secret", encoding="utf-8")
+    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+
+    response = client.get("/hmn-web/docs/file/../secret.md")
+
+    assert response.status_code in {404, 400}
+
+
 from hermes_managed_network.api import create_app
 from hermes_managed_network.storage import SQLiteStore, ServiceRecord
 from hermes_managed_network.tokens import JoinTokenStore

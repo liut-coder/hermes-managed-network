@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 from uuid import uuid4
 
 import hermes_managed_network
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Any
 
@@ -18,6 +20,7 @@ from .network_base import NetworkProviderError
 from .version import current_version_info, is_worker_compatible
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
+DEFAULT_DOCS_ROOT = Path("/srv/files")
 
 
 class JoinRequest(BaseModel):
@@ -286,7 +289,7 @@ def _notification_response(notification: Notification) -> NotificationResponse:
     )
 
 
-def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
+def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFAULT_DOCS_ROOT) -> FastAPI:
     app = FastAPI(title="Hermes Managed Network", version="0.2.0")
     app.add_middleware(
         CORSMiddleware,
@@ -295,6 +298,7 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         allow_headers=["*"],
     )
     store = SQLiteStore(db_path)
+    docs_base = Path(docs_root).expanduser().resolve()
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -358,6 +362,33 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         if not script_path.exists():
             raise HTTPException(status_code=404, detail=f"{name} not found")
         return Response(script_path.read_text(), media_type="text/x-shellscript")
+
+    def _docs_file(path: str) -> Path:
+        candidate = (docs_base / path).resolve()
+        if docs_base not in candidate.parents and candidate != docs_base:
+            raise HTTPException(status_code=400, detail="invalid docs path")
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail="docs file not found")
+        return candidate
+
+    @app.get("/hmn-web/docs", response_class=HTMLResponse, include_in_schema=False)
+    def hmn_web_docs_index() -> HTMLResponse:
+        markdown_files = sorted(docs_base.rglob("*.md")) if docs_base.exists() else []
+        links = "".join(
+            f'<li><a href="/hmn-web/docs/file/{escape(path.relative_to(docs_base).as_posix())}">{escape(path.relative_to(docs_base).as_posix())}</a></li>'
+            for path in markdown_files
+        )
+        body = (
+            "<!doctype html><html><head><meta charset='utf-8'><title>HMN 文档中心</title></head>"
+            "<body><h1>HMN 文档中心</h1><ul>"
+            f"{links}"
+            "</ul></body></html>"
+        )
+        return HTMLResponse(body)
+
+    @app.get("/hmn-web/docs/file/{doc_path:path}", include_in_schema=False)
+    def hmn_web_docs_file(doc_path: str) -> FileResponse:
+        return FileResponse(_docs_file(doc_path), media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/v1/console/services", response_model=ConsoleServicesResponse)
     def console_services() -> ConsoleServicesResponse:
