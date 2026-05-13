@@ -63,13 +63,22 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Remaining restore/migration/onboarding files are already present or handled by later duplicate checks; do not broad-merge stale branch.
 
 3. `hmn-task17-restore-plan`
-   - Status: `duplicate-likely`; restore dry-run appears already merged as `a21e6dc`.
+   - Status: `absorbed` / cleanup candidate.
+   - Reason: `src/hermes_managed_network/restore.py` and `tests/test_restore_plan.py` blob hashes are identical to HEAD.
+   - Verification target: `tests/test_restore_plan.py`.
+   - Note: branch itself is `stale-base`; do not broad-merge.
 
 4. `hmn-task18-migration-plan`
-   - Status: `duplicate-likely`; migration dry-run appears already merged as `11e0aca`.
+   - Status: `absorbed-with-mainline-hardening` / cleanup candidate.
+   - Reason: tests are identical to HEAD; `restore.py` is identical; `migration.py` differs only because HEAD replaced the older docs redaction helper with shared `providers.redact_sensitive_data`.
+   - Verification target: `tests/test_restore_plan.py tests/test_migration_plan.py`.
+   - Note: keep HEAD version; do not reintroduce old `docs_generate` helper coupling.
 
 5. `hmn-task19-onboarding-plan`
-   - Status: `duplicate-likely`; onboarding dry-run appears already merged as `11e0aca`.
+   - Status: `absorbed-with-mainline-hardening` / cleanup candidate.
+   - Reason: tests are identical to HEAD; `restore.py` is identical; `migration.py` and `onboarding.py` differ only because HEAD replaced older docs redaction helpers with shared `providers.redact_sensitive_data`.
+   - Verification target: `tests/test_restore_plan.py tests/test_migration_plan.py tests/test_onboarding_plan.py`.
+   - Note: keep HEAD version; do not reintroduce old `docs_generate` helper coupling.
 
 6. `feat/monitor-closed-loop`
    - Adds monitor closed loop, backup/docs-sync component manifests, backup dry-run CLI.
@@ -81,14 +90,14 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
 
 ## Next action
 
-Next merge-first action: classify `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, and `hmn-task19-onboarding-plan` by blob/hash. They are expected duplicate/absorbed now that docs-center apply was extracted; verify before cleanup.
+Next merge-first action: inspect `feat/monitor-closed-loop` by task-specific file clusters. Do not broad-merge the stale branch. Start with component manifests and monitor/backup CLI tests; extract only one low-risk cluster if it is not already represented on HEAD.
 
 Suggested gate:
 
 ```bash
-for b in hmn-task17-restore-plan hmn-task18-migration-plan hmn-task19-onboarding-plan; do git diff --name-status feat/v1-1-useful-ops-mvp...$b; done
-.venv/bin/python -m pytest -q tests/test_restore_plan.py tests/test_migration_plan.py tests/test_onboarding_plan.py
-python -m compileall -q src
+git diff --name-status feat/v1-1-useful-ops-mvp...feat/monitor-closed-loop
+.venv/bin/python -m pytest -q tests/test_components.py tests/test_monitor_cli.py
+.venv/bin/python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check
 ```

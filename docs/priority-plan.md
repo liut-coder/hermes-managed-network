@@ -298,8 +298,8 @@ failed
 - GitHub Actions provider：主线大概率已吸收，需确认清理。
 - Deploy dry-run/status：主线大概率已吸收，需确认清理。
 - Config Provider inventory export：可能主线已吸收，需判重。
-- Docs Provider / docs-sync plan/apply：docs-center apply 文件簇已抽取到主线，下一轮只需判重旧分支剩余 restore/migration/onboarding。
-- Restore / migration / onboarding dry-run：主线已部分吸收，需清理旧 worktree。
+- Docs Provider / docs-sync plan/apply：docs-center apply 文件簇已抽取到主线，旧分支剩余 restore/migration/onboarding 已完成 blob/hash 判重。
+- Restore / migration / onboarding dry-run：`hmn-task17/18/19` 已判定为 absorbed / cleanup candidate；HEAD 保留共享 `providers.redact_sensitive_data` 加固版本，不回退到旧 docs redaction helper。
 
 ### 要做
 
