@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13 10:23 EDT
+## Latest cron reconciliation — 2026-05-13 10:58 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -150,13 +150,14 @@ Manual priority branch probes in this cron pass:
 
 Cron state:
 
-- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 10:52 EDT.
+- Active merge-first orchestrator: `9b36e7b758d9` (`HMN merge-first 全托管统筹`), next run around 11:27 EDT.
+- Older HMN orchestrator crons remain paused: `a664a1c7cc73`, `b2f723639ca7`.
 - No active duplicate HMN merge-first cron was observed in the live cron list.
 
 Working tree state:
 
 - No tracked code diff was present at the start of this pass.
-- Untracked generated artifacts remain:
+- Untracked generated artifacts remain unchanged:
   - `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated implementation plan; outside current P0 merge-first priority, so left uncommitted.
   - `uv.lock` — generated lockfile; left uncommitted until the project explicitly adopts uv lockfile policy.
 
@@ -175,4 +176,4 @@ Result: orchestrator CLI focused tests passed; compileall, shell syntax, and dif
 
 ## Next action
 
-Either delete the absorbed remote cleanup branches after operator approval, or explicitly mark them abandoned. Only after that should the orchestrator move to the next P0 Worker timeout / heartbeat / cancel / watch implementation slice.
+Delete the absorbed remote cleanup branches after operator approval, or explicitly mark them abandoned. Only after that should the orchestrator move to the next P0 Worker timeout / heartbeat / cancel / watch implementation slice.
