@@ -103,11 +103,45 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
+## Latest cron reconciliation — 2026-05-13
+
+Native backlog command was rerun on the live repository:
+
+```bash
+.venv/bin/python -m hermes_managed_network.cli orchestrator backlog --repo . --base feat/v1-1-useful-ops-mvp
+```
+
+Observed branch state:
+
+- Branch total: 12.
+- WIP: 0/3.
+- `generated`: empty.
+- `needs-review`: empty.
+- `merge-ready`: empty.
+- `conflict`: empty.
+- `stale`: empty.
+- `merged` / cleanup candidates:
+  - `docs/architecture-backlog`
+  - `feat/monitor-closed-loop`
+  - `feat/p1-remote-smoke-script`
+  - `feat/p1-telegram-approval-smoke-script`
+  - `feat/production-readiness-doctor`
+  - `feat/production-readiness-p0`
+  - `feat/useful-ops-mvp`
+  - `fix/production-p0-readiness`
+  - `hmn-task-provider-contract`
+  - `hmn-task20-config-provider`
+
+Manual priority branch probes also found the old local task branches (`hmn-task12-coolify`, `hmn-config-provider-merge-check`, `hmn-docs-center-apply`, `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, `hmn-task19-onboarding-plan`) no longer exist locally or on origin. The remaining production/monitor remote heads are still not literal ancestors, but the native backlog classifier correctly treats their task-specific slices as already extracted and cleanup-only.
+
+Untracked generated artifacts observed in the working tree:
+
+- `docs/plans/2026-05-13-hmn-web-docs-module.md` — generated plan; do not execute while P0 merge-first/worker watchdog work is the priority.
+- `uv.lock` — generated lockfile; leave uncommitted until the project explicitly adopts uv lockfile policy.
+
 ## Next action
 
-Latest cron slice ran the native `hmn orchestrator backlog` surface against the live repo and found one remaining WIP branch, `feat/useful-ops-mvp`. The branch was classified as stale-base after `merge-tree` showed broad add/add/docs conflicts; only the missing managed-ops summary doc was manually extracted and the backlog classifier now marks the branch as absorbed/cleanup candidate.
-
-Next merge-first action: rerun `hmn orchestrator backlog --repo . --base feat/v1-1-useful-ops-mvp`. If WIP is zero, either clean absorbed remote/worktree branches or move to the highest priority Worker timeout / heartbeat / cancel slice. Do not dispatch new feature development if backlog reports any `needs-review` / `conflict` item.
+Merge-first branch debt is clear enough to stop dispatching cleanup tasks. Next unique action: either delete absorbed remote cleanup branches after operator approval, or continue the highest-priority P0 Worker timeout / heartbeat / cancel / watch slice. Do not start the generated HMN Web docs-module plan until P0 worker observability and cancellation work has a bounded implementation plan.
 
 Suggested gate:
 
