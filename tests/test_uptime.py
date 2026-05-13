@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from hermes_managed_network.cli import app
 from hermes_managed_network.service_registry import ServiceRecord, ServiceRegistry
+from hermes_managed_network.storage import SQLiteStore, ServiceRecord as StorageServiceRecord
 
 
 def test_uptime_plan_generates_http_tcp_and_skip_entries(tmp_path):
@@ -77,6 +78,64 @@ def test_uptime_plan_generates_http_tcp_and_skip_entries(tmp_path):
             "name": "worker",
             "reason": "missing domain and port",
         }
+    ]
+
+
+def test_uptime_plan_db_services_generate_registry_style_http_tcp_and_skip_entries(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="node-db:docker:web",
+            name="web",
+            node_id="node-db",
+            kind="docker",
+            domains=["web.example.com"],
+            ports=[8080],
+            monitor_enabled=True,
+            metadata={"providers": {"uptime": {"enabled": True}}},
+        )
+    )
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="node-db:systemd:ssh",
+            name="ssh",
+            node_id="node-db",
+            kind="systemd",
+            ports=[2222],
+            monitor_enabled=True,
+            metadata={"providers": {"uptime": {"enabled": True}}},
+        )
+    )
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="node-db:unknown:worker",
+            name="worker",
+            node_id="node-db",
+            kind="unknown",
+            monitor_enabled=True,
+        )
+    )
+
+    result = CliRunner().invoke(app, ["uptime", "plan", "--db", str(db), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["update"] == []
+    assert payload["create"] == [
+        {
+            "service_id": "node-db:docker:web",
+            "name": "web",
+            "monitor": {"type": "http", "name": "web (node-db)", "url": "https://web.example.com"},
+        },
+        {
+            "service_id": "node-db:systemd:ssh",
+            "name": "ssh",
+            "monitor": {"type": "tcp", "name": "ssh (node-db)", "host": "node-db", "port": 2222},
+        },
+    ]
+    assert payload["skip"] == [
+        {"service_id": "node-db:unknown:worker", "name": "worker", "reason": "missing domain and port"}
     ]
 
 

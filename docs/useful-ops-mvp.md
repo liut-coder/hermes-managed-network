@@ -5,14 +5,16 @@
 Useful Ops v1.1 当前已经补齐一条可验证的 dry-run 运维链路：
 
 ```text
-inspect -> discover -> service registry -> docs generate -> uptime plan
+inspect/service discovery -> DB service registry -> deploy/docs/uptime/console dry-run -> approval-gated apply/sync
 ```
 
 它现在适合：
 
 - 本机资产盘点
-- 服务清单推导
-- 文档草稿生成
+- 服务清单推导并持久化到 DB service registry
+- 从 DB service registry 生成 deploy/docs/uptime 计划
+- console API 查看服务摘要
+- 文档草稿与 docs-sync 计划生成
 - Uptime Kuma 同步计划预演
 
 它现在还不做：
@@ -79,13 +81,15 @@ hmn discover services --inventory /tmp/inventory.json --output /tmp/service-regi
 
 ### 3. service registry
 
-service registry 是 Useful Ops 链路的中间标准件。
+service registry 是 Useful Ops 链路的中间标准件。当前支持两种来源：临时 JSON registry，以及由 `SQLiteStore.list_service_records()` 读取的 DB service registry；deploy/docs/uptime 共用同一套 DB service record -> `ServiceRegistry` 适配。
 
 作用：
 
-- 给 `docs generate` 提供统一输入
-- 给 `uptime plan` 提供统一输入
-- 把 inspect/discover 结果固定成可审计 JSON
+- 给 `deploy plan/status --db` 提供统一输入
+- 给 `docs sync plan/apply --db` 提供统一输入
+- 给 `uptime plan/sync --db` 提供统一输入
+- 给 console `/api/v1/console/services` 提供服务摘要
+- 把 inspect/discover 结果固定成可审计 DB service records；JSON registry 仍可用于离线 dry-run
 
 约束：
 
@@ -133,19 +137,23 @@ source: docker inspect --format [REDACTED]
 monitor.api_key: [REDACTED]
 ```
 
-### 5. uptime plan dry-run
+### 5. docs sync 与 uptime plan dry-run
 
 命令：
 
 ```bash
+hmn docs sync plan --db /tmp/hmn.db --json
+hmn uptime plan --db /tmp/hmn.db --json
+# 离线 JSON registry 仍支持：
 hmn uptime plan --service-registry /tmp/service-registry.json --json
 ```
 
 用途：
 
-- 从 registry 推导可创建的监控项
-- 优先生成 HTTP 监控；没有域名时回退到 TCP 监控
-- 不能生成时写入 `skip`
+- `docs sync plan --db` 从 DB service registry 生成 docs-center dry-run，同步 server/service/domain/runbook 索引目标
+- `uptime plan --db` 从同一 DB service registry 推导可创建的监控项
+- Uptime 优先生成 HTTP 监控；没有域名时回退到 TCP 监控
+- 无域名且无端口时写入 `skip`
 
 当前边界：
 
@@ -194,8 +202,10 @@ dry-run 输出结构示例：
 ```bash
 hmn inspect node --local --output /tmp/inventory.json --json
 hmn discover services --inventory /tmp/inventory.json --output /tmp/service-registry.json --json
-hmn docs generate --registry /tmp/service-registry.json --output-dir /tmp/hmn-docs
-hmn uptime plan --service-registry /tmp/service-registry.json --json
+hmn service discover --node-id local --db /tmp/hmn.db --apply --json
+hmn deploy plan --db /tmp/hmn.db --json
+hmn docs sync plan --db /tmp/hmn.db --json
+hmn uptime plan --db /tmp/hmn.db --json
 ```
 
 ## 明确未启用项

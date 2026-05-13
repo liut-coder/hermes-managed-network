@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from hermes_managed_network.cli import app
 from hermes_managed_network.service_registry import ServiceRecord, ServiceRegistry
+from hermes_managed_network.storage import SQLiteStore, ServiceRecord as StorageServiceRecord
 
 
 runner = CliRunner()
@@ -307,3 +308,97 @@ def test_deploy_cli_json_output_is_parseable(tmp_path):
 
     assert json.loads(plan_result.stdout)["mode"] == "plan"
     assert json.loads(status_result.stdout)["mode"] == "status"
+
+
+def _write_db_registry(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="svc_node-a_web",
+            name="web",
+            node_id="node-a",
+            kind="docker",
+            domains=["web.example.invalid"],
+            ports=[8080],
+            runtime="nginx:alpine",
+            source="unit-test",
+            docs_path="services/web.md",
+            monitor_enabled=True,
+            status="active",
+            metadata={"providers": {"uptime": {"enabled": True}}},
+        )
+    )
+    store.save_service_record(
+        StorageServiceRecord(
+            service_id="svc_node-b_worker",
+            name="worker",
+            node_id="node-b",
+            kind="systemd",
+            ports=[9000],
+            monitor_enabled=True,
+            status="inactive",
+            metadata={"deploy": {"providers": {"uptime": {"enabled": True}}}},
+        )
+    )
+    return db
+
+
+def test_deploy_plan_reads_sqlite_service_registry_json(tmp_path):
+    db = _write_db_registry(tmp_path)
+
+    result = runner.invoke(app, ["deploy", "plan", "--db", str(db), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "plan"
+    assert payload["service_count"] == 2
+    service = payload["services"][0]
+    assert service["service_id"] == "svc_node-a_web"
+    assert service["host"] == "node-a"
+    assert service["node"] == "node-a"
+    assert service["domains"] == ["web.example.invalid"]
+    assert service["ports"] == [8080]
+    assert service["status"] == "active"
+    assert service["runtime"] == "nginx:alpine"
+    assert service["source"] == "unit-test"
+    assert service["docs_path"] == "services/web.md"
+    assert service["monitor"]["enabled"] is True
+    assert service["providers"]["uptime"]["plan"]["monitor"]["url"] == "https://web.example.invalid"
+
+
+def test_deploy_status_reads_sqlite_service_registry_json(tmp_path):
+    db = _write_db_registry(tmp_path)
+
+    result = runner.invoke(app, ["deploy", "status", "--db", str(db), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "status"
+    assert payload["service_count"] == 2
+    service = payload["services"][0]
+    assert service["service_id"] == "svc_node-a_web"
+    assert service["host"] == "node-a"
+    assert service["node"] == "node-a"
+    assert service["domains"] == ["web.example.invalid"]
+    assert service["ports"] == [8080]
+    assert service["status"] == "active"
+    assert service["providers"]["uptime"]["status"]["monitor"]["type"] == "http"
+    assert service["providers"]["uptime"]["status"]["exists"] is True
+
+
+def test_deploy_db_service_id_filter_and_summary(tmp_path):
+    db = _write_db_registry(tmp_path)
+
+    result = runner.invoke(app, ["deploy", "plan", "--db", str(db), "--service-id", "svc_node-b_worker"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "deploy plan services: 1" in result.stdout
+
+    json_result = runner.invoke(app, ["deploy", "status", "--db", str(db), "--service-id", "svc_node-b_worker", "--json"])
+    assert json_result.exit_code == 0, json_result.stdout
+    payload = json.loads(json_result.stdout)
+    assert payload["service_count"] == 1
+    assert payload["services"][0]["service_id"] == "svc_node-b_worker"
+    assert payload["services"][0]["status"] == "inactive"
+    assert payload["services"][0]["providers"]["uptime"]["status"]["monitor"]["port"] == 9000

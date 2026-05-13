@@ -117,6 +117,94 @@ def test_cli_can_create_and_revoke_token(tmp_path):
     assert SQLiteStore(db).load_token(token_value).status == "revoked"
 
 
+def test_service_discover_dry_run_uses_fixture_text_and_does_not_write_db(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    systemd_fixture = tmp_path / "systemd.txt"
+    systemd_fixture.write_text("nginx.service loaded active running nginx web server\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "service",
+            "discover",
+            "--db",
+            str(db),
+            "--node-id",
+            "node-cli",
+            "--systemd-output",
+            str(systemd_fixture),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "discovered services: 1" in result.stdout
+    assert "create: svc_node-cli_nginx" in result.stdout
+    assert "kind: None -> systemd" in result.stdout
+    assert "svc_node-cli_nginx" in result.stdout
+    assert SQLiteStore(db).list_service_records() == []
+    assert SQLiteStore(db).list_audit_events() == []
+
+
+def test_service_discover_apply_uses_fixture_text_and_writes_db_and_audit(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    docker_fixture = tmp_path / "docker.jsonl"
+    docker_fixture.write_text('{"Names":"web-app","Image":"nginx:alpine","Ports":"0.0.0.0:8080->80/tcp"}\n', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "service",
+            "discover",
+            "--db",
+            str(db),
+            "--node-id",
+            "node-cli",
+            "--docker-output",
+            str(docker_fixture),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "applied services: 1" in result.stdout
+    stored = SQLiteStore(db).list_service_records(node_id="node-cli")
+    assert [record.service_id for record in stored] == ["svc_node-cli_web-app"]
+    assert stored[0].kind == "docker"
+    assert stored[0].ports == [8080]
+    events = SQLiteStore(db).list_audit_events()
+    assert events[-1].action == "service_discovery"
+    assert events[-1].details["service_ids"] == ["svc_node-cli_web-app"]
+
+
+def test_service_discover_rejects_no_dry_run_without_applying(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    systemd_fixture = tmp_path / "systemd.txt"
+    systemd_fixture.write_text("nginx.service loaded active running nginx web server\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "service",
+            "discover",
+            "--db",
+            str(db),
+            "--node-id",
+            "node-cli",
+            "--systemd-output",
+            str(systemd_fixture),
+            "--no-dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert SQLiteStore(db).list_service_records() == []
+    assert SQLiteStore(db).list_audit_events() == []
+
+
 def test_cli_can_expire_pending_tokens(tmp_path):
     runner = CliRunner()
     db = tmp_path / "hmn.db"
@@ -293,6 +381,7 @@ def test_menu_shows_quick_actions():
     assert "hmn node install-heartbeat" in result.stdout
     assert "hmn node worker-status" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
     assert "hmn audit list" in result.stdout
     assert "查看审计" in result.stdout
 
@@ -310,6 +399,7 @@ def test_root_command_shows_menu_instead_of_missing_command():
     assert "hmn node status" in result.stdout
     assert "hmn node doctor" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
     assert "hmn version" in result.stdout
     assert "hmn update" in result.stdout
     assert "hmn uninstall" in result.stdout
@@ -330,6 +420,7 @@ def test_menu_plain_prints_quick_actions():
     assert "hmn node install-heartbeat" in result.stdout
     assert "hmn node worker-status" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
     assert "hmn version" in result.stdout
     assert "示例" in result.stdout
 
@@ -343,6 +434,7 @@ def test_command_help_includes_examples():
     assert "示例" in result.stdout
     assert "hmn node confirm" in result.stdout
     assert "hmn task ssh-run-next" in result.stdout
+    assert "hmn service discover" in result.stdout
 
 
 def test_root_menu_can_start_wake_flow(tmp_path, monkeypatch):

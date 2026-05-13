@@ -7,6 +7,7 @@ from .coolify_provider import build_coolify_sync_dry_run, discover_coolify_servi
 from .docs_generate import _sanitize_value
 from .github_actions_provider import build_github_actions_dispatch_plan, build_github_actions_status
 from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH, ServiceRecord, ServiceRegistry
+from .service_registry_adapters import registry_from_storage_records, service_record_from_storage
 from .uptime import build_uptime_plan
 
 SKELETON_ACTION_RESULT = {
@@ -144,16 +145,19 @@ def _service_status_payload(service: ServiceRecord, *, provider_fixture_dir: Pat
 
 
 def _base_service_payload(service: ServiceRecord) -> dict[str, object]:
+    monitor = service.monitor if isinstance(service.monitor, dict) else {}
     return {
         "service_id": service.service_id,
         "name": service.name,
         "host": service.node,
+        "node": service.node,
         "kind": service.kind,
         "domains": list(service.domains),
         "ports": list(service.ports),
         "docs_path": service.docs_path,
         "runtime": service.runtime,
         "source": service.source,
+        "status": monitor.get("registry_status"),
         "monitor": service.monitor,
         "warnings": list(service.warnings),
     }

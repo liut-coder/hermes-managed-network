@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 from hermes_managed_network.cli import app
 from hermes_managed_network.docs_sync import build_docs_sync_plan_from_path
 from hermes_managed_network.service_registry import ServiceRecord, ServiceRegistry
+from hermes_managed_network.storage import SQLiteStore, ServiceRecord as StorageServiceRecord
 
 
 runner = CliRunner()
@@ -181,6 +182,38 @@ def test_docs_sync_plan_cli_json_is_parseable_and_redacts_sensitive_fields(tmp_p
     assert "secret-token" not in rendered
     assert "top-secret" not in rendered
     assert rendered.count("[REDACTED]") >= 4
+
+
+def test_docs_sync_plan_cli_can_load_services_from_db_without_json_registry(tmp_path):
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_service_record(
+        StorageServiceRecord(
+            service_id="node-db:docker:db-web",
+            name="DB Web",
+            node_id="node-db",
+            kind="docker",
+            runtime="nginx:db",
+            domains=["db-web.example.com"],
+            ports=[8080],
+            docs_path="service/db-web.md",
+            source="discovery",
+            monitor_enabled=True,
+            status="active",
+            metadata={"providers": {"uptime": {"enabled": True}}},
+        )
+    )
+
+    result = runner.invoke(app, ["docs", "sync", "plan", "--db", str(db), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["service_count"] == 1
+    service_doc = payload["service_docs"][0]
+    assert service_doc["service_id"] == "node-db:docker:db-web"
+    assert service_doc["service_name"] == "DB Web"
+    assert service_doc["host"] == "node-db"
+    assert service_doc["domains"] == ["db-web.example.com"]
+    assert service_doc["ports"] == [8080]
 
 
 def test_docs_sync_apply_requires_approval_and_does_not_write_docs(tmp_path):

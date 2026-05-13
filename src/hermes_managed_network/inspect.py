@@ -122,6 +122,8 @@ def parse_systemd_services(text: str) -> list[SystemdServiceRecord]:
         line = line.strip()
         if not line or line.startswith("UNIT ") or line.startswith("LOAD "):
             continue
+        if line.startswith("●"):
+            line = line.removeprefix("●").strip()
         parts = line.split(None, 4)
         if len(parts) < 5 or not parts[0].endswith(".service"):
             continue

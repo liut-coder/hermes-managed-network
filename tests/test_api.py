@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from hermes_managed_network.api import create_app
-from hermes_managed_network.storage import SQLiteStore
+from hermes_managed_network.storage import SQLiteStore, ServiceRecord
 from hermes_managed_network.tokens import JoinTokenStore
 from hermes_managed_network.version import current_version_info
 
@@ -186,6 +186,46 @@ def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
     assert data["tasks"][0]["status"] == "pending"
     assert data["approvals"][0]["id"] == approval.approval_id
     assert data["approvals"][0]["status"] == "pending"
+
+
+def test_console_services_endpoint_returns_db_service_record_summaries(tmp_path):
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_service_record(
+        ServiceRecord(
+            service_id="node-api:docker:web",
+            name="API Web",
+            node_id="node-api",
+            kind="docker",
+            runtime="nginx",
+            domains=["api.example.com"],
+            ports=[443],
+            monitor_enabled=True,
+            docs_path="service/api-web.md",
+            source="discovery",
+            status="active",
+        )
+    )
+    client = TestClient(create_app(db))
+
+    response = client.get("/api/v1/console/services")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "services": [
+            {
+                "service_id": "node-api:docker:web",
+                "name": "API Web",
+                "node_id": "node-api",
+                "kind": "docker",
+                "domains": ["api.example.com"],
+                "ports": [443],
+                "status": "active",
+                "monitor_enabled": True,
+                "docs_path": "service/api-web.md",
+                "source": "discovery",
+            }
+        ]
+    }
 
 
 def test_control_plane_serves_join_script(tmp_path):

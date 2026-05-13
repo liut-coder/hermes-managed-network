@@ -19,7 +19,7 @@ import typer
 
 from .components import ComponentManifest, load_builtin_components
 from .config_provider import plan_config_inventory_export
-from .deploy import render_deploy_plan_json, render_deploy_status_json
+from .deploy import build_deploy_plan, build_deploy_status, render_deploy_plan_json, render_deploy_status_json
 from .discovery import discover_services_from_file
 from .docs_generate import load_registry_and_generate_docs
 from .docs_sync import (
@@ -27,6 +27,7 @@ from .docs_sync import (
     DEFAULT_SERVER_DOC_ROOT,
     DEFAULT_SERVICE_DOC_ROOT,
     build_docs_sync_plan_from_path,
+    build_docs_sync_plan_from_registry,
     parse_rename_host_args,
     render_docs_sync_apply_json,
     render_docs_sync_plan_json,
@@ -55,9 +56,11 @@ from .restore import render_restore_plan_json
 from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
+from .service_discovery import apply_discovered_services, discover_services_from_text, plan_discovered_services
 from .service_registry import DEFAULT_SERVICE_REGISTRY_PATH
+from .service_registry_adapters import registry_from_storage_records
 from .storage import SQLiteStore, ServiceRecord
-from .uptime import render_uptime_plan_json
+from .uptime import build_uptime_plan, render_uptime_plan_json
 from .approval_gateway import (
     ApprovalGatewayClientConfig,
     ApprovalGatewayHttpApiClient,
@@ -96,6 +99,8 @@ app = typer.Typer(
         "  hmn task run              下发任务（worker/ssh）\n"
         "  hmn task list             查看任务队列\n"
         "  hmn task ssh-run-next     执行下一个 SSH 任务\n"
+        "  hmn service discover      服务发现 dry-run/apply\n"
+        "  hmn deploy plan --db ./hmn.db 从 DB 生成部署计划\n"
         "  hmn orchestrator enqueue  加入托管调度队列\n"
         "  hmn orchestrator worker register 登记调度 worker\n"
         "  hmn orchestrator worker update   更新 worker 状态\n"
@@ -410,6 +415,9 @@ def _show_menu() -> None:
     typer.echo("  hmn task run 'uptime' --executor ssh --wait")
     typer.echo("  hmn task list")
     typer.echo("  hmn task ssh-run-next")
+    typer.echo("  hmn service discover --node-id node1 --systemd-output systemd.txt")
+    typer.echo("  hmn service discover --node-id node1 --docker-output docker.jsonl --apply")
+    typer.echo("  hmn deploy plan --db ./hmn.db")
     typer.echo("  hmn orchestrator enqueue --title '巡检服务' --scope ops --priority 5")
     typer.echo("  hmn orchestrator worker register --id miskrobot --transport bridge --label standby")
     typer.echo("  hmn orchestrator worker update --id miskrobot --status offline")
@@ -456,6 +464,7 @@ def _show_interactive_menu(db: Path | None = None) -> None:
         typer.echo("13) hmn task run      下发任务")
         typer.echo("14) hmn task list    查看任务")
         typer.echo("    hmn task ssh-run-next  执行 SSH 任务")
+        typer.echo("    hmn service discover   服务发现 dry-run/apply")
         typer.echo("15) hmn component list   查看组件")
         typer.echo("16) hmn component status 组件状态")
         typer.echo("17) hmn component apply  记录组件状态")
@@ -1683,15 +1692,27 @@ def docs_sync_plan(
     service_doc_root: Path = typer.Option(DEFAULT_SERVICE_DOC_ROOT, "--service-doc-root", help="服务文档根目录"),
     rename_host: list[str] = typer.Option([], "--rename-host", help="主机改名映射 OLD=NEW，可重复"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
 ) -> None:
     """生成 docs-center 同步 dry-run 计划，不写入 /srv/files。"""
     try:
-        rendered = render_docs_sync_plan_json(
-            service_registry,
-            server_doc_root=server_doc_root,
-            service_doc_root=service_doc_root,
-            rename_hosts=parse_rename_host_args(rename_host),
-        )
+        rename_mapping = parse_rename_host_args(rename_host)
+        if db is not None:
+            registry = registry_from_storage_records(_store(db).list_service_records())
+            payload = build_docs_sync_plan_from_registry(
+                registry,
+                server_doc_root=server_doc_root,
+                service_doc_root=service_doc_root,
+                rename_hosts=rename_mapping,
+            )
+            rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        else:
+            rendered = render_docs_sync_plan_json(
+                service_registry,
+                server_doc_root=server_doc_root,
+                service_doc_root=service_doc_root,
+                rename_hosts=rename_mapping,
+            )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
@@ -1876,16 +1897,26 @@ def uptime_plan(
 ) -> None:
     if service_registry is not None:
         rendered = render_uptime_plan_json(service_registry)
+        payload = json.loads(rendered)
+    else:
+        services = _store(db).list_service_records()
+        registry = registry_from_storage_records(services)
+        payload = build_uptime_plan(registry)
+        payload["provider"] = "uptime-kuma"
+        payload["dry_run"] = True
+        payload["monitors"] = [monitor for service in services if (monitor := _uptime_monitor_for_service(service))]
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    if json_output:
         typer.echo(rendered)
         return
-    monitors = [monitor for service in _store(db).list_service_records() if (monitor := _uptime_monitor_for_service(service))]
-    payload = {"provider": "uptime-kuma", "dry_run": True, "monitors": monitors}
-    if json_output:
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-        return
-    typer.echo(f"uptime kuma dry-run monitors: {len(monitors)}")
-    for monitor in monitors:
-        typer.echo(f"- {monitor['service_id']} {monitor['url']}")
+    typer.echo(
+        f"uptime kuma dry-run create={len(payload.get('create', []))} "
+        f"update={len(payload.get('update', []))} skip={len(payload.get('skip', []))}"
+    )
+    for item in payload.get("create", []):
+        monitor = item.get("monitor", {}) if isinstance(item, dict) else {}
+        target = monitor.get("url") or f"{monitor.get('host')}:{monitor.get('port')}"
+        typer.echo(f"- {item['service_id']} {target}")
 
 
 @uptime_app.command("sync")
@@ -1917,38 +1948,50 @@ def uptime_sync(
 @deploy_app.command("plan")
 def deploy_plan(
     service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
     provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
     service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
 ) -> None:
-    rendered = render_deploy_plan_json(
-        service_registry,
-        service_id=service_id,
-        provider_fixture_dir=provider_fixture_dir,
-    )
+    if db is not None:
+        registry = registry_from_storage_records(_store(db).list_service_records())
+        payload = build_deploy_plan(registry, service_id=service_id, provider_fixture_dir=provider_fixture_dir)
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    else:
+        rendered = render_deploy_plan_json(
+            service_registry,
+            service_id=service_id,
+            provider_fixture_dir=provider_fixture_dir,
+        )
+        payload = json.loads(rendered)
     if json_output:
         typer.echo(rendered)
         return
-    payload = json.loads(rendered)
     typer.echo(f"deploy plan services: {payload['service_count']}")
 
 
 @deploy_app.command("status")
 def deploy_status(
     service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
     provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
     service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
 ) -> None:
-    rendered = render_deploy_status_json(
-        service_registry,
-        service_id=service_id,
-        provider_fixture_dir=provider_fixture_dir,
-    )
+    if db is not None:
+        registry = registry_from_storage_records(_store(db).list_service_records())
+        payload = build_deploy_status(registry, service_id=service_id, provider_fixture_dir=provider_fixture_dir)
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    else:
+        rendered = render_deploy_status_json(
+            service_registry,
+            service_id=service_id,
+            provider_fixture_dir=provider_fixture_dir,
+        )
+        payload = json.loads(rendered)
     if json_output:
         typer.echo(rendered)
         return
-    payload = json.loads(rendered)
     typer.echo(f"deploy status services: {payload['service_count']}")
 
 
@@ -2012,6 +2055,69 @@ def service_add(
     )
     _store(db).save_service_record(service)
     typer.echo(f"service saved: {service_id}")
+
+
+def _read_optional_text_fixture(path: Path | None) -> str:
+    return path.read_text(encoding="utf-8") if path is not None else ""
+
+
+@service_app.command("discover")
+def service_discover(
+    node_id: str = typer.Option(..., "--node-id", help="目标节点 ID"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+    dry_run: bool = typer.Option(True, "--dry-run", help="只输出候选服务，不写入数据库"),
+    apply: bool = typer.Option(False, "--apply", help="写入 service registry 并记录审计"),
+    systemd_output: Path | None = typer.Option(None, "--systemd-output", help="systemctl 输出文本 fixture 路径"),
+    docker_output: Path | None = typer.Option(None, "--docker-output", help="docker ps JSONL 输出文本 fixture 路径"),
+    ports_output: Path | None = typer.Option(None, "--ports-output", help="ss -ltnp 输出文本 fixture 路径"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
+) -> None:
+    if apply:
+        dry_run = False
+    records = discover_services_from_text(
+        node_id,
+        systemd_output=_read_optional_text_fixture(systemd_output),
+        docker_output=_read_optional_text_fixture(docker_output),
+        ports_output=_read_optional_text_fixture(ports_output),
+    )
+    store = _store(db)
+    planned_records, changes = plan_discovered_services(store, node_id, records, source="discovery")
+    if apply:
+        records = apply_discovered_services(store, node_id, records, source="discovery")
+        action = "applied"
+    else:
+        records = planned_records
+        action = "discovered"
+    payload = {
+        "dry_run": dry_run and not apply,
+        "apply": apply,
+        "node_id": node_id,
+        "service_count": len(records),
+        "changes": changes,
+        "services": [
+            {
+                "service_id": record.service_id,
+                "name": record.name,
+                "node_id": record.node_id,
+                "kind": record.kind,
+                "runtime": record.runtime,
+                "ports": record.ports,
+                "source": record.source,
+                "metadata": record.metadata,
+            }
+            for record in records
+        ],
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    typer.echo(f"{action} services: {len(records)}")
+    for change in changes:
+        typer.echo(f"{change['change']}: {change['service_id']}")
+        for field, values in change["diff"].items():
+            typer.echo(f"  {field}: {values['before']} -> {values['after']}")
+    for record in records:
+        typer.echo(_format_service_summary(record))
 
 
 @service_app.command("list")

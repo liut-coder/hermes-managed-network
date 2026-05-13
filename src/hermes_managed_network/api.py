@@ -113,6 +113,23 @@ class ConsoleMetricsResponse(BaseModel):
     running_tasks: int
 
 
+class ConsoleServiceResponse(BaseModel):
+    service_id: str
+    name: str
+    node_id: str
+    kind: str
+    domains: list[str]
+    ports: list[int]
+    status: str
+    monitor_enabled: bool
+    docs_path: str
+    source: str
+
+
+class ConsoleServicesResponse(BaseModel):
+    services: list[ConsoleServiceResponse]
+
+
 class ConsoleSummaryResponse(BaseModel):
     metrics: ConsoleMetricsResponse
     nodes: list[ConsoleNodeResponse]
@@ -341,6 +358,26 @@ def create_app(db_path: str | Path = DEFAULT_DB) -> FastAPI:
         if not script_path.exists():
             raise HTTPException(status_code=404, detail=f"{name} not found")
         return Response(script_path.read_text(), media_type="text/x-shellscript")
+
+    @app.get("/api/v1/console/services", response_model=ConsoleServicesResponse)
+    def console_services() -> ConsoleServicesResponse:
+        return ConsoleServicesResponse(
+            services=[
+                ConsoleServiceResponse(
+                    service_id=service.service_id,
+                    name=service.name,
+                    node_id=service.node_id,
+                    kind=service.kind,
+                    domains=list(service.domains),
+                    ports=list(service.ports),
+                    status=service.status,
+                    monitor_enabled=service.monitor_enabled,
+                    docs_path=service.docs_path,
+                    source=service.source,
+                )
+                for service in store.list_service_records()
+            ]
+        )
 
     @app.get("/scripts/join.sh", include_in_schema=False)
     def join_script() -> Response:

@@ -175,9 +175,23 @@ HMN_ENABLE_EXEC=1
 
 worker 才会执行任务命令。
 
+## service registry 运维闭环
+
+当前服务发现结果会落到 DB service registry；deploy/docs/uptime/console 都从同一份服务事实源读取，默认只生成 dry-run / approval-gated 计划，不直接触达生产外部系统：
+
+```bash
+HMN_DB=/tmp/hmn-demo.db hmn service discover --node-id demo --apply --json
+HMN_DB=/tmp/hmn-demo.db hmn deploy plan --db /tmp/hmn-demo.db --json
+HMN_DB=/tmp/hmn-demo.db hmn docs sync plan --db /tmp/hmn-demo.db --json
+HMN_DB=/tmp/hmn-demo.db hmn uptime plan --db /tmp/hmn-demo.db --json
+curl http://127.0.0.1:8765/api/v1/console/services
+```
+
+JSON registry 文件仍可用于离线导入/演示，但 DB service registry 是控制面内 deploy/docs/uptime/console 的共享入口。
+
 ## task 下发示例
 
-向唯一 managed 节点下发一条低风险任务：
+向唯一 managed 节点下发一条低风险 shell 任务：
 
 ```bash
 HMN_DB=/tmp/hmn-demo.db hmn task run 'uptime'
@@ -226,7 +240,12 @@ curl -fsSL https://raw.githubusercontent.com/liut-coder/hermes-managed-network/m
 - `hmn node heartbeat-command`：生成心跳 curl
 - `hmn node install-heartbeat`：生成 worker 安装命令
 - `hmn node worker-status`：查看 worker 上报状态
-- `hmn task run 'uptime'`：下发低风险任务
+- `hmn service discover --db ... --apply`：把发现结果写入 DB service registry
+- `hmn deploy plan --db ...`：从 DB service registry 生成部署 dry-run
+- `hmn docs sync plan --db ...`：从 DB service registry 生成 docs-center 同步计划
+- `hmn uptime plan --db ...`：从 DB service registry 生成 Uptime Kuma create/update/skip 计划
+- `GET /api/v1/console/services`：查看 DB service records 摘要
+- `hmn task run 'uptime'`：下发低风险 shell 任务
 - `hmn task list`：查看任务状态
 - `hmn component list`：查看组件
 - `hmn component plan/apply/verify/uninstall`：组件生命周期 MVP
