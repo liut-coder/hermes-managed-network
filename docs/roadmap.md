@@ -172,9 +172,9 @@
 
 ### 文档中心自动化
 
-- [ ] 服务部署文档自动填充：从 service registry 生成部署路径、systemd / compose、端口、域名、env、数据目录、依赖和启动/停止命令。
-- [ ] 服务维护文档自动生成：生成巡检、日志、重启、升级、备份、恢复、回滚、常见故障处理步骤。
-- [ ] 文档集中落地到文档中心：机器维度继续写 `/srv/files/docs/server/<host>/`，服务维度继续写 `/srv/files/service/<service>/`，不得分散写在各节点本地。
+- [x] 服务部署文档自动填充：从 service registry 生成部署路径、systemd / compose、端口、域名、env、数据目录、依赖和启动/停止命令。
+- [x] 服务维护文档自动生成：生成巡检、日志、重启、升级、备份、恢复、回滚、常见故障处理步骤。
+- [x] 文档集中落地到文档中心：机器维度继续写 `/srv/files/docs/server/<host>/`，服务维度继续写 `/srv/files/service/<service>/`，不得分散写在各节点本地。
 - [x] docs-sync 真实驱动：支持按节点、按服务和全量刷新，更新索引、域名索引、Runbook 索引，并记录同步结果。（阶段性完成：`hmn docs sync plan/apply`，apply 先创建 approval，审批前不写 `/srv/files`）
 
 ### 备份、恢复与迁移

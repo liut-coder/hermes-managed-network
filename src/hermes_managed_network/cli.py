@@ -26,6 +26,7 @@ from .docs_sync import (
     DEFAULT_DOCS_CENTER_ROOT,
     DEFAULT_SERVER_DOC_ROOT,
     DEFAULT_SERVICE_DOC_ROOT,
+    apply_docs_sync_from_registry,
     build_docs_sync_plan_from_path,
     build_docs_sync_plan_from_registry,
     parse_rename_host_args,
@@ -1754,12 +1755,22 @@ def docs_sync_apply(
 
     if root is not None or execute or json_output:
         try:
-            rendered = render_docs_sync_apply_json(
-                service_registry,
-                root=root or DEFAULT_DOCS_CENTER_ROOT,
-                execute=execute,
-                rename_hosts=rename_mapping,
-            )
+            if db is not None:
+                registry = registry_from_storage_records(_store(db).list_service_records())
+                payload = apply_docs_sync_from_registry(
+                    registry,
+                    root=root or DEFAULT_DOCS_CENTER_ROOT,
+                    execute=execute,
+                    rename_hosts=rename_mapping,
+                )
+                rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+            else:
+                rendered = render_docs_sync_apply_json(
+                    service_registry,
+                    root=root or DEFAULT_DOCS_CENTER_ROOT,
+                    execute=execute,
+                    rename_hosts=rename_mapping,
+                )
         except ValueError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(2) from exc

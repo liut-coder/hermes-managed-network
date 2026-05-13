@@ -21,10 +21,16 @@ def service_record_from_storage(record: StorageServiceRecord) -> ServiceRecord:
         domains=list(record.domains),
         ports=list(record.ports),
         runtime=record.runtime,
+        deploy_path=record.deploy_path,
+        config_paths=list(record.config_paths),
+        env_paths=list(record.env_paths),
+        data_paths=list(record.data_paths),
+        health_check_url=record.health_check_url,
         source=record.source,
         docs_path=record.docs_path,
         monitor=monitor,
         warnings=[str(warning) for warning in metadata.get("warnings", [])] if isinstance(metadata.get("warnings"), list) else [],
+        metadata=_sanitize_value(metadata) if isinstance(metadata, dict) else {},
     )
 
 
