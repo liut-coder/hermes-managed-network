@@ -103,7 +103,7 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
    - Extracted files/hunks in this pass: `docs/managed-ops-summary-v1.1.md` only.
    - Note: keep current HEAD implementation for code and roadmap files; do not broad-merge this stale branch.
 
-## Latest cron reconciliation — 2026-05-13
+## Latest cron reconciliation — 2026-05-13 06:20 EDT
 
 Native backlog command was rerun on the live repository:
 
@@ -120,6 +120,8 @@ Observed branch state:
 - `merge-ready`: empty.
 - `conflict`: empty.
 - `stale`: empty.
+- `duplicate`: empty.
+- `abandoned`: empty.
 - `merged` / cleanup candidates:
   - `docs/architecture-backlog`
   - `feat/monitor-closed-loop`
@@ -132,7 +134,13 @@ Observed branch state:
   - `hmn-task-provider-contract`
   - `hmn-task20-config-provider`
 
-Manual priority branch probes also found the old local task branches (`hmn-task12-coolify`, `hmn-config-provider-merge-check`, `hmn-docs-center-apply`, `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, `hmn-task19-onboarding-plan`) no longer exist locally or on origin. The remaining production/monitor remote heads are still not literal ancestors, but the native backlog classifier correctly treats their task-specific slices as already extracted and cleanup-only.
+Manual priority branch probes found the old local task branches (`hmn-task12-coolify`, `hmn-config-provider-merge-check`, `hmn-docs-center-apply`, `hmn-task17-restore-plan`, `hmn-task18-migration-plan`, `hmn-task19-onboarding-plan`) still absent locally and on origin.
+
+The remaining priority remote heads are not literal ancestors, but are cleanup-only by task-specific diff:
+
+- `origin/feat/monitor-closed-loop`: ahead=3 / behind=126 from base; `tests/test_monitor_cli.py` is identical to HEAD and monitor/component backup/docs-sync slices are already present. Keep HEAD storage/roadmap/CLI hardening; do not broad-merge stale branch.
+- `origin/feat/production-readiness-p0`: ahead=1 / behind=125 from base; production readiness slice is already extracted on HEAD.
+- `origin/fix/production-p0-readiness`: ahead=1 / behind=125 from base; same production readiness slice is already extracted on HEAD.
 
 Untracked generated artifacts observed in the working tree:
 
@@ -141,7 +149,7 @@ Untracked generated artifacts observed in the working tree:
 
 ## Next action
 
-Merge-first branch debt is clear enough to stop dispatching cleanup tasks. Next unique action: either delete absorbed remote cleanup branches after operator approval, or continue the highest-priority P0 Worker timeout / heartbeat / cancel / watch slice. Do not start the generated HMN Web docs-module plan until P0 worker observability and cancellation work has a bounded implementation plan.
+Merge-first branch debt remains clear enough to stop dispatching cleanup tasks. Next unique action: continue the highest-priority P0 Worker timeout / heartbeat / cancel / watch slice with a bounded TDD slice. Do not start the generated HMN Web docs-module plan until P0 worker observability and cancellation work has a bounded implementation plan.
 
 Suggested gate:
 
