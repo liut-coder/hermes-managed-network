@@ -40,6 +40,26 @@ class FakeOrchestratorService:
     def report(self):
         return "队列 1｜worker 1｜最近：已派发"
 
+    def branch_backlog(self, *, repo_path=".", base="feat/v1-1-useful-ops-mvp"):
+        return {
+            "base": base,
+            "repo_path": str(repo_path),
+            "total": 3,
+            "buckets": {
+                "generated": [],
+                "needs-review": [{"branch": "feat/new", "ref": "origin/feat/new", "sha": "abc1234"}],
+                "merge-ready": [],
+                "merged": [{"branch": "feat/old", "ref": "origin/feat/old", "sha": "def5678"}],
+                "duplicate": [],
+                "conflict": [],
+                "stale": [{"branch": "feat/stale", "ref": "origin/feat/stale", "sha": "9999999"}],
+                "abandoned": [],
+            },
+            "cleanup": ["feat/old"],
+            "wip_count": 2,
+            "wip_limit": 3,
+        }
+
 
 def test_orchestrator_enqueue_passes_cli_options_to_service(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_managed_network.cli.OrchestratorService", FakeOrchestratorService)
@@ -106,6 +126,37 @@ def test_orchestrator_status_tick_report_render_short_chinese_output(monkeypatch
     assert report.stdout.strip() == "队列 1｜worker 1｜最近：已派发"
 
 
+def test_orchestrator_backlog_renders_branch_buckets(monkeypatch, tmp_path):
+    monkeypatch.setattr("hermes_managed_network.cli.OrchestratorService", FakeOrchestratorService)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "orchestrator",
+            "backlog",
+            "--db",
+            str(tmp_path / "hmn.db"),
+            "--repo",
+            str(tmp_path),
+            "--base",
+            "feat/v1-1-useful-ops-mvp",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "base: feat/v1-1-useful-ops-mvp" in result.stdout
+    assert "分支总数: 3" in result.stdout
+    assert "needs-review" in result.stdout
+    assert "feat/new" in result.stdout
+    assert "merged" in result.stdout
+    assert "feat/old" in result.stdout
+    assert "stale" in result.stdout
+    assert "feat/stale" in result.stdout
+    assert "可清理: feat/old" in result.stdout
+    assert "WIP: 2/3" in result.stdout
+
+
 def test_orchestrator_worker_register_update_cli_persists_state(tmp_path):
     runner = CliRunner()
     db_args = ["--db", str(tmp_path / "hmn.db")]
@@ -158,6 +209,7 @@ def test_top_help_and_plain_menu_show_orchestrator_commands():
     assert "hmn orchestrator worker register" in help_result.stdout
     assert "hmn orchestrator worker update" in help_result.stdout
     assert "hmn orchestrator status" in help_result.stdout
+    assert "hmn orchestrator backlog" in help_result.stdout
     assert "hmn orchestrator tick" in help_result.stdout
     assert "hmn orchestrator report" in help_result.stdout
     assert menu_result.exit_code == 0
@@ -165,5 +217,6 @@ def test_top_help_and_plain_menu_show_orchestrator_commands():
     assert "hmn orchestrator worker register" in menu_result.stdout
     assert "hmn orchestrator worker update" in menu_result.stdout
     assert "hmn orchestrator status" in menu_result.stdout
+    assert "hmn orchestrator backlog" in menu_result.stdout
     assert "hmn orchestrator tick" in menu_result.stdout
     assert "hmn orchestrator report" in menu_result.stdout

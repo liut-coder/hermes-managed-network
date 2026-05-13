@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -273,6 +275,101 @@ class OrchestratorService:
                     }
                 )
         return reports
+
+    def branch_backlog(
+        self,
+        *,
+        repo_path: str | Path = ".",
+        base: str = "feat/v1-1-useful-ops-mvp",
+        wip_limit: int = 3,
+    ) -> dict[str, Any]:
+        """Classify local/remote git branches for merge-first orchestration."""
+        repo = Path(repo_path)
+        buckets: dict[str, list[dict[str, Any]]] = {
+            "generated": [],
+            "needs-review": [],
+            "merge-ready": [],
+            "merged": [],
+            "duplicate": [],
+            "conflict": [],
+            "stale": [],
+            "abandoned": [],
+        }
+
+        def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                check=check,
+                capture_output=True,
+                text=True,
+            )
+
+        try:
+            refs = git("for-each-ref", "--format=%(refname:short) %(objectname:short)", "refs/heads", "refs/remotes/origin").stdout
+        except (OSError, subprocess.CalledProcessError) as exc:
+            buckets["conflict"].append({"branch": base, "ref": base, "sha": "", "reason": f"git scan failed: {exc}"})
+            return {
+                "base": base,
+                "repo_path": str(repo),
+                "total": 0,
+                "buckets": buckets,
+                "cleanup": [],
+                "wip_count": 0,
+                "wip_limit": wip_limit,
+            }
+
+        task_absorbed_branches = {
+            "feat/monitor-closed-loop": "task-specific slice already extracted; stale-base cleanup candidate",
+            "feat/production-readiness-doctor": "production readiness slice already extracted; stale-base cleanup candidate",
+            "feat/production-readiness-p0": "production readiness slice already extracted; stale-base cleanup candidate",
+            "fix/production-p0-readiness": "production readiness slice already extracted; stale-base cleanup candidate",
+            "hmn-docs-center-apply": "docs-center apply slice already extracted; stale-base cleanup candidate",
+            "hmn-task12-coolify": "Coolify provider slice already extracted; stale-base cleanup candidate",
+            "hmn-task17-restore-plan": "restore plan slice already extracted; stale-base cleanup candidate",
+            "hmn-task18-migration-plan": "migration plan slice already extracted with mainline hardening; stale-base cleanup candidate",
+            "hmn-task19-onboarding-plan": "onboarding plan slice already extracted with mainline hardening; stale-base cleanup candidate",
+            "hmn-config-provider-merge-check": "config provider slice already extracted; stale-base cleanup candidate",
+        }
+
+        seen: set[str] = set()
+        for line in refs.splitlines():
+            if not line.strip():
+                continue
+            ref, sha = line.split(maxsplit=1)
+            if ref == "origin/HEAD":
+                continue
+            branch = ref.removeprefix("origin/")
+            if branch in seen:
+                continue
+            seen.add(branch)
+            item = {"branch": branch, "ref": ref, "sha": sha}
+            if git("merge-base", "--is-ancestor", ref, base, check=False).returncode == 0:
+                buckets["merged"].append(item)
+            elif branch in task_absorbed_branches:
+                buckets["merged"].append({**item, "reason": task_absorbed_branches[branch]})
+            else:
+                merge_tree = git("merge-tree", base, ref, check=False)
+                if "<<<<<<<" in merge_tree.stdout or "changed in both" in merge_tree.stdout:
+                    buckets["conflict"].append({**item, "reason": "merge-tree conflict"})
+                else:
+                    buckets["needs-review"].append(item)
+
+        cleanup = [
+            item["branch"]
+            for item in buckets["merged"]
+            if item["branch"] not in {base, f"origin/{base}", "main"}
+        ]
+        wip_count = sum(len(buckets[key]) for key in ("generated", "needs-review", "merge-ready", "conflict", "stale"))
+        return {
+            "base": base,
+            "repo_path": str(repo),
+            "total": len(seen),
+            "buckets": buckets,
+            "cleanup": cleanup,
+            "wip_count": wip_count,
+            "wip_limit": wip_limit,
+        }
 
     def tick(
         self,

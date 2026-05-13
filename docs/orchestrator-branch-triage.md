@@ -99,12 +99,14 @@ Process one at a time. Prefer cherry-pick or manual extraction over broad merge 
 
 ## Next action
 
-Next merge-first action: with all named priority branches now classified as absorbed/stale cleanup candidates, do not dispatch new development yet; first add the native `hmn orchestrator backlog` / merge-queue status surface from the P0 plan so future cron runs can persist and display this classification instead of relying on this manual document.
+Latest cron slice added the first native `hmn orchestrator backlog` surface so merge-first runs can scan local/remote branches, bucket them into `generated` / `needs-review` / `merge-ready` / `merged` / `duplicate` / `conflict` / `stale` / `abandoned`, report WIP count, and print absorbed cleanup candidates. This turns the manual triage document into a CLI-visible operator loop.
+
+Next merge-first action: run the new backlog command against the live repo each cron pass, then use the output to either clean absorbed remote/worktree branches or process exactly one remaining `needs-review` / `conflict` item. Do not dispatch new feature development while backlog WIP is non-zero.
 
 Suggested gate:
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_orchestrator.py tests/test_cli.py
+.venv/bin/python -m pytest -q tests/test_orchestrator_cli.py tests/test_orchestrator_persistence.py
 .venv/bin/python -m compileall -q src
 bash -n install.sh scripts/*.sh src/hermes_managed_network/assets/*.sh
 git diff --check

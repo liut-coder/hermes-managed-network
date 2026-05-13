@@ -139,3 +139,61 @@ def test_report_is_short_chinese_summary(tmp_path):
     service.enqueue(title="巡检", scope="ops", risk="low", priority=1)
 
     assert service.report().startswith("队列 1｜worker 0｜最近：")
+
+
+def test_branch_backlog_classifies_absorbed_and_unmerged_branches(tmp_path):
+    repo = tmp_path / "repo"
+    run = __import__("subprocess").run
+    run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    run(["git", "config", "user.email", "hmn@example.invalid"], cwd=repo, check=True)
+    run(["git", "config", "user.name", "HMN Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n")
+    run(["git", "add", "README.md"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "-b", "feature/absorbed"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "absorbed.txt").write_text("done\n")
+    run(["git", "add", "absorbed.txt"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "absorbed"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "merge", "--ff-only", "feature/absorbed"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "-b", "feature/open", "HEAD~1"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "open.txt").write_text("open\n")
+    run(["git", "add", "open.txt"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "open"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True, text=True)
+
+    backlog = OrchestratorService(SQLiteStore(tmp_path / "hmn.db")).branch_backlog(repo_path=repo, base="main")
+
+    assert backlog["total"] == 3
+    assert {item["branch"] for item in backlog["buckets"]["merged"]} >= {"feature/absorbed", "main"}
+    assert [item["branch"] for item in backlog["buckets"]["needs-review"]] == ["feature/open"]
+    assert backlog["cleanup"] == ["feature/absorbed"]
+    assert backlog["wip_count"] == 1
+    assert backlog["wip_limit"] == 3
+
+
+def test_branch_backlog_marks_known_task_absorbed_stale_base_branches(tmp_path):
+    repo = tmp_path / "repo"
+    run = __import__("subprocess").run
+    run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    run(["git", "config", "user.email", "hmn@example.invalid"], cwd=repo, check=True)
+    run(["git", "config", "user.name", "HMN Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n")
+    run(["git", "add", "README.md"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "-b", "feat/monitor-closed-loop", "HEAD"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "stale.txt").write_text("old task\n")
+    run(["git", "add", "stale.txt"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "old task"], cwd=repo, check=True, capture_output=True, text=True)
+    run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "mainline.txt").write_text("newer mainline\n")
+    run(["git", "add", "mainline.txt"], cwd=repo, check=True)
+    run(["git", "commit", "-m", "mainline"], cwd=repo, check=True, capture_output=True, text=True)
+
+    backlog = OrchestratorService(SQLiteStore(tmp_path / "hmn.db")).branch_backlog(repo_path=repo, base="main")
+
+    merged = {item["branch"]: item for item in backlog["buckets"]["merged"]}
+    assert "feat/monitor-closed-loop" in merged
+    assert "stale-base cleanup candidate" in merged["feat/monitor-closed-loop"]["reason"]
+    assert "feat/monitor-closed-loop" in backlog["cleanup"]
+    assert backlog["wip_count"] == 0
