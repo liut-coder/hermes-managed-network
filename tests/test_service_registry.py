@@ -6,6 +6,55 @@ from hermes_managed_network.cli import app
 from hermes_managed_network.storage import SQLiteStore, ServiceRecord
 
 
+def test_service_registry_assets_classify_manual_business_as_main_view(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+
+    record = ServiceRecord(
+        service_id="svc_billing",
+        name="Billing",
+        node_id="node1",
+        kind="docker",
+        runtime="compose",
+        source="manual",
+        status="active",
+        metadata={"asset_category": "business"},
+    )
+
+    saved = store.save_service_record(record)
+    loaded = store.load_service_record("svc_billing")
+
+    assert saved.asset_category == "main"
+    assert saved.asset_score >= 70
+    assert any("manual" in reason.lower() for reason in saved.why_asset)
+    assert loaded is not None
+    assert loaded.asset_category == "main"
+    assert loaded.asset_score == saved.asset_score
+    assert loaded.why_asset == saved.why_asset
+
+
+def test_service_registry_assets_mark_system_service_as_system_asset(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+
+    saved = store.save_service_record(
+        ServiceRecord(
+            service_id="svc_hmn_control",
+            name="HMN Control Plane",
+            node_id="node-control",
+            kind="systemd",
+            runtime="systemd",
+            source="discovery",
+            status="active",
+        )
+    )
+
+    assert saved.asset_category == "system"
+    assert saved.asset_score < 40
+    assert saved.why_asset
+
+
+
 def _coolify_fixture() -> dict[str, object]:
     return {
         "server": {"name": "edge-01"},

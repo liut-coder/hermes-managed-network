@@ -24,12 +24,18 @@ def _redact_command(command: str, *, max_length: int = 80) -> str:
 def build_approval_card(approval: ApprovalRequest) -> ApprovalCard:
     node_id = str(approval.details.get("node_id", "未知节点"))
     command = _redact_command(str(approval.details.get("command", "")))
+    task_name = str(approval.details.get("task_name", "")).strip()
+    task_description = str(approval.details.get("task_description", "")).strip()
     lines = [
         "⚠️ 高风险审批",
         f"审批: `{approval.approval_id}`",
         f"风险: `{approval.risk}`",
         f"动作: `{approval.action}`",
     ]
+    if task_name:
+        lines.append(f"任务: `{task_name}`")
+    if task_description:
+        lines.append(f"说明: `{task_description}`")
     if approval.subject_type == "network_acl" and approval.action == "network.acl.apply":
         diff = str(approval.details.get("diff", ""))
         if len(diff) > 900:

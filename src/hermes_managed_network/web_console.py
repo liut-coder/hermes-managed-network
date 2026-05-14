@@ -5,7 +5,8 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Form, HTTPException, Request, status
+import markdown
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -101,6 +102,13 @@ def _task_card(task: Task) -> str:
 
 def _approval_card(approval: ApprovalRequest) -> str:
     details = escape(json.dumps(redact(approval.details), ensure_ascii=False, sort_keys=True))
+    task_name = approval.details.get("task_name")
+    task_description = approval.details.get("task_description")
+    summary = ""
+    if task_name is not None:
+        summary += f"<div><b>{escape(str(task_name))}</b></div>"
+    if task_description is not None:
+        summary += f"<div class='muted'>{escape(str(task_description))}</div>"
     buttons = ""
     if approval.status == "pending":
         buttons = (
@@ -111,12 +119,21 @@ def _approval_card(approval: ApprovalRequest) -> str:
         "<div class='card'>"
         f"<b>{escape(approval.action)}</b> <span class='badge'>{escape(approval.risk)}</span> <span class='badge'>{escape(approval.status)}</span>"
         f"<div class='muted'>{escape(approval.approval_id)} · {escape(approval.subject_type)}:{escape(approval.subject_id)}</div>"
-        f"<pre>{details}</pre>{buttons}</div>"
+        f"{summary}<pre>{details}</pre>{buttons}</div>"
     )
 
 
 def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
-    router = APIRouter()
+    def _require_session(request: Request) -> None:
+        cookie = request.cookies.get("hmn_web_session")
+        if not cookie:
+            raise HTTPException(status_code=401, detail="login required")
+        from .api import _is_authenticated
+
+        if not _is_authenticated(request):
+            raise HTTPException(status_code=401, detail="login required")
+
+    router = APIRouter(dependencies=[Depends(_require_session)])
 
     def docs_file(path: str) -> Path:
         candidate = (docs_base / path).resolve()
@@ -159,13 +176,106 @@ def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
         body += f"<p><a class='btn' href='/tasks/new?node_id={escape(node.node_id)}'>下发任务</a></p>"
         return html_page("节点详情", body)
 
+    def _service_business_category(service) -> str:
+        metadata = service.metadata or {}
+        for key in ("business_category", "business", "category", "biz_category"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return "未分类"
+
+    def _service_asset_class(service) -> str:
+        if service.source == "system" or service.kind in {"system", "platform", "infra"}:
+            return "system"
+        if service.source == "discovery" or service.status in {"discovered", "pending", "pending_review"}:
+            return "pending"
+        return "business"
+
+    def _service_payload(service) -> dict[str, Any]:
+        business_category = _service_business_category(service)
+        asset_class = _service_asset_class(service)
+        summary = service.name
+        if service.domains:
+            summary += f" · {', '.join(service.domains)}"
+        if service.ports:
+            summary += f" · ports {', '.join(map(str, service.ports))}"
+        return {
+            "service_id": service.service_id,
+            "name": service.name,
+            "node_id": service.node_id,
+            "kind": service.kind,
+            "domains": list(service.domains),
+            "ports": list(service.ports),
+            "status": service.status,
+            "monitor_enabled": service.monitor_enabled,
+            "docs_path": service.docs_path,
+            "source": service.source,
+            "business_category": business_category,
+            "asset_class": asset_class,
+            "summary": summary,
+        }
+
     @router.get("/services", response_class=HTMLResponse, include_in_schema=False)
     def services_page() -> HTMLResponse:
-        body = "<h1>服务</h1>" + "".join(
-            f"<div class='card'><b><a href='/services/{escape(s.service_id)}'>{escape(s.name)}</a></b> <span class='badge'>{escape(s.status)}</span><div class='muted'>{escape(s.node_id)} · ports {escape(','.join(map(str, s.ports)))}</div></div>"
-            for s in store.list_service_records()
+        services = [_service_payload(service) for service in store.list_service_records()]
+        business_groups: dict[str, list[dict[str, Any]]] = {}
+        pending = []
+        system_assets = []
+        for service in services:
+            if service["asset_class"] == "pending":
+                pending.append(service)
+            elif service["asset_class"] == "system":
+                system_assets.append(service)
+            else:
+                business_groups.setdefault(service["business_category"], []).append(service)
+        grouped_html = "".join(
+            "<section class='card'>"
+            f"<h2>{escape(category)}</h2>"
+            + "".join(
+                f"<div class='card'><b>{escape(item['name'])}</b> <span class='badge'>{escape(item['status'])}</span><div class='muted'>{escape(item['summary'])}</div></div>"
+                for item in group
+            )
+            + "</section>"
+            for category, group in sorted(business_groups.items(), key=lambda item: item[0])
         )
-        return html_page("服务", body)
+        pending_html = "<section class='card'><h2>待确认发现项</h2>" + "".join(
+            f"<div class='card'><b>{escape(item['name'])}</b> <span class='badge'>{escape(item['status'])}</span><div class='muted'>{escape(item['summary'])}</div></div>"
+            for item in pending
+        ) + "</section>"
+        system_html = "<details class='card' open><summary><b>系统资产</b></summary>" + "".join(
+            f"<div class='card'><b>{escape(item['name'])}</b> <span class='badge'>{escape(item['status'])}</span><div class='muted'>{escape(item['summary'])}</div></div>"
+            for item in system_assets
+        ) + "</details>"
+        sheet = services[0] if services else None
+        create_dialog = {
+            "title": "新增服务资产",
+            "defaults": {
+                "source": "manual",
+                "status": "active",
+                "business_category": sheet["business_category"] if sheet else "未分类",
+                "asset_class": "business",
+            },
+        }
+        payload = {
+            "services": services,
+            "business_groups": [
+                {"category": category, "count": len(group), "services": group}
+                for category, group in sorted(business_groups.items(), key=lambda item: item[0])
+            ],
+            "pending_discoveries": pending,
+            "system_assets": system_assets,
+            "sheet": sheet or {},
+            "create_dialog": create_dialog,
+        }
+        body = (
+            "<h1>服务资产</h1>"
+            f"<div class='card'>总数 {len(services)} · 业务分组 {len(business_groups)} · 待确认 {len(pending)} · 系统资产 {len(system_assets)}</div>"
+            f"<div data-services-payload='{escape(json.dumps(payload, ensure_ascii=False))}'></div>"
+            f"{grouped_html}"
+            f"{pending_html}"
+            f"{system_html}"
+        )
+        return html_page("服务资产", body)
 
     @router.get("/services/{service_id}", response_class=HTMLResponse, include_in_schema=False)
     def service_detail(service_id: str) -> HTMLResponse:
@@ -224,7 +334,14 @@ def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
             action="task.run",
             risk=risk,
             requested_by=request.created_by,
-            details={"node_id": request.node_id, "command": request.command, "created_by": request.created_by, "executor": request.executor},
+            details={
+                "node_id": request.node_id,
+                "command": request.command,
+                "created_by": request.created_by,
+                "executor": request.executor,
+                "task_name": f"Console task: {request.command}",
+                "task_description": f"Run command {request.command} on node {request.node_id}",
+            },
         )
         return ConsoleTaskCreateResponse(approval_id=approval.approval_id, status="pending_approval", risk=risk)
 
@@ -275,15 +392,79 @@ def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
     @router.get("/docs", response_class=HTMLResponse, include_in_schema=False)
     def docs_index() -> HTMLResponse:
         markdown_files = sorted(docs_base.rglob("*.md")) if docs_base.exists() else []
-        links = "".join(
-            f'<li><a href="/docs/file/{escape(path.relative_to(docs_base).as_posix())}">{escape(path.relative_to(docs_base).as_posix())}</a></li>'
-            for path in markdown_files
+        tree: dict[str, Any] = {}
+        for path in markdown_files:
+            rel = path.relative_to(docs_base)
+            cursor = tree
+            for part in rel.parts[:-1]:
+                cursor = cursor.setdefault(part, {})
+            cursor.setdefault("__files__", []).append(rel)
+
+        def render_tree(node: dict[str, Any], depth: int = 0) -> str:
+            parts: list[str] = []
+            for name in sorted(key for key in node.keys() if key != "__files__"):
+                child = node[name]
+                parts.append(
+                    "<details open>"
+                    f"<summary><span class='tree-folder'>{escape(name)}</span></summary>"
+                    f"<div class='tree-children'>{render_tree(child, depth + 1)}</div>"
+                    "</details>"
+                )
+            for rel in node.get("__files__", []):
+                rel_posix = rel.as_posix()
+                filename = rel.name
+                parts.append(
+                    "<div class='tree-file'>"
+                    f"<a href='/docs/view/{escape(rel_posix)}'>{escape(filename)}</a>"
+                    f" <span class='muted file-path'>{escape(rel_posix)}</span>"
+                    f" <span class='muted'>(<a href='/docs/file/{escape(rel_posix)}'>原文</a>)</span>"
+                    "</div>"
+                )
+            return "".join(parts)
+
+        tree_html = render_tree(tree) if markdown_files else "<div class='muted'>暂无文档</div>"
+        body = (
+            "<style>"
+            ".docs-tree{font-size:14px;line-height:1.65}"
+            ".docs-tree details{margin:6px 0 6px 0;padding-left:10px;border-left:1px solid #e5e7eb}"
+            ".docs-tree summary{cursor:pointer;list-style:none;font-weight:600;color:#111827}"
+            ".docs-tree summary::-webkit-details-marker{display:none}"
+            ".docs-tree summary::before{content:'▾';display:inline-block;margin-right:8px;color:#94a3b8}"
+            ".docs-tree details:not([open])>summary::before{content:'▸'}"
+            ".tree-children{margin:6px 0 0 8px}"
+            ".tree-folder{color:#111827}"
+            ".tree-file{margin:6px 0 6px 18px}"
+            ".tree-file a{font-weight:500}"
+            ".file-path{font-size:12px}"
+            "</style>"
+            "<h1>文件索引</h1>"
+            "<div class='card docs-tree'>"
+            f"{tree_html}"
+            "</div>"
         )
-        return html_page("文档", f"<h1>文档</h1><div class='card'><ul>{links}</ul></div>")
+        return html_page("文件索引", body)
 
     @router.get("/docs/file/{doc_path:path}", include_in_schema=False)
     def docs_markdown(doc_path: str) -> FileResponse:
         return FileResponse(docs_file(doc_path), media_type="text/markdown; charset=utf-8")
+
+    @router.get("/docs/view/{doc_path:path}", response_class=HTMLResponse, include_in_schema=False)
+    def docs_view(doc_path: str) -> HTMLResponse:
+        path = docs_file(doc_path)
+        rendered = markdown.markdown(
+            path.read_text(encoding="utf-8"),
+            extensions=["fenced_code"],
+        )
+        return html_page(
+            "文档阅读",
+            (
+                "<h1>文档阅读</h1>"
+                "<div class='card'>"
+                f"<div class='muted'>{escape(doc_path)} · <a href='/hmn-web/docs/file/{escape(doc_path)}'>查看原文</a></div>"
+                f"<div class='markdown-body'>{rendered}</div>"
+                "</div>"
+            ),
+        )
 
     @router.get("/audit", response_class=HTMLResponse, include_in_schema=False)
     def audit_page() -> HTMLResponse:

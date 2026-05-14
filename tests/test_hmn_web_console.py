@@ -1,8 +1,28 @@
+import base64
+import hashlib
+import hmac
+import os
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
-from hermes_managed_network.api import create_app
+from hermes_managed_network.api import SESSION_COOKIE_NAME, create_app
 from hermes_managed_network.inventory import Node
 from hermes_managed_network.storage import SQLiteStore, ServiceRecord
+
+
+TEST_WEB_SECRET = "test-web-secret"
+os.environ.setdefault("HMN_WEB_SESSION_SECRET", TEST_WEB_SECRET)
+
+
+def _auth_client(app):
+    client = TestClient(app, base_url="https://testserver")
+    issued_at = int(datetime.now(timezone.utc).timestamp())
+    payload = f"admin:{issued_at}"
+    signature = hmac.new(TEST_WEB_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    cookie = base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("ascii")
+    client.cookies.set(SESSION_COOKIE_NAME, cookie, path="/")
+    return client
 
 
 def _managed_node(store: SQLiteStore, node_id: str = "node_web") -> Node:
@@ -34,7 +54,7 @@ def test_root_dashboard_links_all_control_flows(tmp_path):
         requested_by="test",
         details={"node_id": "node_web", "command": "reboot"},
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.get("/")
 
@@ -65,7 +85,7 @@ def test_nodes_services_docs_and_audit_pages_render_current_state(tmp_path):
         outcome="ok",
         details={"token": "should-not-leak", "safe": "visible"},
     )
-    client = TestClient(create_app(db, docs_root=docs_root))
+    client = _auth_client(create_app(db, docs_root=docs_root))
 
     assert "node_web-host" in client.get("/nodes").text
     assert "Web" in client.get("/services").text
@@ -86,7 +106,7 @@ def test_console_task_api_dispatches_low_risk_allowlisted_command(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
     _managed_node(store)
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post("/api/v1/console/tasks", json={"node_id": "node_web", "command": "uptime", "created_by": "Misk"})
 
@@ -105,7 +125,7 @@ def test_console_task_api_creates_approval_for_high_risk_command_and_web_can_app
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
     _managed_node(store)
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     create_response = client.post("/api/v1/console/tasks", json={"node_id": "node_web", "command": "reboot", "created_by": "Misk"})
 
@@ -129,7 +149,7 @@ def test_component_network_and_backup_web_flows_create_dry_run_or_approval_recor
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
     _managed_node(store)
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     component_plan = client.post("/api/v1/console/components/backup/plan", json={"node_id": "node_web", "action": "apply"})
     assert component_plan.status_code == 200
@@ -154,3 +174,63 @@ def test_component_network_and_backup_web_flows_create_dry_run_or_approval_recor
     assert "backup" in client.get("/components").text
     assert "ACL" in client.get("/network").text
     assert "恢复" in client.get("/backups").text
+
+
+def test_service_assets_page_groups_business_pending_and_system_assets(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _managed_node(store)
+    store.save_service_record(
+        ServiceRecord(
+            service_id="svc_portal",
+            name="客户门户",
+            node_id="node_web",
+            kind="web",
+            ports=[443],
+            source="manual",
+            status="active",
+            metadata={"business_category": "客户体验"},
+        )
+    )
+    store.save_service_record(
+        ServiceRecord(
+            service_id="svc_pending",
+            name="待确认 Redis",
+            node_id="node_web",
+            kind="cache",
+            ports=[6379],
+            source="discovery",
+            status="discovered",
+            metadata={"business_category": "基础设施"},
+        )
+    )
+    store.save_service_record(
+        ServiceRecord(
+            service_id="svc_system",
+            name="系统监控",
+            node_id="node_web",
+            kind="system",
+            ports=[9090],
+            source="system",
+            status="active",
+            metadata={"business_category": "平台"},
+        )
+    )
+    client = _auth_client(create_app(db))
+
+    response = client.get("/api/v1/console/services")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["business_groups"][0]["category"] == "客户体验"
+    assert body["business_groups"][0]["services"][0]["service_id"] == "svc_portal"
+    assert body["pending_discoveries"][0]["service_id"] == "svc_pending"
+    assert body["system_assets"][0]["service_id"] == "svc_system"
+    assert body["sheet"]["service_id"] == "svc_portal"
+    assert body["create_dialog"]["defaults"]["source"] == "manual"
+
+    html = client.get("/services").text
+    assert "客户体验" in html
+    assert "待确认发现项" in html
+    assert "系统资产" in html
+    assert "data-services-payload" in html

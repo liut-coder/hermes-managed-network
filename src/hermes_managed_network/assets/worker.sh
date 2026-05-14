@@ -48,6 +48,14 @@ def read_text(path):
         return ""
 
 
+def os_release_name():
+    text = read_text("/etc/os-release")
+    for line in text.splitlines():
+        if line.startswith("PRETTY_NAME="):
+            return line.split("=", 1)[1].strip().strip('"')
+    return ""
+
+
 def load_average():
     text = read_text("/proc/loadavg")
     if text:
@@ -136,6 +144,7 @@ facts = {
     "worker_protocol_version": os.environ.get("HMN_WORKER_PROTOCOL_VERSION_VALUE", ""),
     "worker_version": os.environ.get("HMN_WORKER_VERSION", "unknown"),
     "worker_mode": os.environ.get("HMN_WORKER_MODE_VALUE", "worker"),
+    "os_release": os_release_name(),
     "task_policy": "heartbeat-only" if os.environ.get("HMN_BEACON_ONLY_VALUE") == "1" else "poll-tasks",
     "can_poll_tasks": os.environ.get("HMN_BEACON_ONLY_VALUE") != "1",
     "exec_enabled": os.environ.get("HMN_ENABLE_EXEC_VALUE") == "1" and os.environ.get("HMN_BEACON_ONLY_VALUE") != "1",

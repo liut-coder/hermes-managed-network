@@ -83,8 +83,191 @@ class ServiceRecord:
     source: str = "manual"
     status: str = "active"
     metadata: dict[str, Any] = field(default_factory=dict)
+    asset_score: int = 0
+    asset_category: str = "pending"
+    why_asset: list[str] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+SERVICE_MANUAL_FLAGS = {
+    "asset_marked_business",
+    "asset_business",
+    "business_asset",
+    "business_marked",
+    "manual_business_asset",
+}
+SERVICE_SYSTEM_PREFIXES = (
+    "apt",
+    "auditd",
+    "apparmor",
+    "dbus",
+    "systemd",
+    "rsyslog",
+    "udev",
+    "polkit",
+    "ssh-agent",
+    "getty",
+    "unattended-upgrades",
+    "cron",
+    "networkmanager",
+)
+SERVICE_NOISY_SUFFIXES = (
+    "agent",
+    "agentctl",
+    "exporter",
+    "collector",
+    "ctl",
+    "monitor",
+    "watchdog",
+    "probe",
+    "sidecar",
+)
+SERVICE_BUSINESS_KINDS = {"docker", "compose", "k8s", "kubernetes"}
+SERVICE_BUSINESS_PREFIXES = ("svc_", "app_", "bot_", "web_", "api_", "db_", "gw_")
+
+
+def _service_asset_tags(metadata: dict[str, Any]) -> list[str]:
+    tags = metadata.get("tags") or metadata.get("labels") or []
+    if isinstance(tags, str):
+        tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+    if not isinstance(tags, list):
+        return []
+    return [str(tag).strip() for tag in tags if str(tag).strip()]
+
+
+def classify_service_asset(service: ServiceRecord) -> dict[str, Any]:
+    metadata = dict(service.metadata or {})
+    name = service.name.strip()
+    lowered = name.lower()
+    runtime = service.runtime.lower().strip()
+    kind = service.kind.lower().strip()
+    source = service.source.lower().strip()
+    domains = [domain for domain in service.domains if domain]
+    ports = [int(port) for port in service.ports if isinstance(port, int) or str(port).isdigit()]
+    tags = _service_asset_tags(metadata)
+    manual = any(bool(metadata.get(flag)) for flag in SERVICE_MANUAL_FLAGS) or metadata.get("asset_bucket") == "main"
+    if metadata.get("asset_state") == "business" or metadata.get("asset_category") == "business":
+        manual = True
+
+    score = 0
+    reasons: list[str] = []
+    penalties: list[str] = []
+
+    if manual or source == "manual":
+        score += 60
+        reasons.append("用户手动标记/登记")
+    if kind in SERVICE_BUSINESS_KINDS or any(token in runtime for token in ("compose", "docker", "k8s", "kubernetes")):
+        score += 25
+        reasons.append("来自 Docker/Compose/K8s")
+    if service.node_id:
+        score += 8
+        reasons.append("已绑定运行节点")
+    if domains:
+        score += 15
+        reasons.append("存在域名入口")
+    if service.health_check_url:
+        score += 8
+        reasons.append("存在健康检查入口")
+    if service.deploy_path:
+        score += 8
+        reasons.append("存在部署路径")
+    if service.docs_path:
+        score += 8
+        reasons.append("存在服务文档")
+    if tags:
+        score += min(12, len(tags) * 4)
+        reasons.append("带有标签/备注")
+    if metadata.get("project") or metadata.get("project_name") or metadata.get("project_id"):
+        score += 10
+        reasons.append("已绑定项目")
+    if metadata.get("reverse_proxy") or metadata.get("proxy") or metadata.get("ingress") or domains:
+        score += 10
+        reasons.append("存在反代/入口")
+    if metadata.get("backup") or metadata.get("backup_status"):
+        score += 6
+        reasons.append("有备份信息")
+
+    if lowered.startswith(SERVICE_SYSTEM_PREFIXES):
+        score -= 35
+        penalties.append("systemd/OS 默认服务")
+    if any(token in lowered for token in SERVICE_NOISY_SUFFIXES):
+        score -= 20
+        penalties.append("辅助组件噪音")
+    if not service.node_id:
+        score -= 10
+        penalties.append("未绑定节点")
+    if not domains and not service.health_check_url and not service.deploy_path:
+        score -= 15
+        penalties.append("无入口/无说明")
+    if ports and all(port < 1024 for port in ports) and kind == "port":
+        score -= 8
+        penalties.append("仅发现基础端口监听")
+    if service.deploy_path.startswith("/usr/"):
+        score -= 10
+        penalties.append("系统路径特征")
+    if lowered in {"ssh", "cron", "dbus", "auditd", "apparmor", "rsyslog", "systemd-journald", "systemd-resolved", "systemd-timesyncd"}:
+        score -= 30
+        penalties.append("系统组件")
+    if metadata.get("localhost_only") or metadata.get("bind_address") in {"127.0.0.1", "localhost"}:
+        score -= 20
+        penalties.append("localhost-only")
+
+    score = max(0, min(100, score))
+    if manual:
+        bucket = "main"
+    elif score >= 50:
+        bucket = "main"
+    elif score >= 20:
+        bucket = "pending"
+    else:
+        bucket = "system"
+
+    if kind in SERVICE_BUSINESS_KINDS or runtime.startswith("docker") or runtime.startswith("compose"):
+        category = "业务应用"
+    elif any(token in lowered for token in ("bot",)):
+        category = "Bot / 自动化"
+    elif any(token in lowered for token in ("db", "postgres", "mysql", "redis", "mongo", "sql")):
+        category = "数据库 / 中间件"
+    elif any(token in lowered for token in ("nginx", "caddy", "traefik", "gateway", "proxy", "panel", "web", "site", "api")):
+        category = "站点 / Web" if "web" in lowered or domains else "网关 / 面板 / 接入层"
+    elif any(token in lowered for token in ("monitor", "prometheus", "grafana", "exporter")):
+        category = "监控组件"
+    elif bucket == "system":
+        category = "系统资产"
+    else:
+        category = "业务应用"
+
+    deployment_type = service.metadata.get("deployment_type") or (
+        "docker" if kind in SERVICE_BUSINESS_KINDS or "docker" in runtime or "compose" in runtime else kind or "manual"
+    )
+    project_name = str(metadata.get("project_name") or metadata.get("project") or metadata.get("project_id") or "")
+    business_name = str(metadata.get("business_name") or metadata.get("title") or name)
+    business_purpose = str(metadata.get("business_purpose") or metadata.get("purpose") or metadata.get("description") or "")
+    backup_status = str(metadata.get("backup_status") or ("enabled" if metadata.get("backup") else "unknown"))
+    public_exposed = bool(domains or service.health_check_url or any(port >= 80 for port in ports) or metadata.get("public_exposed"))
+    why = reasons[:]
+    if penalties:
+        why.append("; ".join(dict.fromkeys(penalties)))
+    if manual and bucket != "main":
+        bucket = "main"
+    return {
+        "asset_score": score,
+        "asset_bucket": bucket,
+        "asset_category": category,
+        "business_name": business_name,
+        "business_purpose": business_purpose,
+        "project_name": project_name,
+        "deployment_type": str(deployment_type),
+        "run_node": service.node_id,
+        "public_exposed": public_exposed,
+        "backup_status": backup_status,
+        "tags": tags,
+        "why_asset": why,
+        "manual_business_asset": manual,
+    }
+
+
 
 
 @dataclass
@@ -154,7 +337,66 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _classify_service_asset(service: ServiceRecord) -> tuple[int, str, list[str]]:
+    metadata = dict(service.metadata or {})
+    score = 0
+    reasons: list[str] = []
+
+    def bump(value: int, reason: str) -> None:
+        nonlocal score
+        score += value
+        reasons.append(reason)
+
+    raw_category = str(metadata.get("asset_category") or metadata.get("asset_class") or "").strip().lower()
+    if service.source == "manual":
+        bump(60, "manual asset registration")
+    if raw_category in {"business", "main", "primary", "main_view"}:
+        bump(30, f"asset_category={raw_category}")
+    if raw_category in {"system", "platform", "infra"}:
+        bump(-80, f"asset_category={raw_category}")
+
+    if service.domains:
+        bump(18, f"{len(service.domains)} domain(s)")
+    if service.ports:
+        bump(12, f"{len(service.ports)} exposed port(s)")
+    if service.health_check_url:
+        bump(8, "health check configured")
+    if service.deploy_path:
+        bump(6, "deploy path present")
+    if service.config_paths or service.env_paths or service.data_paths:
+        bump(6, "service paths registered")
+    if service.monitor_enabled:
+        bump(5, "monitoring enabled")
+    if service.source and service.source != "manual":
+        bump(8, f"discovered source={service.source}")
+
+    system_keywords = {"hmn", "control", "console", "gateway", "agent", "worker", "heartbeat", "orchestrator", "platform", "system", "infra"}
+    combined_text = " ".join(
+        part.lower()
+        for part in (service.service_id, service.name, service.node_id, service.kind, service.runtime)
+        if part
+    )
+    if any(keyword in combined_text for keyword in system_keywords):
+        bump(-40, "system/control-plane keyword match")
+
+    if service.source == "manual" or raw_category in {"business", "main", "primary", "main_view"}:
+        category = "main"
+    elif raw_category in {"system", "platform", "infra"} or score < 0:
+        category = "system"
+    elif score >= 40:
+        category = "main"
+    elif score >= 15:
+        category = "pending"
+    else:
+        category = "system" if score < 0 else "pending"
+
+    if not reasons:
+        reasons.append("insufficient asset signals")
+    return max(-100, min(100, score)), category, reasons
+
+
 class SQLiteStore:
+
     """Small SQLite persistence layer for the local control-plane MVP."""
 
     def __init__(self, path: str | Path) -> None:
@@ -336,6 +578,9 @@ class SQLiteStore:
                     source TEXT NOT NULL DEFAULT 'manual',
                     status TEXT NOT NULL DEFAULT 'active',
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    asset_score INTEGER NOT NULL DEFAULT 0,
+                    asset_category TEXT NOT NULL DEFAULT 'pending',
+                    why_asset_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -355,6 +600,9 @@ class SQLiteStore:
                 "ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT",
                 "ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE tasks ADD COLUMN failure_reason TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE services ADD COLUMN asset_score INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE services ADD COLUMN asset_category TEXT NOT NULL DEFAULT 'pending'",
+                "ALTER TABLE services ADD COLUMN why_asset_json TEXT NOT NULL DEFAULT '[]'",
             ):
                 try:
                     conn.execute(statement)
@@ -366,6 +614,11 @@ class SQLiteStore:
         now = datetime.now(timezone.utc)
         existing = self.load_service_record(service.service_id)
         created_at = service.created_at or (existing.created_at if existing else now)
+        asset_score, asset_category, why_asset = _classify_service_asset(service)
+        metadata = dict(service.metadata)
+        metadata.setdefault("asset_score", asset_score)
+        metadata.setdefault("asset_category", asset_category)
+        metadata.setdefault("why_asset", why_asset)
         saved = ServiceRecord(
             service_id=service.service_id,
             name=service.name,
@@ -383,7 +636,10 @@ class SQLiteStore:
             docs_path=service.docs_path,
             source=service.source,
             status=service.status,
-            metadata=dict(service.metadata),
+            metadata=metadata,
+            asset_score=asset_score,
+            asset_category=asset_category,
+            why_asset=why_asset,
             created_at=created_at,
             updated_at=now,
         )
@@ -394,8 +650,9 @@ class SQLiteStore:
                     service_id, name, node_id, kind, runtime, domains_json, ports_json,
                     deploy_path, config_paths_json, env_paths_json, data_paths_json,
                     health_check_url, monitor_enabled, docs_path, source, status,
-                    metadata_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, asset_score, asset_category, why_asset_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(service_id) DO UPDATE SET
                     name=excluded.name,
                     node_id=excluded.node_id,
@@ -413,6 +670,9 @@ class SQLiteStore:
                     source=excluded.source,
                     status=excluded.status,
                     metadata_json=excluded.metadata_json,
+                    asset_score=excluded.asset_score,
+                    asset_category=excluded.asset_category,
+                    why_asset_json=excluded.why_asset_json,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -433,6 +693,9 @@ class SQLiteStore:
                     saved.source,
                     saved.status,
                     json.dumps(saved.metadata, sort_keys=True),
+                    saved.asset_score,
+                    saved.asset_category,
+                    json.dumps(saved.why_asset, ensure_ascii=False, sort_keys=True),
                     _dt(saved.created_at),
                     _dt(saved.updated_at),
                 ),
@@ -458,6 +721,9 @@ class SQLiteStore:
             source=row["source"],
             status=row["status"],
             metadata=json.loads(row["metadata_json"]),
+            asset_score=int(row["asset_score"]) if "asset_score" in row.keys() else 0,
+            asset_category=row["asset_category"] if "asset_category" in row.keys() else "pending",
+            why_asset=json.loads(row["why_asset_json"]) if "why_asset_json" in row.keys() else [],
             created_at=_parse_dt(row["created_at"]),
             updated_at=_parse_dt(row["updated_at"]),
         )

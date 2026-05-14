@@ -1,4 +1,26 @@
+import base64
+import hashlib
+import hmac
+import os
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
+
+from hermes_managed_network.api import SESSION_COOKIE_NAME
+
+
+TEST_WEB_SECRET = "test-web-secret"
+os.environ.setdefault("HMN_WEB_SESSION_SECRET", TEST_WEB_SECRET)
+
+
+def _auth_client(app):
+    client = TestClient(app, base_url="https://testserver")
+    issued_at = int(datetime.now(timezone.utc).timestamp())
+    payload = f"admin:{issued_at}"
+    signature = hmac.new(TEST_WEB_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    cookie = base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("ascii")
+    client.cookies.set(SESSION_COOKIE_NAME, cookie, path="/")
+    return client
 
 
 def test_hmn_web_docs_module_serves_docs_index_and_markdown(tmp_path):
@@ -10,11 +32,11 @@ def test_hmn_web_docs_module_serves_docs_index_and_markdown(tmp_path):
     (server_dir / "README.md").write_text("# Servers\n\n- demo\n", encoding="utf-8")
     (service_dir / "demo.md").write_text("# Demo Service\n", encoding="utf-8")
 
-    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+    client = _auth_client(create_app(tmp_path / "hmn.db", docs_root=docs_root))
 
     index_response = client.get("/hmn-web/docs")
     assert index_response.status_code == 200
-    assert "HMN 文档中心" in index_response.text
+    assert "文件索引" in index_response.text
     assert "/hmn-web/docs/file/docs/server/README.md" in index_response.text
     assert "/hmn-web/docs/file/service/demo.md" in index_response.text
 
@@ -28,7 +50,7 @@ def test_hmn_web_docs_module_rejects_path_traversal(tmp_path):
     docs_root = tmp_path / "files"
     docs_root.mkdir()
     (tmp_path / "secret.md").write_text("secret", encoding="utf-8")
-    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+    client = _auth_client(create_app(tmp_path / "hmn.db", docs_root=docs_root))
 
     response = client.get("/hmn-web/docs/file/../secret.md")
 
@@ -42,37 +64,46 @@ def test_hmn_web_docs_index_api_lists_server_and_service_docs(tmp_path):
     (docs_root / "service").mkdir(parents=True)
     (docs_root / "service" / "api.md").write_text("# API", encoding="utf-8")
 
-    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+    client = _auth_client(create_app(tmp_path / "hmn.db", docs_root=docs_root))
 
     response = client.get("/api/v1/hmn-web/docs/index")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "server_docs": [
-            {
-                "title": "demo/README.md",
-                "path": "docs/server/demo/README.md",
-                "url": "/hmn-web/docs/file/docs/server/demo/README.md",
-            }
-        ],
-        "service_docs": [
-            {"title": "api.md", "path": "service/api.md", "url": "/hmn-web/docs/file/service/api.md"}
-        ],
-    }
+    data = response.json()
+    assert data["server_docs"] == [
+        {
+            "title": "Demo Node",
+            "path": "docs/server/demo/README.md",
+            "url": "/hmn-web/docs/file/docs/server/demo/README.md",
+            "viewer_url": "/hmn-web/docs/view/docs/server/demo/README.md",
+            "category": "server",
+            "summary": "",
+        }
+    ]
+    assert data["service_docs"] == [
+        {
+            "title": "API",
+            "path": "service/api.md",
+            "url": "/hmn-web/docs/file/service/api.md",
+            "viewer_url": "/hmn-web/docs/view/service/api.md",
+            "category": "service",
+            "summary": "",
+        }
+    ]
 
 
 def test_hmn_web_docs_view_page_wraps_markdown(tmp_path):
     docs_root = tmp_path / "files"
     (docs_root / "service").mkdir(parents=True)
     (docs_root / "service" / "demo.md").write_text("# Demo\n\nhello", encoding="utf-8")
-    client = TestClient(create_app(tmp_path / "hmn.db", docs_root=docs_root))
+    client = _auth_client(create_app(tmp_path / "hmn.db", docs_root=docs_root))
 
     response = client.get("/hmn-web/docs/view/service/demo.md")
 
     assert response.status_code == 200
     assert "HMN 文档" in response.text
-    assert "# Demo" in response.text
-    assert "hello" in response.text
+    assert "<h1>Demo</h1>" in response.text
+    assert "<p>hello</p>" in response.text
 
 
 from hermes_managed_network.api import create_app
@@ -86,7 +117,7 @@ def test_join_endpoint_consumes_token_and_registers_pending_node(tmp_path):
     store = SQLiteStore(db)
     token = JoinTokenStore().create(trust_level="B", labels=["managed", "region:hk"])
     store.save_token(token)
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/join",
@@ -120,7 +151,7 @@ def test_join_endpoint_can_keep_legacy_pending_confirmation_when_requested(tmp_p
     store = SQLiteStore(db)
     token = JoinTokenStore().create(trust_level="B", labels=["managed"])
     store.save_token(token)
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/join",
@@ -146,7 +177,7 @@ def test_join_endpoint_records_node_join_audit_event(tmp_path):
     store = SQLiteStore(db)
     token = JoinTokenStore().create(trust_level="B", labels=["backup", "worker"])
     store.save_token(token)
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/join",
@@ -224,7 +255,7 @@ def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
         requested_by="test",
         details={"node_id": "node_console", "command": "reboot"},
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.get("/api/v1/console/summary")
 
@@ -298,7 +329,7 @@ def test_console_summary_maps_nested_worker_heartbeat_facts(tmp_path):
             },
         },
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.get("/api/v1/console/summary")
 
@@ -329,31 +360,59 @@ def test_console_services_endpoint_returns_db_service_record_summaries(tmp_path)
             status="active",
         )
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.get("/api/v1/console/services")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "services": [
-            {
-                "service_id": "node-api:docker:web",
-                "name": "API Web",
-                "node_id": "node-api",
-                "kind": "docker",
-                "domains": ["api.example.com"],
-                "ports": [443],
-                "status": "active",
-                "monitor_enabled": True,
-                "docs_path": "service/api-web.md",
-                "source": "discovery",
-            }
-        ]
-    }
+    data = response.json()
+    assert data["services"] == [
+        {
+            "service_id": "node-api:docker:web",
+            "name": "API Web",
+            "node_id": "node-api",
+            "kind": "docker",
+            "runtime": "",
+            "domains": ["api.example.com"],
+            "ports": [443],
+            "status": "active",
+            "monitor_enabled": True,
+            "docs_path": "service/api-web.md",
+            "source": "discovery",
+            "business_category": "未分类",
+            "asset_category": "main",
+            "asset_score": 43,
+            "why_asset": [
+                "1 domain(s)",
+                "1 exposed port(s)",
+                "monitoring enabled",
+                "discovered source=discovery",
+            ],
+            "summary": "API Web · api.example.com · ports 443",
+            "deployment_type": "",
+            "project_name": "",
+            "business_name": "",
+            "business_purpose": "",
+            "public_exposed": False,
+            "backup_status": "unknown",
+            "tags": [],
+        }
+    ]
+    assert data["business_groups"] == [
+        {
+            "category": "未分类",
+            "count": 1,
+            "services": data["services"],
+        }
+    ]
+    assert data["pending_discoveries"] == []
+    assert data["system_assets"] == []
+    assert data["sheet"]["service_id"] == "node-api:docker:web"
+    assert data["create_dialog"]["title"] == "新增服务资产"
 
 
 def test_control_plane_serves_join_script(tmp_path):
-    client = TestClient(create_app(tmp_path / "hmn.db"))
+    client = _auth_client(create_app(tmp_path / "hmn.db"))
 
     response = client.get("/scripts/join.sh")
 
@@ -368,7 +427,7 @@ def test_control_plane_serves_join_script(tmp_path):
 
 
 def test_control_plane_serves_worker_script(tmp_path):
-    client = TestClient(create_app(tmp_path / "hmn.db"))
+    client = _auth_client(create_app(tmp_path / "hmn.db"))
 
     response = client.get("/scripts/worker.sh")
 
@@ -378,7 +437,7 @@ def test_control_plane_serves_worker_script(tmp_path):
 
 
 def test_control_plane_serves_worker_lite_script(tmp_path):
-    client = TestClient(create_app(tmp_path / "hmn.db"))
+    client = _auth_client(create_app(tmp_path / "hmn.db"))
 
     response = client.get("/scripts/worker-lite.sh")
 
@@ -389,7 +448,7 @@ def test_control_plane_serves_worker_lite_script(tmp_path):
 
 
 def test_control_plane_version_endpoint_reports_protocol_versions(tmp_path):
-    client = TestClient(create_app(tmp_path / "hmn.db"))
+    client = _auth_client(create_app(tmp_path / "hmn.db"))
 
     response = client.get("/api/v1/version")
 
@@ -417,7 +476,7 @@ def test_node_heartbeat_endpoint_updates_status_and_records_audit(tmp_path):
             permission_bundles=["observe"],
         )
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_hb/heartbeat",
@@ -452,7 +511,7 @@ def test_node_heartbeat_rejects_wrong_fingerprint(tmp_path):
             permission_bundles=["observe"],
         )
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_hb/heartbeat",
@@ -480,7 +539,7 @@ def test_task_lifecycle_assigns_next_task_and_records_result(tmp_path):
         )
     )
     task = store.create_task(node_id="node_task", command="uptime", risk="low", created_by="test")
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     next_response = client.post(
         "/api/v1/nodes/node_task/tasks/next",
@@ -532,7 +591,7 @@ def test_task_next_expires_stuck_before_returning_pending_task(tmp_path):
             "UPDATE tasks SET lease_expires_at = ? WHERE task_id = ?",
             (datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc).isoformat(), stuck.task_id),
         )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_watchdog_api/tasks/next",
@@ -567,7 +626,7 @@ def test_late_task_result_is_rejected_after_watchdog_failure(tmp_path):
     task = store.create_task(node_id="node_late_result", command="slow")
     store.claim_next_task("node_late_result", lease_seconds=1)
     store.expire_stuck_tasks(now=datetime.now(timezone.utc) + timedelta(seconds=2))
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         f"/api/v1/tasks/{task.task_id}/result",
@@ -597,7 +656,7 @@ def test_task_next_returns_no_task_when_queue_empty(tmp_path):
             permission_bundles=["observe"],
         )
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_empty/tasks/next",
@@ -626,7 +685,7 @@ def test_task_next_ignores_pending_ssh_tasks(tmp_path):
         )
     )
     store.create_task(node_id="node_ssh_only", command="uptime", risk="low", created_by="test", executor="ssh")
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_ssh_only/tasks/next",
@@ -642,7 +701,7 @@ def test_join_endpoint_rejects_reused_token(tmp_path):
     store = SQLiteStore(db)
     token = JoinTokenStore().create(trust_level="C", labels=[])
     store.save_token(token)
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
     payload = {"token": token.value, "fingerprint": "sha256:abc", "hostname": "demo", "addresses": []}
 
     assert client.post("/api/v1/join", json=payload).status_code == 200
@@ -667,7 +726,7 @@ def test_task_next_rejects_incompatible_worker_protocol(tmp_path):
         )
     )
     store.create_task(node_id="node_old_worker", command="uptime", risk="low", created_by="test")
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_old_worker/tasks/next",
@@ -694,7 +753,7 @@ def test_node_rotate_fingerprint_endpoint_updates_auth_and_records_audit(tmp_pat
             permission_bundles=["observe"],
         )
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_rotate/rotate-fingerprint",
@@ -734,7 +793,7 @@ def test_node_rotate_fingerprint_rejects_wrong_current_fingerprint(tmp_path):
             permission_bundles=["observe"],
         )
     )
-    client = TestClient(create_app(db))
+    client = _auth_client(create_app(db))
 
     response = client.post(
         "/api/v1/nodes/node_rotate_reject/rotate-fingerprint",
