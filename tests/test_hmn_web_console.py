@@ -145,6 +145,81 @@ def test_console_task_api_creates_approval_for_high_risk_command_and_web_can_app
     assert tasks[0].risk == "high"
 
 
+def test_console_task_api_blocks_beacon_only_node_dispatch(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _managed_node(store)
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_web",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_mode": "beacon",
+                "task_policy": "heartbeat-only",
+                "exec_enabled": False,
+            },
+        },
+    )
+    client = _auth_client(create_app(db))
+
+    response = client.post("/api/v1/console/tasks", json={"node_id": "node_web", "command": "uptime", "created_by": "Misk"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "node is beacon-only"
+    assert store.list_tasks() == []
+
+
+def test_web_approval_does_not_dispatch_task_to_heartbeat_only_node(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    _managed_node(store)
+    approval = store.create_approval_request(
+        subject_type="task",
+        subject_id="console_task_request",
+        action="task.run",
+        risk="high",
+        requested_by="Misk",
+        details={
+            "node_id": "node_web",
+            "command": "reboot",
+            "created_by": "Misk",
+        },
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_web",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_mode": "worker",
+                "task_policy": "heartbeat-only",
+                "exec_enabled": False,
+            },
+        },
+    )
+    client = _auth_client(create_app(db))
+
+    approve_response = client.post(f"/approvals/{approval.approval_id}/approve", data={"decided_by": "Misk"}, follow_redirects=False)
+
+    assert approve_response.status_code == 422
+    assert "approval cannot be dispatched" in approve_response.text
+    assert store.list_tasks() == []
+    refreshed = store.load_approval_request(approval.approval_id)
+    assert refreshed.status == "approved"
+    assert "dispatched_task_id" not in refreshed.details
+    events = store.list_audit_events()
+    assert events[-1].action == "approval/dispatch"
+    assert events[-1].outcome == "failed"
+    assert events[-1].details["reason"] == "node heartbeat-only policy blocks task dispatch"
+
+
 def test_component_network_and_backup_web_flows_create_dry_run_or_approval_records(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)

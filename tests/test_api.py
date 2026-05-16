@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from hermes_managed_network.api import SESSION_COOKIE_NAME
+from hermes_managed_network.signing import verify_task_signature
 
 
 TEST_WEB_SECRET = "test-web-secret"
@@ -210,6 +211,77 @@ def test_join_endpoint_records_node_join_audit_event(tmp_path):
     )
 
 
+def test_console_join_policy_defaults_include_linux_target_os(tmp_path):
+    client = _auth_client(create_app(tmp_path / "hmn.db"))
+
+    response = client.get("/api/v1/console/join-policy")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "auto_confirm": True,
+        "auto_install_worker": True,
+        "enable_exec": True,
+        "pending_visible": False,
+        "permission_bundle": "observe_task",
+        "target_os": "linux",
+    }
+
+
+def test_console_join_policy_update_persists_windows_target_os(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    client = _auth_client(create_app(db))
+
+    response = client.put(
+        "/api/v1/console/join-policy",
+        json={
+            "auto_confirm": False,
+            "auto_install_worker": False,
+            "enable_exec": False,
+            "pending_visible": True,
+            "permission_bundle": "observe",
+            "target_os": "windows",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["target_os"] == "windows"
+    assert store.get_setting("console.join_policy", {})["target_os"] == "windows"
+
+
+def test_console_join_token_accepts_windows_target_os_and_records_audit(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    client = _auth_client(create_app(db))
+
+    response = client.post(
+        "/api/v1/console/join-token",
+        json={"trust_level": "B", "labels": ["managed"], "ttl_minutes": 30, "target_os": "windows"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["trust_level"] == "B"
+    assert data["labels"] == ["managed"]
+    assert data["target_os"] == "windows"
+    events = store.list_audit_events()
+    assert any(
+        event.event_type == "token"
+        and event.subject_type == "join_token"
+        and event.subject_id == data["token"]
+        and event.action == "create"
+        and event.outcome == "ok"
+        and event.details == {
+            "trust_level": "B",
+            "labels": ["managed"],
+            "ttl_minutes": 30,
+            "source": "hmn-web",
+            "target_os": "windows",
+        }
+        for event in events
+    )
+
+
 def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
     from hermes_managed_network.inventory import Node
 
@@ -243,6 +315,14 @@ def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
                 "disk_percent": 56,
                 "load_average": 0.42,
                 "exec_enabled": True,
+                "capabilities": {
+                    "os_family": "linux",
+                    "has_sh": True,
+                    "has_python3": True,
+                    "has_curl": True,
+                    "has_systemctl": True,
+                    "writable_etc": True,
+                },
             },
         },
     )
@@ -286,6 +366,18 @@ def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
             "load": 0.42,
             "hb": "刚刚",
             "exec": True,
+            "runtime_profile": "full-worker",
+            "service_manager": "systemd",
+            "worker_mode": "unknown",
+            "task_policy": "poll-and-exec",
+            "worker_status_hint": "可在主控执行节点级状态检查命令",
+            "worker_status_command": "hmn node worker-status node_console",
+            "worker_install_hint": None,
+            "worker_install_command": None,
+            "uninstall_hint": None,
+            "uninstall_command": None,
+            "node_type_label": "Full worker",
+            "windows_beacon_only": False,
         }
     ]
     assert data["tasks"][0]["id"] == task.task_id
@@ -341,6 +433,116 @@ def test_console_summary_maps_nested_worker_heartbeat_facts(tmp_path):
     assert node["disk"] == 42
     assert node["load"] == 0.12
     assert node["exec"] is False
+
+
+def test_console_summary_exposes_windows_beacon_uninstall_metadata(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_windows_console",
+            fingerprint="sha256:windows-console",
+            hostname="windows-console-node",
+            addresses=["100.64.0.66"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_windows_console",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_protocol_version": "0.1",
+                "worker_version": "windows-beacon",
+                "worker_mode": "beacon",
+                "task_policy": "heartbeat-only",
+                "exec_enabled": False,
+                "os_release": "Microsoft Windows Server 2022",
+                "capabilities": {"os_family": "windows", "has_powershell": True},
+            },
+        },
+    )
+    client = _auth_client(create_app(db))
+
+    response = client.get("/api/v1/console/summary")
+
+    assert response.status_code == 200
+    node = response.json()["nodes"][0]
+    assert node["runtime_profile"] == "beacon-only"
+    assert node["service_manager"] == "windows-task"
+    assert node["worker_mode"] == "beacon"
+    assert node["task_policy"] == "heartbeat-only"
+    assert node["worker_status_command"] == "hmn node worker-status node_windows_console"
+    assert "状态检查命令" in node["worker_status_hint"]
+    assert node["worker_install_command"] == "hmn node install-heartbeat node_windows_console --service-manager windows-task --runtime beacon-only --beacon-only"
+    assert "Worker/心跳安装脚本" in node["worker_install_hint"]
+    assert node["node_type_label"] == "Windows beacon-only"
+    assert node["windows_beacon_only"] is True
+    assert node["uninstall_command"] == "hmn node uninstall-heartbeat node_windows_console --service-manager windows-task"
+    assert "节点级卸载命令" in node["uninstall_hint"]
+
+
+def test_console_summary_exposes_windows_full_worker_metadata(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_windows_full",
+            fingerprint="sha256:windows-full",
+            hostname="windows-full-node",
+            addresses=["100.64.0.77"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_windows_full",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_protocol_version": "0.1",
+                "worker_version": "windows-worker",
+                "worker_mode": "worker",
+                "task_policy": "poll-tasks",
+                "can_poll_tasks": True,
+                "exec_enabled": False,
+                "os_release": "Microsoft Windows Server 2022",
+                "capabilities": {"os_family": "windows", "has_powershell": True, "has_curl": True},
+            },
+        },
+    )
+    client = _auth_client(create_app(db))
+
+    response = client.get("/api/v1/console/summary")
+
+    assert response.status_code == 200
+    node = response.json()["nodes"][0]
+    assert node["runtime_profile"] == "full-worker"
+    assert node["service_manager"] == "windows-task"
+    assert node["worker_mode"] == "worker"
+    assert node["task_policy"] == "poll-tasks"
+    assert node["node_type_label"] == "Windows full worker"
+    assert node["windows_beacon_only"] is False
+    assert node["worker_install_command"] == "hmn node install-heartbeat node_windows_full --service-manager windows-task --runtime full-worker"
+    assert "全功能 Worker 安装脚本" in node["worker_install_hint"]
+    assert node["uninstall_command"] == "hmn node uninstall-heartbeat node_windows_full --service-manager windows-task"
 
 
 def test_console_services_endpoint_returns_db_service_record_summaries(tmp_path):
@@ -447,6 +649,18 @@ def test_control_plane_serves_worker_lite_script(tmp_path):
     assert response.headers["content-type"].startswith("text/x-shellscript")
 
 
+def test_control_plane_serves_worker_windows_script(tmp_path):
+    client = _auth_client(create_app(tmp_path / "hmn.db"))
+
+    response = client.get("/scripts/worker-windows.ps1")
+
+    assert response.status_code == 200
+    assert "$ErrorActionPreference = 'Stop'" in response.text
+    assert "/api/v1/nodes/" in response.text
+    assert "Get-NetIPAddress" in response.text
+    assert response.headers["content-type"].startswith("text/plain")
+
+
 def test_control_plane_version_endpoint_reports_protocol_versions(tmp_path):
     client = _auth_client(create_app(tmp_path / "hmn.db"))
 
@@ -547,9 +761,17 @@ def test_task_lifecycle_assigns_next_task_and_records_result(tmp_path):
     )
 
     assert next_response.status_code == 200
-    assert next_response.json()["task_id"] == task.task_id
-    assert next_response.json()["command"] == "uptime"
-    assert next_response.json()["signature"].startswith("hmac-sha256:")
+    task_payload = next_response.json()
+    assert task_payload["task_id"] == task.task_id
+    assert task_payload["command"] == "uptime"
+    assert task_payload["signature"].startswith("hmac-sha256:")
+    assert verify_task_signature(
+        node_fingerprint="sha256:task",
+        task_id=task_payload["task_id"],
+        command=task_payload["command"],
+        risk=task_payload["risk"],
+        signature=task_payload["signature"],
+    )
     assert store.load_task(task.task_id).status == "running"
 
     result_response = client.post(
@@ -563,6 +785,131 @@ def test_task_lifecycle_assigns_next_task_and_records_result(tmp_path):
     assert completed.exit_code == 0
     assert completed.stdout == "ok"
     assert store.list_audit_events()[-1].action == "task_result"
+
+
+def test_windows_worker_flow_rejects_bad_signature_reports_exec_disabled_and_rotates_fingerprint(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_windows",
+            fingerprint="sha256:old",
+            hostname="win-node",
+            addresses=[],
+            trust_level="B",
+            labels=["os:windows"],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    client = _auth_client(create_app(db))
+    worker_protocol = current_version_info().worker_protocol_version
+
+    bad_task = store.create_task(node_id="node_windows", command="Write-Output 'hello'", risk="low", created_by="test")
+    bad_next = client.post(
+        "/api/v1/nodes/node_windows/tasks/next",
+        json={"fingerprint": "sha256:old", "worker_protocol_version": worker_protocol},
+    )
+    assert bad_next.status_code == 200
+    bad_payload = bad_next.json()
+    assert bad_payload["task_id"] == bad_task.task_id
+    assert not verify_task_signature(
+        node_fingerprint="sha256:old",
+        task_id=bad_payload["task_id"],
+        command=bad_payload["command"],
+        risk=bad_payload["risk"],
+        signature=bad_payload["signature"] + "tampered",
+    )
+    bad_result = client.post(
+        f"/api/v1/tasks/{bad_task.task_id}/result",
+        json={"fingerprint": "sha256:old", "exit_code": 127, "stdout": "", "stderr": "task signature mismatch"},
+    )
+    assert bad_result.status_code == 200
+    failed_task = store.load_task(bad_task.task_id)
+    assert failed_task.status == "failed"
+    assert failed_task.exit_code == 127
+    assert failed_task.stderr == "task signature mismatch"
+    assert failed_task.failure_reason == "exit_code_nonzero"
+
+    disabled_task = store.create_task(node_id="node_windows", command="Get-Date", risk="low", created_by="test")
+    disabled_next = client.post(
+        "/api/v1/nodes/node_windows/tasks/next",
+        json={"fingerprint": "sha256:old", "worker_protocol_version": worker_protocol},
+    )
+    assert disabled_next.status_code == 200
+    disabled_payload = disabled_next.json()
+    assert disabled_payload["task_id"] == disabled_task.task_id
+    assert verify_task_signature(
+        node_fingerprint="sha256:old",
+        task_id=disabled_payload["task_id"],
+        command=disabled_payload["command"],
+        risk=disabled_payload["risk"],
+        signature=disabled_payload["signature"],
+    )
+    disabled_result = client.post(
+        f"/api/v1/tasks/{disabled_task.task_id}/result",
+        json={
+            "fingerprint": "sha256:old",
+            "exit_code": 126,
+            "stdout": "",
+            "stderr": "execution disabled; set HMN_ENABLE_EXEC=1",
+        },
+    )
+    assert disabled_result.status_code == 200
+    blocked_task = store.load_task(disabled_task.task_id)
+    assert blocked_task.status == "failed"
+    assert blocked_task.exit_code == 126
+    assert blocked_task.stderr == "execution disabled; set HMN_ENABLE_EXEC=1"
+    assert blocked_task.failure_reason == "exit_code_nonzero"
+
+    rotate_task = store.create_task(
+        node_id="node_windows",
+        command="hmn:rotate-fingerprint sha256:new",
+        risk="low",
+        created_by="test",
+    )
+    rotate_next = client.post(
+        "/api/v1/nodes/node_windows/tasks/next",
+        json={"fingerprint": "sha256:old", "worker_protocol_version": worker_protocol},
+    )
+    assert rotate_next.status_code == 200
+    rotate_payload = rotate_next.json()
+    assert rotate_payload["task_id"] == rotate_task.task_id
+    assert rotate_payload["command"] == "hmn:rotate-fingerprint sha256:new"
+    assert verify_task_signature(
+        node_fingerprint="sha256:old",
+        task_id=rotate_payload["task_id"],
+        command=rotate_payload["command"],
+        risk=rotate_payload["risk"],
+        signature=rotate_payload["signature"],
+    )
+
+    rotate_response = client.post(
+        "/api/v1/nodes/node_windows/rotate-fingerprint",
+        json={"fingerprint": "sha256:old", "new_fingerprint": "sha256:new"},
+    )
+    assert rotate_response.status_code == 200
+    rotate_result = client.post(
+        f"/api/v1/tasks/{rotate_task.task_id}/result",
+        json={"fingerprint": "sha256:new", "exit_code": 0, "stdout": "fingerprint rotated", "stderr": ""},
+    )
+    assert rotate_result.status_code == 200
+
+    rotated_node = store.load_node("node_windows")
+    assert rotated_node.fingerprint == "sha256:new"
+    rotated_task = store.load_task(rotate_task.task_id)
+    assert rotated_task.status == "succeeded"
+    assert rotated_task.stdout == "fingerprint rotated"
+    rotate_events = [event for event in store.list_audit_events() if event.action == "rotate_fingerprint"]
+    assert rotate_events
+    assert rotate_events[-1].details == {"old_fingerprint_sha256": "sha256:old", "new_fingerprint_sha256": "sha256:new"}
+
+    assert client.post(
+        "/api/v1/nodes/node_windows/tasks/next",
+        json={"fingerprint": "sha256:old", "worker_protocol_version": worker_protocol},
+    ).status_code == 403
 
 
 def test_task_next_expires_stuck_before_returning_pending_task(tmp_path):

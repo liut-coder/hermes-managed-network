@@ -5,7 +5,7 @@ import crypt
 import hashlib
 import hmac
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from uuid import uuid4
@@ -19,12 +19,14 @@ from pydantic import BaseModel, Field
 from typing import Any
 
 from .signing import sign_task_payload
+from .tokens import JoinTokenStore
 from .storage import Notification, SQLiteStore
 from .approval_telegram_flow import handle_telegram_approval_callback
 from .network_acl import dispatch_approved_network_acl_apply
 from .network_base import NetworkProviderError
 from .version import current_version_info, is_worker_compatible
 from .web_console import register_web_console
+from .platforms import classify_capabilities, probe_from_facts
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_DOCS_ROOT = Path("/srv/files")
@@ -93,6 +95,18 @@ class ConsoleNodeResponse(BaseModel):
     load: int | float
     hb: str
     exec: bool
+    runtime_profile: str = "unknown"
+    service_manager: str = "unknown"
+    worker_mode: str = "unknown"
+    task_policy: str = "unknown"
+    worker_status_hint: str | None = None
+    worker_status_command: str | None = None
+    worker_install_hint: str | None = None
+    worker_install_command: str | None = None
+    uninstall_hint: str | None = None
+    uninstall_command: str | None = None
+    node_type_label: str | None = None
+    windows_beacon_only: bool = False
 
 
 class ConsoleTaskResponse(BaseModel):
@@ -118,6 +132,31 @@ class ConsoleApprovalResponse(BaseModel):
     task_name: str | None = None
     task_description: str | None = None
 
+
+
+
+class ConsoleJoinTokenCreateRequest(BaseModel):
+    trust_level: str = "B"
+    labels: list[str] = Field(default_factory=list)
+    ttl_minutes: int = 30
+    target_os: str = "linux"
+
+
+class ConsoleJoinTokenResponse(BaseModel):
+    token: str
+    trust_level: str
+    labels: list[str]
+    expires_at: str
+    target_os: str = "linux"
+
+
+class ConsoleJoinPolicyResponse(BaseModel):
+    auto_confirm: bool = True
+    auto_install_worker: bool = True
+    enable_exec: bool = True
+    pending_visible: bool = False
+    permission_bundle: str = "observe_task"
+    target_os: str = "linux"
 
 class ConsoleMetricsResponse(BaseModel):
     online_nodes: int
@@ -373,6 +412,38 @@ def _console_node_response(store: SQLiteStore, node) -> ConsoleNodeResponse:
     event = _latest_heartbeat_event(store, node.node_id)
     facts = event.details.get("facts", {}) if event else {}
     facts = facts if isinstance(facts, dict) else {}
+    runtime = classify_capabilities(probe_from_facts(facts))
+    worker_mode = str(facts.get("worker_mode") or "unknown")
+    task_policy = str(facts.get("task_policy") or ("poll-and-exec" if runtime.can_poll_tasks else "heartbeat-only"))
+    runtime_profile = str(runtime.runtime)
+    service_manager = str(runtime.service_manager)
+    windows_beacon_only = service_manager == "windows-task"
+    worker_status_hint = "可在主控执行节点级状态检查命令"
+    worker_status_command = f"hmn node worker-status {node.node_id}"
+    worker_install_hint = None
+    worker_install_command = None
+    uninstall_hint = None
+    uninstall_command = None
+    node_type_label = runtime_profile
+    if service_manager == "windows-task":
+        uninstall_hint = "可在主控执行节点级卸载命令，生成该 Windows 节点的卸载脚本"
+        uninstall_command = f"hmn node uninstall-heartbeat {node.node_id} --service-manager windows-task"
+        if runtime_profile == "full-worker":
+            worker_install_hint = "可在主控重新生成该 Windows 节点的全功能 Worker 安装脚本"
+            worker_install_command = f"hmn node install-heartbeat {node.node_id} --service-manager windows-task --runtime full-worker"
+            node_type_label = "Windows full worker"
+            windows_beacon_only = False
+        else:
+            worker_install_hint = "可在主控重新生成该 Windows 节点的 Worker/心跳安装脚本"
+            worker_install_command = f"hmn node install-heartbeat {node.node_id} --service-manager windows-task --runtime beacon-only --beacon-only"
+            node_type_label = "Windows beacon-only"
+            windows_beacon_only = True
+    elif runtime_profile == "beacon-only":
+        node_type_label = "Beacon-only"
+    elif runtime_profile == "full-worker":
+        node_type_label = "Full worker"
+    elif runtime_profile == "lite-worker":
+        node_type_label = "Lite worker"
     now = datetime.now(timezone.utc)
     age_seconds = int((now - event.created_at).total_seconds()) if event else None
     if node.status == "pending":
@@ -399,6 +470,18 @@ def _console_node_response(store: SQLiteStore, node) -> ConsoleNodeResponse:
         load=_load_value(facts),
         hb=_heartbeat_label(age_seconds),
         exec=bool(facts.get("exec_enabled") or "task" in node.permission_bundles),
+        runtime_profile=runtime_profile,
+        service_manager=service_manager,
+        worker_mode=worker_mode,
+        task_policy=task_policy,
+        worker_status_hint=worker_status_hint,
+        worker_status_command=worker_status_command,
+        worker_install_hint=worker_install_hint,
+        worker_install_command=worker_install_command,
+        uninstall_hint=uninstall_hint,
+        uninstall_command=uninstall_command,
+        node_type_label=node_type_label,
+        windows_beacon_only=windows_beacon_only,
     )
 
 
@@ -1225,6 +1308,60 @@ def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFA
             create_dialog=create_dialog,
         )
 
+
+    @app.post("/api/v1/console/join-token", response_model=ConsoleJoinTokenResponse)
+    def console_join_token(request: Request, payload: ConsoleJoinTokenCreateRequest) -> ConsoleJoinTokenResponse:
+        _require_session(request)
+        ttl_minutes = max(5, min(int(payload.ttl_minutes or 30), 24 * 60))
+        target_os = "windows" if str(payload.target_os).lower() == "windows" else "linux"
+        token = JoinTokenStore().create(
+            trust_level=payload.trust_level,
+            labels=list(payload.labels),
+            ttl=timedelta(minutes=ttl_minutes),
+        )
+        store.save_token(token)
+        store.record_audit(
+            event_type="token",
+            subject_type="join_token",
+            subject_id=token.value,
+            action="create",
+            outcome="ok",
+            details={
+                "trust_level": token.trust_level,
+                "labels": token.labels,
+                "ttl_minutes": ttl_minutes,
+                "source": "hmn-web",
+                "target_os": target_os,
+            },
+        )
+        return ConsoleJoinTokenResponse(
+            token=token.value,
+            trust_level=token.trust_level,
+            labels=token.labels,
+            expires_at=_iso(token.expires_at),
+            target_os=target_os,
+        )
+
+    @app.get("/api/v1/console/join-policy", response_model=ConsoleJoinPolicyResponse)
+    def console_join_policy(request: Request) -> ConsoleJoinPolicyResponse:
+        _require_session(request)
+        return ConsoleJoinPolicyResponse(**store.get_setting("console.join_policy", {}))
+
+    @app.put("/api/v1/console/join-policy", response_model=ConsoleJoinPolicyResponse)
+    def update_console_join_policy(request: Request, payload: ConsoleJoinPolicyResponse) -> ConsoleJoinPolicyResponse:
+        _require_session(request)
+        data = payload.model_dump()
+        store.set_setting("console.join_policy", data)
+        store.record_audit(
+            event_type="console",
+            subject_type="setting",
+            subject_id="console.join_policy",
+            action="update",
+            outcome="ok",
+            details=data,
+        )
+        return ConsoleJoinPolicyResponse(**data)
+
     @app.get("/scripts/join.sh", include_in_schema=False)
     def join_script() -> Response:
         return _asset_script("join.sh")
@@ -1236,6 +1373,13 @@ def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFA
     @app.get("/scripts/worker-lite.sh", include_in_schema=False)
     def worker_lite_script() -> Response:
         return _asset_script("worker-lite.sh")
+
+    @app.get("/scripts/worker-windows.ps1", include_in_schema=False)
+    def worker_windows_script() -> Response:
+        return Response(
+            (Path(hermes_managed_network.__file__).resolve().parent / "assets" / "worker-windows.ps1").read_text(),
+            media_type="text/plain; charset=utf-8",
+        )
 
     @app.post("/api/v1/join", response_model=JoinResponse)
     def join(request: JoinRequest) -> JoinResponse:

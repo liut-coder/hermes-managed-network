@@ -54,7 +54,15 @@ from .backup_provider import build_backup_apply_request, render_backup_plan_json
 from .migration import render_migration_plan_json
 from .onboarding import render_onboarding_plan_json
 from .restore import render_restore_plan_json
-from .platforms import NodeRuntimeProfile, ServiceManager, classify_capabilities, probe_from_facts, render_service_manager_installer
+from .platforms import (
+    NodeRuntimeProfile,
+    ServiceManager,
+    classify_capabilities,
+    probe_from_facts,
+    render_service_manager_installer,
+    render_windows_task_installer,
+    render_windows_task_uninstaller,
+)
 from .network import NetworkNodeRecord, NetworkProviderError, NetworkSyncResult, get_network_provider
 from .network_acl import dispatch_approved_network_acl_apply, sha256_text
 from .service_discovery import apply_discovered_services, discover_services_from_text, plan_discovered_services
@@ -2571,6 +2579,45 @@ def _runtime_summary_from_facts(facts: dict[str, object]) -> dict[str, object]:
 
 
 
+def _detect_service_manager_from_node(store: SQLiteStore, node) -> ServiceManager:
+    event = _latest_heartbeat_event(store, node.node_id)
+    facts = event.details.get("facts", {}) if event else {}
+    if isinstance(facts, dict):
+        runtime = _runtime_summary_from_facts(facts)
+        try:
+            return ServiceManager(str(runtime.get("service_manager") or ServiceManager.SYSTEMD))
+        except ValueError:
+            pass
+    return ServiceManager.SYSTEMD
+
+
+
+def _render_worker_uninstaller(service_manager: ServiceManager) -> str:
+    if service_manager == ServiceManager.WINDOWS_TASK:
+        return render_windows_task_uninstaller()
+    if service_manager == ServiceManager.SYSTEMD:
+        script = """set -eu
+systemctl disable --now hermes-managed-network-heartbeat.timer 2>/dev/null || true
+rm -f /etc/systemd/system/hermes-managed-network-heartbeat.timer
+rm -f /etc/systemd/system/hermes-managed-network-heartbeat.service
+rm -f /usr/local/bin/hmn-worker
+rm -rf /etc/hermes-managed-network
+systemctl daemon-reload
+"""
+        return "sudo bash -c " + _shell_quote(script)
+    if service_manager == ServiceManager.CRON:
+        script = """set -eu
+tmp=$(mktemp)
+crontab -l 2>/dev/null | grep -v '/usr/local/bin/hmn-worker' >\"$tmp\" || true
+crontab \"$tmp\"
+rm -f \"$tmp\" /usr/local/bin/hmn-worker
+rm -rf /etc/hermes-managed-network
+"""
+        return "sudo sh -c " + _shell_quote(script)
+    return "# 当前 service_manager 暂无专用卸载模板，请手动移除 worker/env/定时任务。"
+
+
+
 def _backup_manifest_for_paths(paths: list[str], *, dry_run: bool = True) -> dict[str, object]:
     entries = []
     total_bytes = 0
@@ -2960,8 +3007,11 @@ def worker_status(
     compatible = bool(event.details.get("worker_compatible", True)) if event else False
     protocol = facts.get("worker_protocol_version") or "unknown"
     version_value = facts.get("worker_version") or "unknown"
-    exec_enabled = bool(facts.get("exec_enabled", False))
+    worker_mode = str(facts.get("worker_mode") or "unknown")
     runtime = _runtime_summary_from_facts(facts)
+    task_policy = str(facts.get("task_policy") or ("poll-and-exec" if runtime["can_poll_tasks"] else "heartbeat-only"))
+    os_text = str(facts.get("os_release") or facts.get("os") or facts.get("platform") or "unknown")
+    exec_enabled = bool(facts.get("exec_enabled", False))
     ssh_connectivity = _latest_doctor_ssh_connectivity(store, node.node_id)
     ssh_summary = _summarize_ssh_connectivity(ssh_connectivity)
 
@@ -2980,14 +3030,22 @@ def worker_status(
     else:
         typer.echo(f"协议: WARN {protocol} incompatible")
     typer.echo(f"版本: {version_value}")
+    typer.echo(f"系统: {os_text}")
     typer.echo(f"runtime: {runtime['runtime_profile']}")
     typer.echo(f"service_manager: {runtime['service_manager']}")
+    typer.echo(f"worker_mode: {worker_mode}")
+    typer.echo(f"task_policy: {task_policy}")
     typer.echo(f"ssh: {ssh_summary['summary']}")
     typer.echo(f"ssh_reason: {ssh_summary['reason']}")
     if exec_enabled:
         typer.echo("执行: ENABLED HMN_ENABLE_EXEC=1")
     else:
         typer.echo("执行: SAFE HMN_ENABLE_EXEC=0")
+    if runtime["service_manager"] == str(ServiceManager.WINDOWS_TASK):
+        if runtime["can_poll_tasks"]:
+            typer.echo("Windows 说明: 当前为 Task Scheduler worker 模式，可轮询签名任务；默认仍保持 HMN_ENABLE_EXEC=0。")
+        else:
+            typer.echo("Windows 说明: 当前为 Task Scheduler 心跳模式，不会执行远程下发命令。")
     store.record_audit(
         event_type="node",
         subject_type="node",
@@ -2997,6 +3055,9 @@ def worker_status(
         details={
             "heartbeat_seen": event is not None,
             "worker_protocol_version": protocol,
+            "worker_mode": worker_mode,
+            "task_policy": task_policy,
+            "os": os_text,
             "worker_compatible": compatible,
             "exec_enabled": exec_enabled,
             "liveness": liveness,
@@ -3022,11 +3083,45 @@ def _render_worker_installer(
     endpoint_values = [item.rstrip("/") for item in (endpoints or []) if item.strip()]
     if not endpoint_values:
         endpoint_values = [url]
+    endpoint_csv = ",".join(endpoint_values)
+
+    if service_manager == ServiceManager.WINDOWS_TASK:
+        worker_url = f"{url}/scripts/worker-windows.ps1"
+        worker_path = r"C:\ProgramData\HermesManagedNetwork\hmn-worker.ps1"
+        env_path = r"C:\ProgramData\HermesManagedNetwork\node.env.ps1"
+        return "\n".join([
+            f"$master = '{url}'",
+            f"$endpointCsv = '{endpoint_csv}'",
+            f"$nodeId = '{node.node_id}'",
+            f"$fingerprint = '{node.fingerprint}'",
+            '$baseDir = "C:\\ProgramData\\HermesManagedNetwork"',
+            f"$workerPath = '{worker_path}'",
+            f"$envPath = '{env_path}'",
+            '$urls = @($endpointCsv -split "," | ForEach-Object { $_.TrimEnd("/") } | Where-Object { $_ })',
+            'New-Item -ItemType Directory -Force -Path $baseDir | Out-Null',
+            '$envLines = @(',
+            '  "$env:HERMES_MASTER_URL=$master"',
+            '  "$env:HMN_MASTER_URLS=$($urls -join ",")"',
+            '  "$env:HERMES_NODE_ID=$nodeId"',
+            '  "$env:HERMES_NODE_FINGERPRINT=$fingerprint"',
+            f'  "$env:HMN_ENABLE_EXEC={1 if runtime == NodeRuntimeProfile.FULL_WORKER and not beacon_only else 0}"',
+            f'  "$env:HMN_WORKER_MODE={"beacon" if beacon_only else "worker"}"',
+            f'  "$env:HMN_BEACON_ONLY={1 if beacon_only else 0}"',
+            f'  "$env:HERMES_AUTO_CONFIRM={1 if not beacon_only else 0}"',
+            ')',
+            'Set-Content -Path $envPath -Value $envLines -Encoding UTF8',
+            f'Invoke-WebRequest -UseBasicParsing -Uri "{worker_url}" -OutFile $workerPath',
+            '$taskName = "HermesManagedNetworkHeartbeat"',
+            '$taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$workerPath`""',
+            'schtasks /Create /SC MINUTE /MO 1 /TN $taskName /TR $taskCommand /RU SYSTEM /RL HIGHEST /F | Out-Null',
+            'schtasks /Run /TN $taskName | Out-Null',
+            '# 当前 Windows 先走 heartbeat/beacon 模式；不执行下发 shell 任务',
+        ])
+
     service_wiring = render_service_manager_installer(service_manager)
     beacon_env = "HMN_WORKER_MODE=beacon\nHMN_BEACON_ONLY=1" if beacon_only else ""
     worker_asset = "worker-lite.sh" if runtime == NodeRuntimeProfile.LITE_WORKER else "worker.sh"
     shell = "sh" if runtime == NodeRuntimeProfile.LITE_WORKER else "bash"
-    endpoint_csv = ",".join(endpoint_values)
     script = f"""set -eu
 install -d -m 0700 /etc/hermes-managed-network
 cat >/etc/hermes-managed-network/node.env <<'EOF'
@@ -3106,6 +3201,28 @@ def install_heartbeat(
     if endpoints:
         typer.echo("endpoint fallback: " + " -> ".join(endpoints))
     typer.echo(_render_worker_installer(node, url, service_manager, beacon_only=beacon_only, runtime=runtime_value, endpoints=endpoints))
+
+
+@node_app.command("uninstall-heartbeat")
+def uninstall_heartbeat(
+    node_id: str | None = typer.Argument(None, help="节点 ID；省略时自动选择唯一的 managed 节点", show_default=False),
+    service_manager: ServiceManager | None = typer.Option(None, "--service-manager", help="服务管理器；省略时优先按最近 heartbeat 自动判断"),
+    db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
+) -> None:
+    store = _store(db)
+    node = _select_managed_node(store, node_id)
+    manager = service_manager or _detect_service_manager_from_node(store, node)
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id=node.node_id,
+        action="uninstall-heartbeat",
+        outcome="rendered",
+        details={"service_manager": str(manager)},
+    )
+    typer.echo("请复制下面命令到目标节点执行，它会卸载心跳/worker 定时器：")
+    typer.echo(f"service_manager={manager}")
+    typer.echo(_render_worker_uninstaller(manager))
 
 
 @node_app.command("revoke")

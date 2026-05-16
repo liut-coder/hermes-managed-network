@@ -1,4 +1,5 @@
 include src/hermes_managed_network/assets/join.sh
 include src/hermes_managed_network/assets/worker.sh
 include src/hermes_managed_network/assets/worker-lite.sh
+include src/hermes_managed_network/assets/worker-windows.ps1
 recursive-include src/hermes_managed_network/components component.yaml

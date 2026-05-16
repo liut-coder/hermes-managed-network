@@ -318,6 +318,9 @@ def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
         node = store.load_node(request.node_id)
         if node is None or node.status != "managed":
             raise HTTPException(status_code=404, detail="managed node not found")
+        dispatch_block_reason = store.task_dispatch_block_reason(request.node_id)
+        if dispatch_block_reason:
+            raise HTTPException(status_code=409, detail=dispatch_block_reason)
         risk = risk_for_command(request.command)
         if risk == "low":
             task = store.create_task(

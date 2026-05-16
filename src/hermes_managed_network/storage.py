@@ -560,6 +560,13 @@ class SQLiteStore:
                     created_at TEXT NOT NULL
                 );
 
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS services (
                     service_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -800,6 +807,48 @@ class SQLiteStore:
             )
             for row in rows
         ]
+
+    def latest_node_heartbeat_facts(self, node_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT details_json
+                FROM audit_events
+                WHERE event_type = ?
+                  AND subject_type = ?
+                  AND subject_id = ?
+                  AND action = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                ("node", "node", node_id, "heartbeat"),
+            ).fetchone()
+        if row is None:
+            return {}
+        details = json.loads(row["details_json"])
+        facts = details.get("facts", {}) if isinstance(details, dict) else {}
+        return facts if isinstance(facts, dict) else {}
+
+    def task_dispatch_block_reason(self, node_id: str) -> str | None:
+        node = self.load_node(node_id)
+        if node is None:
+            return "node not found"
+        if node.status != "managed":
+            return "node not managed"
+        facts = self.latest_node_heartbeat_facts(node_id)
+        if not facts:
+            return None
+        worker_mode = str(facts.get("worker_mode") or "").strip().lower()
+        task_policy = str(facts.get("task_policy") or "").strip().lower()
+        if worker_mode == "beacon":
+            return "node is beacon-only"
+        if task_policy == "heartbeat-only":
+            return "node heartbeat-only policy blocks task dispatch"
+        if facts.get("can_poll_tasks") is False:
+            return "node cannot poll tasks"
+        if facts.get("exec_enabled") is False:
+            return "node execution disabled"
+        return None
 
     def enqueue_notification(
         self,
@@ -1277,6 +1326,22 @@ class SQLiteStore:
                     ("approval", "task", approval.approval_id, "approval/dispatch", "failed",
                      json.dumps({"reason": "node not managed", "node_id": task.node_id}, sort_keys=True),
                      _dt(datetime.now(timezone.utc))),
+                )
+                return None
+            dispatch_block_reason = self.task_dispatch_block_reason(task.node_id)
+            if dispatch_block_reason:
+                conn.execute(
+                    "INSERT INTO audit_events (event_type, subject_type, subject_id, action, outcome, details_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "approval",
+                        "task",
+                        approval.approval_id,
+                        "approval/dispatch",
+                        "failed",
+                        json.dumps({"reason": dispatch_block_reason, "node_id": task.node_id}, sort_keys=True),
+                        _dt(datetime.now(timezone.utc)),
+                    ),
                 )
                 return None
             conn.execute(
@@ -1913,6 +1978,30 @@ class SQLiteStore:
             else:
                 rows = conn.execute("SELECT * FROM monitor_snapshots ORDER BY created_at DESC").fetchall()
         return [self._monitor_snapshot_from_row(row) for row in rows]
+
+
+    def get_setting(self, key: str, default: Any | None = None) -> Any:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value_json FROM settings WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return default
+        try:
+            return json.loads(row["value_json"])
+        except json.JSONDecodeError:
+            return default
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO settings (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (key, json.dumps(value, ensure_ascii=False), _dt(datetime.now(timezone.utc))),
+            )
 
     def save_token(self, token: JoinToken) -> None:
         with self.connect() as conn:

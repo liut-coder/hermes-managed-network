@@ -169,6 +169,28 @@ def classify_capabilities(probe: CapabilityProbe) -> RuntimeCapabilities:
             notes=["task execution still requires explicit operator enablement"],
         )
 
+    if probe.has_powershell and http and service_manager == ServiceManager.WINDOWS_TASK:
+        return RuntimeCapabilities(
+            runtime=NodeRuntimeProfile.FULL_WORKER,
+            service_manager=service_manager,
+            can_report_heartbeat=True,
+            can_poll_tasks=True,
+            can_execute_tasks=True,
+            requirements=["powershell", "http-client", "Task Scheduler"],
+            notes=["Windows Task Scheduler worker supports signed task polling", "task execution still requires explicit operator enablement"],
+        )
+
+    if probe.has_powershell and service_manager == ServiceManager.WINDOWS_TASK:
+        return RuntimeCapabilities(
+            runtime=NodeRuntimeProfile.BEACON_ONLY,
+            service_manager=service_manager,
+            can_report_heartbeat=True,
+            can_poll_tasks=False,
+            can_execute_tasks=False,
+            requirements=["powershell", "Task Scheduler"],
+            notes=["Windows 当前以计划任务心跳模式运行", "默认不执行远程下发命令"],
+        )
+
     if probe.has_sh and http and (probe.has_busybox or probe.has_crond or service_manager in {ServiceManager.PROCD, ServiceManager.OPENRC}):
         return RuntimeCapabilities(
             runtime=NodeRuntimeProfile.LITE_WORKER,
@@ -200,6 +222,37 @@ def classify_capabilities(probe: CapabilityProbe) -> RuntimeCapabilities:
         requirements=["nearby managed proxy node"],
         notes=["device cannot host HMN agent safely"],
     )
+
+
+
+def _windows_worker_task_command(worker_path: str) -> str:
+    escaped = worker_path.replace('"', '""')
+    return f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{escaped}"'
+
+
+
+def render_windows_task_installer(worker_path: str = r"C:\ProgramData\HermesManagedNetwork\hmn-worker.ps1") -> str:
+    task_name = "HermesManagedNetworkHeartbeat"
+    task_command = _windows_worker_task_command(worker_path)
+    return f"""$taskName = \"{task_name}\"
+$workerPath = \"{worker_path}\"
+$taskCommand = '{task_command}'
+schtasks /Create /SC MINUTE /MO 1 /TN $taskName /TR $taskCommand /RU SYSTEM /RL HIGHEST /F | Out-Null
+schtasks /Run /TN $taskName | Out-Null
+"""
+
+
+
+def render_windows_task_uninstaller(base_dir: str = r"C:\ProgramData\HermesManagedNetwork") -> str:
+    task_name = "HermesManagedNetworkHeartbeat"
+    return f"""$taskName = \"{task_name}\"
+$baseDir = \"{base_dir}\"
+schtasks /Delete /TN $taskName /F 2>$null | Out-Null
+if (Test-Path -LiteralPath $baseDir) {{
+  Remove-Item -LiteralPath $baseDir -Recurse -Force
+}}
+"""
+
 
 
 def render_service_manager_installer(service_manager: ServiceManager | str, worker_path: str = "/usr/local/bin/hmn-worker") -> str:
@@ -239,6 +292,8 @@ EOF
 systemctl daemon-reload
 systemctl enable --now hermes-managed-network-heartbeat.timer
 """
+    if manager == ServiceManager.WINDOWS_TASK:
+        return render_windows_task_installer(worker_path)
     if manager == ServiceManager.CRON:
         return f"""tmp_cron=$(mktemp)
 crontab -l 2>/dev/null | grep -v 'hermes-managed-network heartbeat' >"$tmp_cron" || true

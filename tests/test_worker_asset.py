@@ -26,6 +26,27 @@ def test_worker_lite_scripts_are_identical_between_repo_and_package_asset():
     assert repo_script == asset_script
 
 
+def test_worker_windows_scripts_are_identical_between_repo_and_package_asset():
+    repo_script = Path("scripts/worker-windows.ps1").read_text()
+    asset_script = Path("src/hermes_managed_network/assets/worker-windows.ps1").read_text()
+
+    assert repo_script == asset_script
+
+
+def test_worker_windows_script_supports_heartbeat_poll_and_signed_results():
+    script = Path("src/hermes_managed_network/assets/worker-windows.ps1").read_text()
+
+    assert "$ErrorActionPreference = 'Stop'" in script
+    assert "/api/v1/nodes/" in script
+    assert "heartbeat'" in script
+    assert "/tasks/next" in script
+    assert "/api/v1/tasks/" in script
+    assert "task signature mismatch" in script
+    assert "hmn:rotate-fingerprint" in script
+    assert "schtasks" not in script
+    assert "??" not in script
+
+
 def test_worker_lite_is_posix_sh_and_avoids_heavy_dependencies():
     script = Path("src/hermes_managed_network/assets/worker-lite.sh").read_text()
 

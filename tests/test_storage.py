@@ -405,6 +405,50 @@ def test_dispatch_uses_approval_risk_even_when_details_risk_disagrees(tmp_path):
     assert store.load_approval_request(approval.approval_id).details["risk"] == "low"
 
 
+def test_dispatch_approved_task_request_blocks_heartbeat_only_node_and_audits(tmp_path):
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(node_id="node_blocked", fingerprint="sha256:nblocked", hostname="nblocked",
+             addresses=[], trust_level="B", labels=[], status="managed", permission_bundles=[])
+    )
+    approval = store.create_approval_request(
+        subject_type="task",
+        subject_id="pending-task",
+        action="task.run",
+        risk="high",
+        requested_by="hmn",
+        details={"node_id": "node_blocked", "command": "reboot", "risk": "high", "created_by": "hmn"},
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_blocked",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_mode": "worker",
+                "task_policy": "heartbeat-only",
+                "exec_enabled": False,
+            },
+        },
+    )
+
+    approved = store.resolve_approval_request(approval.approval_id, status="approved", decided_by="Misk")
+
+    assert approved is not None
+    assert store.list_tasks() == []
+    refreshed = store.load_approval_request(approval.approval_id)
+    assert refreshed.status == "approved"
+    assert "dispatched_task_id" not in refreshed.details
+    events = store.list_audit_events()
+    assert events[-1].action == "approval/dispatch"
+    assert events[-1].outcome == "failed"
+    assert events[-1].details["reason"] == "node heartbeat-only policy blocks task dispatch"
+
+
 def test_rejecting_task_request_never_dispatches_task_and_audits(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)

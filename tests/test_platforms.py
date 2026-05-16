@@ -9,6 +9,8 @@ from hermes_managed_network.platforms import (
     probe_from_facts,
     render_capability_probe,
     render_service_manager_installer,
+    render_windows_task_installer,
+    render_windows_task_uninstaller,
 )
 
 
@@ -84,6 +86,28 @@ def test_platform_specific_service_managers_are_detected():
     assert detect_service_manager(CapabilityProbe(os_family="windows", has_powershell=True)) == ServiceManager.WINDOWS_TASK
 
 
+def test_windows_capability_profile_with_http_client_gets_full_worker():
+    profile = classify_capabilities(CapabilityProbe(os_family="windows", has_powershell=True, has_curl=True))
+
+    assert profile.runtime == NodeRuntimeProfile.FULL_WORKER
+    assert profile.service_manager == ServiceManager.WINDOWS_TASK
+    assert profile.can_report_heartbeat is True
+    assert profile.can_poll_tasks is True
+    assert profile.can_execute_tasks is True
+    assert "http-client" in profile.requirements
+
+
+def test_windows_capability_profile_without_http_client_stays_beacon_only():
+    profile = classify_capabilities(CapabilityProbe(os_family="windows", has_powershell=True))
+
+    assert profile.runtime == NodeRuntimeProfile.BEACON_ONLY
+    assert profile.service_manager == ServiceManager.WINDOWS_TASK
+    assert profile.can_report_heartbeat is True
+    assert profile.can_poll_tasks is False
+    assert profile.can_execute_tasks is False
+    assert "Task Scheduler" in profile.requirements
+
+
 def test_probe_from_heartbeat_facts_classifies_runtime_profile():
     facts = {
         "capabilities": {
@@ -110,6 +134,29 @@ def test_service_manager_installer_renders_cron_adapter_without_systemctl():
     assert "crontab" in script
     assert "* * * * * /usr/local/bin/hmn-worker" in script
     assert "systemctl" not in script
+
+
+def test_service_manager_installer_renders_windows_task_scheduler_adapter():
+    script = render_service_manager_installer(ServiceManager.WINDOWS_TASK, worker_path=r"C:\ProgramData\HermesManagedNetwork\hmn-worker.ps1")
+
+    assert "schtasks /Create /SC MINUTE /MO 1" in script
+    assert "HermesManagedNetworkHeartbeat" in script
+    assert "powershell.exe -NoProfile -ExecutionPolicy Bypass -File" in script
+
+
+def test_render_windows_task_installer_uses_expected_default_path():
+    script = render_windows_task_installer()
+
+    assert r"C:\ProgramData\HermesManagedNetwork\hmn-worker.ps1" in script
+    assert "schtasks /Run /TN $taskName" in script
+
+
+def test_render_windows_task_uninstaller_removes_task_and_programdata():
+    script = render_windows_task_uninstaller()
+
+    assert "schtasks /Delete /TN $taskName /F" in script
+    assert r"C:\ProgramData\HermesManagedNetwork" in script
+    assert "Remove-Item -LiteralPath $baseDir -Recurse -Force" in script
 
 
 def test_service_manager_installer_refuses_none_adapter():

@@ -67,7 +67,7 @@ auto_confirm_json() {
 register_node() {
   local fp hostname_json token_json addresses auto_confirm response node_id status trust_level
   fp="$(fingerprint)"
-  hostname_json="$(hostname | json_escape)"
+  hostname_json="$(printf '%s' "${HERMES_NODE_NAME:-$(hostname)}" | json_escape)"
   token_json="$(printf '%s' "$HERMES_JOIN_TOKEN" | json_escape)"
   addresses="$(addresses_json)"
   auto_confirm="$(auto_confirm_json)"

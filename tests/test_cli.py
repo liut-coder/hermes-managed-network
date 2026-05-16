@@ -1517,6 +1517,78 @@ def test_node_install_heartbeat_prints_systemd_timer(tmp_path):
     assert "systemctl enable --now hermes-managed-network-heartbeat.timer" in result.stdout
 
 
+def test_node_install_heartbeat_can_render_windows_task_scheduler_adapter(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_windows",
+            fingerprint="sha256:windows",
+            hostname="windows-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "node",
+            "install-heartbeat",
+            "--db",
+            str(db),
+            "--master-url",
+            "https://master.example",
+            "--service-manager",
+            "windows-task",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "service_manager=windows-task" in result.stdout
+    assert "$baseDir = \"C:\\ProgramData\\HermesManagedNetwork\"" in result.stdout
+    assert "worker-windows.ps1" in result.stdout
+    assert "node.env.ps1" in result.stdout
+    assert "schtasks /Create /SC MINUTE /MO 1" in result.stdout
+    assert "HMN_WORKER_MODE=worker" in result.stdout
+    assert "HMN_BEACON_ONLY=0" in result.stdout
+    assert "默认安全模式：HMN_ENABLE_EXEC=0，不会执行下发 shell 命令。" in result.stdout
+
+
+def test_node_uninstall_heartbeat_can_render_windows_task_scheduler_uninstaller(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    SQLiteStore(db).save_node(
+        Node(
+            node_id="node_windows_uninstall",
+            fingerprint="sha256:windows-uninstall",
+            hostname="windows-uninstall-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["node", "uninstall-heartbeat", "--db", str(db), "--service-manager", "windows-task"],
+    )
+
+    assert result.exit_code == 0
+    assert "service_manager=windows-task" in result.stdout
+    assert "schtasks /Delete /TN $taskName /F" in result.stdout
+    assert "Remove-Item -LiteralPath $baseDir -Recurse -Force" in result.stdout
+
+
 def test_root_menu_can_show_install_heartbeat_command(tmp_path, monkeypatch):
     from hermes_managed_network.inventory import Node
 
@@ -1753,13 +1825,91 @@ def test_node_worker_status_reports_ok_from_heartbeat_audit(tmp_path):
     assert "worker: OK installed/reported" in result.stdout
     assert "协议: OK 0.1" in result.stdout
     assert "版本: 0.1.0" in result.stdout
+    assert "系统: unknown" in result.stdout
     assert "runtime: full-worker" in result.stdout
     assert "service_manager: systemd" in result.stdout
+    assert "worker_mode: unknown" in result.stdout
+    assert "task_policy: poll-and-exec" in result.stdout
     assert "执行: SAFE HMN_ENABLE_EXEC=0" in result.stdout
     event = store.list_audit_events()[-2]
     assert event.action == "worker-status"
     assert event.details["runtime_profile"] == "full-worker"
     assert event.details["service_manager"] == "systemd"
+
+
+def test_node_worker_status_reports_windows_beacon_details(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_windows_status", hostname="windows-status-node"))
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_windows_status",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_protocol_version": "0.1",
+                "worker_version": "windows-beacon",
+                "worker_mode": "beacon",
+                "task_policy": "heartbeat-only",
+                "exec_enabled": False,
+                "os_release": "Microsoft Windows Server 2022",
+                "capabilities": {"os_family": "windows", "has_powershell": True},
+            },
+            "worker_compatible": True,
+        },
+    )
+
+    result = runner.invoke(app, ["node", "worker-status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "系统: Microsoft Windows Server 2022" in result.stdout
+    assert "runtime: beacon-only" in result.stdout
+    assert "service_manager: windows-task" in result.stdout
+    assert "worker_mode: beacon" in result.stdout
+    assert "task_policy: heartbeat-only" in result.stdout
+    assert "Windows 说明: 当前为 Task Scheduler 心跳模式，不会执行远程下发命令。" in result.stdout
+
+
+def test_node_worker_status_reports_windows_full_worker_mode(tmp_path):
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(_managed_node(node_id="node_windows_full", hostname="windows-full-node"))
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_windows_full",
+        action="heartbeat",
+        outcome="ok",
+        details={
+            "status": "ok",
+            "facts": {
+                "worker_protocol_version": "0.1",
+                "worker_version": "windows-worker",
+                "worker_mode": "worker",
+                "task_policy": "poll-tasks",
+                "can_poll_tasks": True,
+                "exec_enabled": False,
+                "os_release": "Microsoft Windows Server 2022",
+                "capabilities": {"os_family": "windows", "has_powershell": True, "has_curl": True},
+            },
+            "worker_compatible": True,
+        },
+    )
+
+    result = runner.invoke(app, ["node", "worker-status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "系统: Microsoft Windows Server 2022" in result.stdout
+    assert "runtime: full-worker" in result.stdout
+    assert "service_manager: windows-task" in result.stdout
+    assert "worker_mode: worker" in result.stdout
+    assert "task_policy: poll-tasks" in result.stdout
+    assert "Windows 说明: 当前为 Task Scheduler worker 模式，可轮询签名任务；默认仍保持 HMN_ENABLE_EXEC=0。" in result.stdout
 
 
 def test_node_worker_status_warns_for_incompatible_worker(tmp_path):
