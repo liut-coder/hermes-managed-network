@@ -318,6 +318,34 @@ def _latest_heartbeat_event(store: SQLiteStore, node_id: str):
     return None
 
 
+def _has_successful_heartbeat(store: SQLiteStore, node_id: str) -> bool:
+    return any(
+        event.event_type == "node"
+        and event.subject_id == node_id
+        and event.action == "heartbeat"
+        and event.outcome == "ok"
+        for event in store.list_audit_events()
+    )
+
+
+def _formal_node_status(store: SQLiteStore, node) -> str:
+    if node.status == "managed" and not _has_successful_heartbeat(store, node.node_id):
+        return "pending"
+    return node.status
+
+
+def _find_duplicate_join_node(store: SQLiteStore, request: JoinRequest):
+    request_addresses = {address for address in request.addresses if address}
+    for node in store.list_nodes():
+        if node.status == "revoked":
+            continue
+        if node.fingerprint == request.fingerprint:
+            return node
+        if node.hostname == request.hostname and request_addresses.intersection(node.addresses):
+            return node
+    return None
+
+
 def _heartbeat_label(age_seconds: int | None) -> str:
     if age_seconds is None:
         return "无"
@@ -457,7 +485,7 @@ def _console_node_response(store: SQLiteStore, node) -> ConsoleNodeResponse:
     return ConsoleNodeResponse(
         id=node.node_id,
         name=node.hostname,
-        status=node.status,
+        status=_formal_node_status(store, node),
         live=live,
         trust=node.trust_level,
         role=(node.labels[0] if node.labels else "node"),
@@ -1386,6 +1414,9 @@ def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFA
         token = store.load_token(request.token)
         if token is None:
             raise HTTPException(status_code=404, detail="join token not found")
+        duplicate = _find_duplicate_join_node(store, request)
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail=f"node already exists: {duplicate.node_id}")
         consumed = store.consume_token(request.token, node_fingerprint=request.fingerprint)
         if consumed is None:
             refreshed = store.load_token(request.token)

@@ -211,6 +211,118 @@ def test_join_endpoint_records_node_join_audit_event(tmp_path):
     )
 
 
+def test_join_endpoint_rejects_duplicate_fingerprint_without_consuming_token(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_existing",
+            fingerprint="sha256:same-machine",
+            hostname="existing-node",
+            addresses=["10.0.0.10"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe", "task"],
+        )
+    )
+    token = JoinTokenStore().create(trust_level="B", labels=["worker"])
+    store.save_token(token)
+    client = _auth_client(create_app(db))
+
+    response = client.post(
+        "/api/v1/join",
+        json={
+            "token": token.value,
+            "fingerprint": "sha256:same-machine",
+            "hostname": "duplicate-node",
+            "addresses": ["10.0.0.11"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "node already exists: node_existing"
+    assert store.load_token(token.value).status == "pending"
+    assert len(store.list_nodes()) == 1
+
+
+def test_join_endpoint_rejects_duplicate_hostname_and_address_without_consuming_token(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_existing_host_ip",
+            fingerprint="sha256:existing",
+            hostname="same-host",
+            addresses=["100.64.0.10", "10.0.0.10"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe", "task"],
+        )
+    )
+    token = JoinTokenStore().create(trust_level="B", labels=["worker"])
+    store.save_token(token)
+    client = _auth_client(create_app(db))
+
+    response = client.post(
+        "/api/v1/join",
+        json={
+            "token": token.value,
+            "fingerprint": "sha256:new-fingerprint",
+            "hostname": "same-host",
+            "addresses": ["10.0.0.10"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "node already exists: node_existing_host_ip"
+    assert store.load_token(token.value).status == "pending"
+    assert len(store.list_nodes()) == 1
+
+
+
+
+def test_join_endpoint_allows_rejoin_when_duplicate_match_is_revoked(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_revoked",
+            fingerprint="sha256:revoked-machine",
+            hostname="retired-host",
+            addresses=["10.0.0.20"],
+            trust_level="B",
+            labels=["worker"],
+            status="revoked",
+            permission_bundles=["observe"],
+        )
+    )
+    token = JoinTokenStore().create(trust_level="B", labels=["worker"])
+    store.save_token(token)
+    client = _auth_client(create_app(db))
+
+    response = client.post(
+        "/api/v1/join",
+        json={
+            "token": token.value,
+            "fingerprint": "sha256:revoked-machine",
+            "hostname": "retired-host",
+            "addresses": ["10.0.0.20"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "managed"
+    assert store.load_token(token.value).status == "used"
+    assert len(store.list_nodes()) == 2
+
 def test_console_join_policy_defaults_include_linux_target_os(tmp_path):
     client = _auth_client(create_app(tmp_path / "hmn.db"))
 
@@ -299,6 +411,18 @@ def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
             permission_bundles=["observe", "task"],
         )
     )
+    store.save_node(
+        Node(
+            node_id="node_waiting_heartbeat",
+            fingerprint="sha256:waiting",
+            hostname="waiting-heartbeat",
+            addresses=["100.64.0.12"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe", "task"],
+        )
+    )
     store.record_audit(
         event_type="node",
         subject_type="node",
@@ -343,43 +467,45 @@ def test_console_summary_endpoint_returns_nodes_tasks_and_approvals(tmp_path):
     data = response.json()
     assert data["metrics"] == {
         "online_nodes": 1,
-        "total_nodes": 1,
+        "total_nodes": 2,
         "managed_nodes": 1,
-        "pending_nodes": 0,
+        "pending_nodes": 1,
         "pending_approvals": 1,
         "running_tasks": 0,
     }
-    assert data["nodes"] == [
-        {
-            "id": "node_console",
-            "name": "console-node",
-            "status": "managed",
-            "live": "online",
-            "trust": "B",
-            "role": "worker",
-            "ip": "100.64.0.11",
-            "os": "Debian",
-            "uptime": "3h",
-            "cpu": 12,
-            "memory": 34,
-            "disk": 56,
-            "load": 0.42,
-            "hb": "刚刚",
-            "exec": True,
-            "runtime_profile": "full-worker",
-            "service_manager": "systemd",
-            "worker_mode": "unknown",
-            "task_policy": "poll-and-exec",
-            "worker_status_hint": "可在主控执行节点级状态检查命令",
-            "worker_status_command": "hmn node worker-status node_console",
-            "worker_install_hint": None,
-            "worker_install_command": None,
-            "uninstall_hint": None,
-            "uninstall_command": None,
-            "node_type_label": "Full worker",
-            "windows_beacon_only": False,
-        }
-    ]
+    assert len(data["nodes"]) == 2
+    assert data["nodes"][0] == {
+        "id": "node_console",
+        "name": "console-node",
+        "status": "managed",
+        "live": "online",
+        "trust": "B",
+        "role": "worker",
+        "ip": "100.64.0.11",
+        "os": "Debian",
+        "uptime": "3h",
+        "cpu": 12,
+        "memory": 34,
+        "disk": 56,
+        "load": 0.42,
+        "hb": "刚刚",
+        "exec": True,
+        "runtime_profile": "full-worker",
+        "service_manager": "systemd",
+        "worker_mode": "unknown",
+        "task_policy": "poll-and-exec",
+        "worker_status_hint": "可在主控执行节点级状态检查命令",
+        "worker_status_command": "hmn node worker-status node_console",
+        "worker_install_hint": None,
+        "worker_install_command": None,
+        "uninstall_hint": None,
+        "uninstall_command": None,
+        "node_type_label": "Full worker",
+        "windows_beacon_only": False,
+    }
+    assert data["nodes"][1]["id"] == "node_waiting_heartbeat"
+    assert data["nodes"][1]["status"] == "pending"
+    assert data["nodes"][1]["hb"] == "无"
     assert data["tasks"][0]["id"] == task.task_id
     assert data["tasks"][0]["status"] == "pending"
     assert data["approvals"][0]["id"] == approval.approval_id
@@ -543,6 +669,52 @@ def test_console_summary_exposes_windows_full_worker_metadata(tmp_path):
     assert node["worker_install_command"] == "hmn node install-heartbeat node_windows_full --service-manager windows-task --runtime full-worker"
     assert "全功能 Worker 安装脚本" in node["worker_install_hint"]
     assert node["uninstall_command"] == "hmn node uninstall-heartbeat node_windows_full --service-manager windows-task"
+
+
+
+def test_console_summary_keeps_formal_management_after_later_warn_heartbeat(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_once_ok",
+            fingerprint="sha256:once-ok",
+            hostname="once-ok-node",
+            addresses=["100.64.0.21"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe"],
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_once_ok",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_once_ok",
+        action="heartbeat",
+        outcome="warn",
+        details={"status": "warn", "facts": {}, "worker_compatible": False},
+    )
+    client = _auth_client(create_app(db))
+
+    response = client.get("/api/v1/console/summary")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["metrics"]["managed_nodes"] == 1
+    assert data["metrics"]["pending_nodes"] == 0
+    assert data["nodes"][0]["status"] == "managed"
+    assert data["nodes"][0]["live"] == "stale"
 
 
 def test_console_services_endpoint_returns_db_service_record_summaries(tmp_path):

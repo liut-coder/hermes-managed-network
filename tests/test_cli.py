@@ -960,7 +960,16 @@ def test_node_status_without_id_auto_selects_single_managed_node(tmp_path):
         ssh_user="ops",
         ssh_port=2222,
     )
-    SQLiteStore(db).save_node(node)
+    store = SQLiteStore(db)
+    store.save_node(node)
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_status",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
+    )
 
     result = runner.invoke(app, ["node", "status", "--db", str(db)])
 
@@ -1006,6 +1015,14 @@ def test_node_status_shows_last_ssh_check_from_doctor_audit(tmp_path, monkeypatc
         "hermes_managed_network.cli.subprocess.run",
         lambda command, **kwargs: SimpleNamespace(returncode=0, stdout="pong\n", stderr=""),
     )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_status_ssh",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
+    )
     runner.invoke(app, ["node", "doctor", "--db", str(db)])
 
     result = runner.invoke(app, ["node", "status", "--db", str(db)])
@@ -1020,7 +1037,8 @@ def test_node_status_shows_headscale_network_fields(tmp_path):
 
     runner = CliRunner()
     db = tmp_path / "hmn.db"
-    SQLiteStore(db).save_node(
+    store = SQLiteStore(db)
+    store.save_node(
         Node(
             node_id="node_status_network",
             fingerprint="fp-status-network",
@@ -1036,6 +1054,14 @@ def test_node_status_shows_headscale_network_fields(tmp_path):
             network_tags=["tag:worker", "tag:ssh"],
             network_online=True,
         )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_status_network",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
     )
 
     result = runner.invoke(app, ["node", "status", "--db", str(db)])
@@ -1144,8 +1170,9 @@ def test_node_status_without_id_prompts_when_multiple_managed_nodes(tmp_path):
 
     runner = CliRunner()
     db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
     for node_id, hostname in [("node_a", "a"), ("node_b", "b")]:
-        SQLiteStore(db).save_node(
+        store.save_node(
             Node(
                 node_id=node_id,
                 fingerprint=f"fp-{node_id}",
@@ -1156,6 +1183,14 @@ def test_node_status_without_id_prompts_when_multiple_managed_nodes(tmp_path):
                 status="managed",
             )
         )
+        store.record_audit(
+            event_type="node",
+            subject_type="node",
+            subject_id=node_id,
+            action="heartbeat",
+            outcome="ok",
+            details={"status": "ok", "facts": {}},
+        )
 
     result = runner.invoke(app, ["node", "status", "--db", str(db)], input="2\n")
 
@@ -1165,13 +1200,100 @@ def test_node_status_without_id_prompts_when_multiple_managed_nodes(tmp_path):
     assert "host: b" in result.stdout
 
 
+def test_node_status_auto_select_keeps_node_after_later_warn_heartbeat(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_once_ok_cli",
+            fingerprint="fp-once-ok-cli",
+            hostname="once-ok-cli-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_once_ok_cli",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {}},
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_once_ok_cli",
+        action="heartbeat",
+        outcome="warn",
+        details={"status": "warn", "facts": {}},
+    )
+
+    result = runner.invoke(app, ["node", "status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "自动选择 managed 节点: node_once_ok_cli" in result.stdout
+    assert "node: node_once_ok_cli" in result.stdout
+
+
+def test_node_status_auto_select_ignores_managed_without_first_heartbeat(tmp_path):
+    from hermes_managed_network.inventory import Node
+
+    runner = CliRunner()
+    db = tmp_path / "hmn.db"
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_real_managed",
+            fingerprint="fp-real",
+            hostname="real-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+        )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_real_managed",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {}},
+    )
+    store.save_node(
+        Node(
+            node_id="node_no_heartbeat",
+            fingerprint="fp-waiting",
+            hostname="waiting-node",
+            addresses=[],
+            trust_level="B",
+            labels=[],
+            status="managed",
+        )
+    )
+
+    result = runner.invoke(app, ["node", "status", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "自动选择 managed 节点: node_real_managed" in result.stdout
+    assert "node: node_real_managed" in result.stdout
+    assert "waiting-node" not in result.stdout
+
+
 def test_root_menu_can_show_node_status(tmp_path, monkeypatch):
     from hermes_managed_network.inventory import Node
 
     runner = CliRunner()
     db = tmp_path / "hmn.db"
     monkeypatch.setenv("HMN_DB", str(db))
-    SQLiteStore(db).save_node(
+    store = SQLiteStore(db)
+    store.save_node(
         Node(
             node_id="node_menu_status",
             fingerprint="fp",
@@ -1184,6 +1306,14 @@ def test_root_menu_can_show_node_status(tmp_path, monkeypatch):
             ssh_user="ops",
             ssh_port=2205,
         )
+    )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_menu_status",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"worker_protocol_version": "0.1"}, "worker_compatible": True},
     )
 
     result = runner.invoke(app, [], input="4\n")

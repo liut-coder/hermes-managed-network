@@ -2324,7 +2324,26 @@ def confirm_node(
     typer.echo(f"confirmed {updated.node_id}")
 
 
-def _select_managed_node(store: SQLiteStore, node_id: str | None):
+def _has_successful_heartbeat(store: SQLiteStore, node_id: str) -> bool:
+    return any(
+        event.event_type == "node"
+        and event.subject_id == node_id
+        and event.action == "heartbeat"
+        and event.outcome == "ok"
+        for event in store.list_audit_events()
+    )
+
+
+def _is_formally_managed(store: SQLiteStore, node) -> bool:
+    return node.status == "managed" and _has_successful_heartbeat(store, node.node_id)
+
+
+def _select_managed_node(
+    store: SQLiteStore,
+    node_id: str | None,
+    *,
+    require_successful_heartbeat: bool = False,
+):
     if node_id is not None:
         node = store.load_node(node_id)
         if node is None:
@@ -2332,12 +2351,17 @@ def _select_managed_node(store: SQLiteStore, node_id: str | None):
             raise typer.Exit(1)
         return node
     managed_nodes = [node for node in store.list_nodes() if node.status == "managed"]
+    if require_successful_heartbeat:
+        managed_nodes = [node for node in managed_nodes if _is_formally_managed(store, node)]
     if len(managed_nodes) == 1:
         node = managed_nodes[0]
         typer.echo(f"自动选择 managed 节点: {node.node_id} ({node.hostname})")
         return node
     if not managed_nodes:
-        typer.echo("没有 managed 节点。请先执行 hmn node confirm。")
+        if require_successful_heartbeat:
+            typer.echo("没有已完成首个有效 heartbeat 的 managed 节点。请先完成节点心跳。")
+        else:
+            typer.echo("没有 managed 节点。请先执行 hmn node confirm。")
         raise typer.Exit(1)
     typer.echo("有多个 managed 节点，请选择：")
     for index, node in enumerate(managed_nodes, start=1):
@@ -2437,7 +2461,7 @@ def status_node(
     now: str | None = typer.Option(None, "--now", help="测试/排障用：指定当前时间 ISO8601"),
 ) -> None:
     store = _store(db)
-    node = _select_managed_node(store, node_id)
+    node = _select_managed_node(store, node_id, require_successful_heartbeat=True)
     liveness = _node_liveness(store, node.node_id, now=_parse_now(now))
     event = _latest_heartbeat_event(store, node.node_id)
     facts = event.details.get("facts", {}) if event else {}
