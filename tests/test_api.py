@@ -717,23 +717,97 @@ def test_console_summary_keeps_formal_management_after_later_warn_heartbeat(tmp_
     assert data["nodes"][0]["live"] == "stale"
 
 
-def test_console_services_endpoint_returns_db_service_record_summaries(tmp_path):
+def test_console_summary_uses_direct_heartbeat_lookup_instead_of_full_audit_scan(tmp_path, monkeypatch):
+    from hermes_managed_network.inventory import Node
+
     db = tmp_path / "hmn.db"
-    SQLiteStore(db).save_service_record(
-        ServiceRecord(
-            service_id="node-api:docker:web",
-            name="API Web",
-            node_id="node-api",
-            kind="docker",
-            runtime="nginx",
-            domains=["api.example.com"],
-            ports=[443],
-            monitor_enabled=True,
-            docs_path="service/api-web.md",
-            source="discovery",
-            status="active",
+    store = SQLiteStore(db)
+    store.save_node(
+        Node(
+            node_id="node_fast_summary",
+            fingerprint="sha256:fast-summary",
+            hostname="fast-summary-node",
+            addresses=["100.64.0.31"],
+            trust_level="B",
+            labels=["worker"],
+            status="managed",
+            permission_bundles=["observe", "task"],
         )
     )
+    store.record_audit(
+        event_type="node",
+        subject_type="node",
+        subject_id="node_fast_summary",
+        action="heartbeat",
+        outcome="ok",
+        details={"status": "ok", "facts": {"os": "Debian", "exec_enabled": True}, "worker_compatible": True},
+    )
+    client = _auth_client(create_app(db))
+
+    def fail_list_audit_events(self):
+        raise AssertionError("console summary should not scan full audit_events table")
+
+    monkeypatch.setattr(SQLiteStore, "list_audit_events", fail_list_audit_events)
+
+    response = client.get("/api/v1/console/summary")
+
+    assert response.status_code == 200
+    assert response.json()["nodes"][0]["id"] == "node_fast_summary"
+
+
+def test_console_services_endpoint_returns_kuma_monitor_summaries(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = tmp_path / "hmn.db"
+    kuma_db = tmp_path / "kuma.db"
+    con = sqlite3.connect(kuma_db)
+    con.executescript(
+        '''
+        CREATE TABLE monitor (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(150),
+            active BOOLEAN NOT NULL DEFAULT 1,
+            url TEXT,
+            type VARCHAR(20),
+            keyword VARCHAR(255),
+            hostname VARCHAR(255),
+            port INTEGER,
+            description TEXT,
+            parent INTEGER
+        );
+        CREATE TABLE "group" (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            public BOOLEAN NOT NULL DEFAULT 0,
+            active BOOLEAN NOT NULL DEFAULT 1,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            status_page_id INTEGER
+        );
+        CREATE TABLE monitor_group (
+            id INTEGER PRIMARY KEY,
+            monitor_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            send_url BOOLEAN NOT NULL DEFAULT 0
+        );
+        '''
+    )
+    con.execute(
+        'INSERT INTO "group" (id, name, status_page_id) VALUES (1, ?, 1)',
+        ("自动发现服务",),
+    )
+    con.execute(
+        "INSERT INTO monitor (id, name, active, url, type, keyword, description, parent) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+        (7, "API Web", 1, "https://api.example.com/healthz", "keyword", "ok", "autodiscover"),
+    )
+    con.execute(
+        "INSERT INTO monitor_group (monitor_id, group_id, weight, send_url) VALUES (?, ?, ?, ?)",
+        (7, 1, 900, 1),
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setenv("HMN_KUMA_DB", str(kuma_db))
     client = _auth_client(create_app(db))
 
     response = client.get("/api/v1/console/services")
@@ -742,47 +816,131 @@ def test_console_services_endpoint_returns_db_service_record_summaries(tmp_path)
     data = response.json()
     assert data["services"] == [
         {
-            "service_id": "node-api:docker:web",
+            "service_id": "kuma:7",
             "name": "API Web",
-            "node_id": "node-api",
-            "kind": "docker",
-            "runtime": "",
+            "node_id": "uptime-kuma",
+            "kind": "keyword",
+            "runtime": "uptime-kuma",
             "domains": ["api.example.com"],
             "ports": [443],
             "status": "active",
             "monitor_enabled": True,
-            "docs_path": "service/api-web.md",
-            "source": "discovery",
-            "business_category": "未分类",
+            "docs_path": "",
+            "source": "uptime-kuma",
+            "business_category": "自动发现服务",
             "asset_category": "main",
-            "asset_score": 43,
+            "asset_score": 100,
             "why_asset": [
-                "1 domain(s)",
-                "1 exposed port(s)",
-                "monitoring enabled",
-                "discovered source=discovery",
+                "Uptime Kuma monitor #7",
+                "group: 自动发现服务",
+                "active monitor",
+                "keyword check",
             ],
-            "summary": "API Web · api.example.com · ports 443",
-            "deployment_type": "",
-            "project_name": "",
-            "business_name": "",
-            "business_purpose": "",
-            "public_exposed": False,
+            "summary": "API Web · https://api.example.com/healthz",
+            "deployment_type": "uptime-kuma",
+            "project_name": "自动发现服务",
+            "business_name": "API Web",
+            "business_purpose": "可用性监控",
+            "public_exposed": True,
             "backup_status": "unknown",
-            "tags": [],
+            "tags": ["uptime-kuma", "keyword"],
         }
     ]
     assert data["business_groups"] == [
         {
-            "category": "未分类",
+            "category": "自动发现服务",
             "count": 1,
             "services": data["services"],
         }
     ]
     assert data["pending_discoveries"] == []
     assert data["system_assets"] == []
-    assert data["sheet"]["service_id"] == "node-api:docker:web"
+    assert data["sheet"]["service_id"] == "kuma:7"
     assert data["create_dialog"]["title"] == "新增服务资产"
+
+
+def test_console_services_endpoint_returns_empty_when_kuma_db_missing(tmp_path, monkeypatch):
+    db = tmp_path / "hmn.db"
+    monkeypatch.setenv("HMN_KUMA_DB", str(tmp_path / "missing-kuma.db"))
+    client = _auth_client(create_app(db))
+
+    response = client.get("/api/v1/console/services")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["services"] == []
+    assert data["business_groups"] == []
+    assert data["pending_discoveries"] == []
+    assert data["system_assets"] == []
+    assert data["sheet"]["service_id"] is None
+
+
+def test_console_services_endpoint_prefers_highest_weight_group_per_monitor(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = tmp_path / "hmn.db"
+    kuma_db = tmp_path / "kuma.db"
+    con = sqlite3.connect(kuma_db)
+    con.executescript(
+        '''
+        CREATE TABLE monitor (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(150),
+            active BOOLEAN NOT NULL DEFAULT 1,
+            url TEXT,
+            type VARCHAR(20),
+            keyword VARCHAR(255),
+            hostname VARCHAR(255),
+            port INTEGER,
+            description TEXT,
+            parent INTEGER
+        );
+        CREATE TABLE "group" (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            public BOOLEAN NOT NULL DEFAULT 0,
+            active BOOLEAN NOT NULL DEFAULT 1,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            status_page_id INTEGER
+        );
+        CREATE TABLE monitor_group (
+            id INTEGER PRIMARY KEY,
+            monitor_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            send_url BOOLEAN NOT NULL DEFAULT 0
+        );
+        '''
+    )
+    con.execute('INSERT INTO "group" (id, name, status_page_id) VALUES (1, ?, 1)', ("核心服务 SLA",))
+    con.execute('INSERT INTO "group" (id, name, status_page_id) VALUES (2, ?, 1)', ("自动发现服务",))
+    con.execute(
+        "INSERT INTO monitor (id, name, active, url, type, keyword, description, parent) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+        (7, "API Web", 1, "https://api.example.com/healthz", "keyword", "ok", "autodiscover"),
+    )
+    con.execute('INSERT INTO monitor_group (monitor_id, group_id, weight, send_url) VALUES (7, 1, 2000, 1)')
+    con.execute('INSERT INTO monitor_group (monitor_id, group_id, weight, send_url) VALUES (7, 2, 1500, 1)')
+    con.commit()
+    con.close()
+    monkeypatch.setenv("HMN_KUMA_DB", str(kuma_db))
+    client = _auth_client(create_app(db))
+
+    response = client.get("/api/v1/console/services")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["services"]) == 1
+    assert data["services"][0]["service_id"] == "kuma:7"
+    assert data["services"][0]["business_category"] == "核心服务 SLA"
+    assert data["services"][0]["project_name"] == "核心服务 SLA"
+    assert data["business_groups"] == [
+        {
+            "category": "核心服务 SLA",
+            "count": 1,
+            "services": data["services"],
+        }
+    ]
 
 
 def test_control_plane_serves_join_script(tmp_path):

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from hermes_managed_network.api import SESSION_COOKIE_NAME, create_app
 from hermes_managed_network.inventory import Node
-from hermes_managed_network.storage import SQLiteStore, ServiceRecord
+from hermes_managed_network.storage import SQLiteStore
 
 
 TEST_WEB_SECRET = "test-web-secret"
@@ -40,11 +40,93 @@ def _managed_node(store: SQLiteStore, node_id: str = "node_web") -> Node:
     return node
 
 
+def _write_kuma_db(kuma_db, monitors: list[dict]) -> None:
+    import sqlite3
+
+    con = sqlite3.connect(kuma_db)
+    con.executescript(
+        '''
+        CREATE TABLE monitor (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(150),
+            active BOOLEAN NOT NULL DEFAULT 1,
+            url TEXT,
+            type VARCHAR(20),
+            keyword VARCHAR(255),
+            hostname VARCHAR(255),
+            port INTEGER,
+            description TEXT,
+            parent INTEGER
+        );
+        CREATE TABLE "group" (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            public BOOLEAN NOT NULL DEFAULT 0,
+            active BOOLEAN NOT NULL DEFAULT 1,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            status_page_id INTEGER
+        );
+        CREATE TABLE monitor_group (
+            id INTEGER PRIMARY KEY,
+            monitor_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            send_url BOOLEAN NOT NULL DEFAULT 0
+        );
+        '''
+    )
+    group_ids: dict[str, int] = {}
+    next_group_id = 1
+    for monitor in monitors:
+        for group_name, _weight in monitor.get("groups", []):
+            if group_name not in group_ids:
+                group_ids[group_name] = next_group_id
+                con.execute('INSERT INTO "group" (id, name, status_page_id) VALUES (?, ?, 1)', (next_group_id, group_name))
+                next_group_id += 1
+    for monitor in monitors:
+        con.execute(
+            'INSERT INTO monitor (id, name, active, url, type, keyword, hostname, port, description, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+            (
+                monitor["id"],
+                monitor["name"],
+                monitor.get("active", 1),
+                monitor.get("url"),
+                monitor.get("type", "http"),
+                monitor.get("keyword"),
+                monitor.get("hostname"),
+                monitor.get("port"),
+                monitor.get("description", ""),
+            ),
+        )
+        for group_name, weight in monitor.get("groups", []):
+            con.execute(
+                'INSERT INTO monitor_group (monitor_id, group_id, weight, send_url) VALUES (?, ?, ?, 1)',
+                (monitor["id"], group_ids[group_name], weight),
+            )
+    con.commit()
+    con.close()
+
+
 def test_root_dashboard_links_all_control_flows(tmp_path):
     db = tmp_path / "hmn.db"
+    kuma_db = tmp_path / "kuma.db"
+    _write_kuma_db(
+        kuma_db,
+        [
+            {
+                "id": 1,
+                "name": "Portal",
+                "url": "https://portal.example.com",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("业务监控", 1000)],
+            }
+        ],
+    )
+    os.environ["HMN_KUMA_DB"] = str(kuma_db)
     store = SQLiteStore(db)
     _managed_node(store)
-    store.save_service_record(ServiceRecord(service_id="svc_web", name="Web", node_id="node_web", ports=[443]))
     store.create_task(node_id="node_web", command="uptime", risk="low", created_by="test")
     store.create_approval_request(
         subject_type="task",
@@ -63,20 +145,32 @@ def test_root_dashboard_links_all_control_flows(tmp_path):
     for href in ["/nodes", "/services", "/tasks", "/approvals", "/docs", "/audit", "/components", "/network", "/backups"]:
         assert f'href="{href}"' in response.text
     assert "node_web-host" in response.text
-    assert "Web" in response.text
+    assert "Portal" in response.text
 
 
 def test_nodes_services_docs_and_audit_pages_render_current_state(tmp_path):
     db = tmp_path / "hmn.db"
+    kuma_db = tmp_path / "kuma.db"
+    _write_kuma_db(
+        kuma_db,
+        [
+            {
+                "id": 1,
+                "name": "Web",
+                "url": "https://web.example.com",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("业务监控", 1000)],
+            }
+        ],
+    )
+    os.environ["HMN_KUMA_DB"] = str(kuma_db)
     docs_root = tmp_path / "files"
     (docs_root / "service").mkdir(parents=True)
     (docs_root / "docs" / "server").mkdir(parents=True)
     (docs_root / "service" / "web.md").write_text("# Web Service\nsecret=hidden?\n", encoding="utf-8")
     store = SQLiteStore(db)
     _managed_node(store)
-    store.save_service_record(
-        ServiceRecord(service_id="svc_web", name="Web", node_id="node_web", ports=[443], docs_path="service/web.md")
-    )
     store.record_audit(
         event_type="service",
         subject_type="service",
@@ -250,62 +344,202 @@ def test_component_network_and_backup_web_flows_create_dry_run_or_approval_recor
     assert "ACL" in client.get("/network").text
     assert "恢复" in client.get("/backups").text
 
+def test_services_console_groups_kuma_business_and_system_assets(tmp_path, monkeypatch):
+    import sqlite3
 
-def test_service_assets_page_groups_business_pending_and_system_assets(tmp_path):
     db = tmp_path / "hmn.db"
     store = SQLiteStore(db)
     _managed_node(store)
-    store.save_service_record(
-        ServiceRecord(
-            service_id="svc_portal",
-            name="客户门户",
-            node_id="node_web",
-            kind="web",
-            ports=[443],
-            source="manual",
-            status="active",
-            metadata={"business_category": "客户体验"},
-        )
+    kuma_db = tmp_path / "kuma.db"
+    con = sqlite3.connect(kuma_db)
+    con.executescript(
+        '''
+        CREATE TABLE monitor (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(150),
+            active BOOLEAN NOT NULL DEFAULT 1,
+            url TEXT,
+            type VARCHAR(20),
+            keyword VARCHAR(255),
+            hostname VARCHAR(255),
+            port INTEGER,
+            description TEXT,
+            parent INTEGER
+        );
+        CREATE TABLE "group" (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            public BOOLEAN NOT NULL DEFAULT 0,
+            active BOOLEAN NOT NULL DEFAULT 1,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            status_page_id INTEGER
+        );
+        CREATE TABLE monitor_group (
+            id INTEGER PRIMARY KEY,
+            monitor_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            weight INTEGER NOT NULL DEFAULT 1000,
+            send_url BOOLEAN NOT NULL DEFAULT 0
+        );
+        '''
     )
-    store.save_service_record(
-        ServiceRecord(
-            service_id="svc_pending",
-            name="待确认 Redis",
-            node_id="node_web",
-            kind="cache",
-            ports=[6379],
-            source="discovery",
-            status="discovered",
-            metadata={"business_category": "基础设施"},
-        )
+    con.execute('INSERT INTO "group" (id, name, status_page_id) VALUES (1, ?, 1)', ("业务监控",))
+    con.execute(
+        'INSERT INTO monitor (id, name, active, url, type, keyword, description, parent) VALUES (1, ?, 1, ?, ?, NULL, ?, NULL)',
+        ("Portal", "https://portal.example.com", "http", "manual monitor"),
     )
-    store.save_service_record(
-        ServiceRecord(
-            service_id="svc_system",
-            name="系统监控",
-            node_id="node_web",
-            kind="system",
-            ports=[9090],
-            source="system",
-            status="active",
-            metadata={"business_category": "平台"},
-        )
+    con.execute(
+        'INSERT INTO monitor (id, name, active, url, type, keyword, description, parent) VALUES (2, ?, 1, ?, ?, NULL, ?, NULL)',
+        ("系统监控", "http://127.0.0.1:9090/metrics", "http", "system monitor"),
     )
+    con.execute('INSERT INTO monitor_group (monitor_id, group_id, weight, send_url) VALUES (1, 1, 1000, 1)')
+    con.commit()
+    con.close()
+    monkeypatch.setenv("HMN_KUMA_DB", str(kuma_db))
     client = _auth_client(create_app(db))
 
     response = client.get("/api/v1/console/services")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["business_groups"][0]["category"] == "客户体验"
-    assert body["business_groups"][0]["services"][0]["service_id"] == "svc_portal"
-    assert body["pending_discoveries"][0]["service_id"] == "svc_pending"
-    assert body["system_assets"][0]["service_id"] == "svc_system"
-    assert body["sheet"]["service_id"] == "svc_portal"
+    assert body["business_groups"][0]["category"] == "业务监控"
+    assert body["business_groups"][0]["services"][0]["service_id"] == "kuma:1"
+    assert body["pending_discoveries"] == []
+    assert body["system_assets"][0]["service_id"] == "kuma:2"
+    assert body["sheet"]["service_id"] == "kuma:1"
     assert body["create_dialog"]["defaults"]["source"] == "manual"
 
     html = client.get("/services").text
-    assert "客户体验" in html
-    assert "待确认发现项" in html
-    assert "系统资产" in html
+    assert "Portal" in html
+    assert "系统监控" in html
     assert "data-services-payload" in html
+
+
+def test_services_console_deduplicates_multi_group_kuma_monitors(tmp_path, monkeypatch):
+    db = tmp_path / "hmn.db"
+    kuma_db = tmp_path / "kuma.db"
+    _write_kuma_db(
+        kuma_db,
+        [
+            {
+                "id": 1,
+                "name": "Portal",
+                "url": "https://portal.example.com",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("核心服务 SLA", 2000), ("自动发现服务", 1500)],
+            }
+        ],
+    )
+    monkeypatch.setenv("HMN_KUMA_DB", str(kuma_db))
+    client = _auth_client(create_app(db))
+
+    response = client.get("/api/v1/console/services")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["services"]) == 1
+    assert body["services"][0]["business_category"] == "核心服务 SLA"
+    assert body["business_groups"] == [
+        {
+            "category": "核心服务 SLA",
+            "count": 1,
+            "services": body["services"],
+        }
+    ]
+
+    html = client.get("/").text
+    assert "Portal" in html
+    assert "服务 1" in html
+
+
+def test_services_page_renders_only_machine_grouping_without_business_sections(tmp_path, monkeypatch):
+    db = tmp_path / "hmn.db"
+    kuma_db = tmp_path / "kuma.db"
+    _write_kuma_db(
+        kuma_db,
+        [
+            {
+                "id": 1,
+                "name": "文件中心",
+                "url": "https://file.misk.cc",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("核心服务 SLA", 1000)],
+            },
+            {
+                "id": 2,
+                "name": "模型代理",
+                "url": "https://cpa.misk.cc",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("自动发现服务", 1000)],
+            },
+        ],
+    )
+    monkeypatch.setenv("HMN_KUMA_DB", str(kuma_db))
+    client = _auth_client(create_app(db))
+
+    response = client.get("/services")
+
+    assert response.status_code == 200
+    assert "机器视图" in response.text
+    assert "file.misk.cc" in response.text
+    assert "cpa.misk.cc" in response.text
+    assert "/services/nodes/file.misk.cc" in response.text
+    assert "/services/nodes/cpa.misk.cc" in response.text
+    assert "data-services-payload" in response.text
+    assert "<h2>核心服务 SLA</h2>" not in response.text
+    assert "<h2>自动发现服务</h2>" not in response.text
+    assert "<h2>待确认发现项</h2>" not in response.text
+    assert "分组：" not in response.text
+
+
+def test_services_node_detail_page_lists_only_that_machine_assets(tmp_path, monkeypatch):
+    db = tmp_path / "hmn.db"
+    kuma_db = tmp_path / "kuma.db"
+    _write_kuma_db(
+        kuma_db,
+        [
+            {
+                "id": 1,
+                "name": "文件中心",
+                "url": "https://file.misk.cc",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("核心服务 SLA", 1000)],
+            },
+            {
+                "id": 2,
+                "name": "文件中心管理后台",
+                "url": "https://file.misk.cc/admin",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("核心服务 SLA", 1000)],
+            },
+            {
+                "id": 3,
+                "name": "模型代理",
+                "url": "https://cpa.misk.cc",
+                "type": "http",
+                "description": "manual monitor",
+                "groups": [("自动发现服务", 1000)],
+            },
+        ],
+    )
+    monkeypatch.setenv("HMN_KUMA_DB", str(kuma_db))
+    client = _auth_client(create_app(db))
+
+    response = client.get("/services/nodes/file.misk.cc")
+
+    assert response.status_code == 200
+    assert "file.misk.cc" in response.text
+    assert "文件中心" in response.text
+    assert "文件中心管理后台" in response.text
+    assert "模型代理" not in response.text
+    assert "返回机器视图" in response.text
+    assert "data-services-payload" in response.text
+
+    missing = client.get("/services/nodes/not-found.example")
+    assert missing.status_code == 404

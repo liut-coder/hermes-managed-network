@@ -494,6 +494,14 @@ class SQLiteStore:
                     decided_at TEXT
                 );
 
+                CREATE INDEX IF NOT EXISTS idx_audit_events_node_heartbeat
+                ON audit_events(subject_id, action, created_at DESC, id DESC)
+                WHERE event_type = 'node' AND subject_type = 'node' AND action = 'heartbeat';
+
+                CREATE INDEX IF NOT EXISTS idx_audit_events_node_heartbeat_ok
+                ON audit_events(subject_id, outcome, created_at DESC, id DESC)
+                WHERE event_type = 'node' AND subject_type = 'node' AND action = 'heartbeat' AND outcome = 'ok';
+
                 CREATE TABLE IF NOT EXISTS notifications (
                     notification_id TEXT PRIMARY KEY,
                     channel TEXT NOT NULL,
@@ -790,23 +798,60 @@ class SQLiteStore:
             )
         return event
 
+    def _audit_event_from_row(self, row: sqlite3.Row | None) -> AuditEvent | None:
+        if row is None:
+            return None
+        return AuditEvent(
+            event_type=row["event_type"],
+            subject_type=row["subject_type"],
+            subject_id=row["subject_id"],
+            action=row["action"],
+            outcome=row["outcome"],
+            details=json.loads(row["details_json"]),
+            created_at=_parse_dt(row["created_at"]),
+        )
+
     def list_audit_events(self) -> list[AuditEvent]:
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT event_type, subject_type, subject_id, action, outcome, details_json, created_at FROM audit_events ORDER BY id"
             ).fetchall()
-        return [
-            AuditEvent(
-                event_type=row["event_type"],
-                subject_type=row["subject_type"],
-                subject_id=row["subject_id"],
-                action=row["action"],
-                outcome=row["outcome"],
-                details=json.loads(row["details_json"]),
-                created_at=_parse_dt(row["created_at"]),
-            )
-            for row in rows
-        ]
+        return [self._audit_event_from_row(row) for row in rows if self._audit_event_from_row(row) is not None]
+
+    def latest_node_heartbeat_event(self, node_id: str) -> AuditEvent | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT event_type, subject_type, subject_id, action, outcome, details_json, created_at
+                FROM audit_events
+                WHERE event_type = ?
+                  AND subject_type = ?
+                  AND subject_id = ?
+                  AND action = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                ("node", "node", node_id, "heartbeat"),
+            ).fetchone()
+        return self._audit_event_from_row(row)
+
+    def has_successful_node_heartbeat(self, node_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM audit_events
+                WHERE event_type = ?
+                  AND subject_type = ?
+                  AND subject_id = ?
+                  AND action = ?
+                  AND outcome = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                ("node", "node", node_id, "heartbeat", "ok"),
+            ).fetchone()
+        return row is not None
 
     def latest_node_heartbeat_facts(self, node_id: str) -> dict[str, Any]:
         with self.connect() as conn:
@@ -2201,5 +2246,25 @@ class SQLiteStore:
 
     def list_nodes(self) -> list[Node]:
         with self.connect() as conn:
-            rows = conn.execute("SELECT node_id FROM nodes ORDER BY hostname").fetchall()
-        return [node for row in rows if (node := self.load_node(row["node_id"])) is not None]
+            rows = conn.execute("SELECT * FROM nodes ORDER BY hostname").fetchall()
+        return [
+            Node(
+                node_id=row["node_id"],
+                fingerprint=row["fingerprint"],
+                hostname=row["hostname"],
+                addresses=json.loads(row["addresses_json"]),
+                trust_level=row["trust_level"],
+                labels=json.loads(row["labels_json"]),
+                status=row["status"],
+                permission_bundles=json.loads(row["permission_bundles_json"]) if "permission_bundles_json" in row.keys() else [],
+                ssh_host=row["ssh_host"] if "ssh_host" in row.keys() else "",
+                ssh_user=row["ssh_user"] if "ssh_user" in row.keys() else "",
+                ssh_port=int(row["ssh_port"]) if "ssh_port" in row.keys() and row["ssh_port"] is not None else 22,
+                network_provider=row["network_provider"] if "network_provider" in row.keys() else "",
+                network_node_id=row["network_node_id"] if "network_node_id" in row.keys() else "",
+                network_ip=row["network_ip"] if "network_ip" in row.keys() else "",
+                network_tags=json.loads(row["network_tags_json"]) if "network_tags_json" in row.keys() else [],
+                network_online=bool(row["network_online"]) if "network_online" in row.keys() else False,
+            )
+            for row in rows
+        ]

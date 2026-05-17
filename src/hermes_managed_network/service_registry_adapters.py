@@ -6,7 +6,7 @@ from .storage import ServiceRecord as StorageServiceRecord
 
 
 def registry_from_storage_records(records: list[StorageServiceRecord]) -> ServiceRegistry:
-    """Build the shared service registry view from persisted DB service records."""
+    """Build a ServiceRegistry view from persisted HMN SQLite services rows."""
     return ServiceRegistry([service_record_from_storage(record) for record in records])
 
 

@@ -1751,7 +1751,7 @@ def docs_sync_plan(
     service_doc_root: Path = typer.Option(DEFAULT_SERVICE_DOC_ROOT, "--service-doc-root", help="服务文档根目录"),
     rename_host: list[str] = typer.Option([], "--rename-host", help="主机改名映射 OLD=NEW，可重复"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
-    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 HMN services 表读取"),
 ) -> None:
     """生成 docs-center 同步 dry-run 计划，不写入 /srv/files。"""
     try:
@@ -2017,7 +2017,7 @@ def uptime_sync(
 @deploy_app.command("plan")
 def deploy_plan(
     service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
-    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 HMN services 表读取"),
     provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
     service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
@@ -2042,7 +2042,7 @@ def deploy_plan(
 @deploy_app.command("status")
 def deploy_status(
     service_registry: Path = typer.Option(Path("service-registry.json"), "--service-registry", help="服务登记 JSON 路径"),
-    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 DB service records 读取"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径；提供后从 HMN services 表读取"),
     provider_fixture_dir: Path | None = typer.Option(None, "--provider-fixture-dir", help="provider fixture 目录"),
     service_id: str | None = typer.Option(None, "--service-id", help="只输出指定服务"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
@@ -2247,7 +2247,7 @@ def service_show(service_id: str, db: Path = typer.Option(None, "--db", help="SQ
 def service_coolify_sync(
     fixture: Path = typer.Option(..., "--fixture", help="Coolify fixture JSON 路径"),
     db: Path = typer.Option(None, "--db", help="SQLite 数据库路径"),
-    apply: bool = typer.Option(False, "--apply", help="写入 HMN service registry 并记录审计"),
+    apply: bool = typer.Option(False, "--apply", help="写入 HMN services 表并记录审计"),
     json_output: bool = typer.Option(False, "--json", help="输出 JSON"),
 ) -> None:
     store = _store(db)

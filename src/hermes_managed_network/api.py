@@ -27,6 +27,7 @@ from .network_base import NetworkProviderError
 from .version import current_version_info, is_worker_compatible
 from .web_console import register_web_console
 from .platforms import classify_capabilities, probe_from_facts
+from .kuma_assets import DEFAULT_KUMA_DB, load_kuma_service_assets
 
 DEFAULT_DB = Path("~/.hmn/control-plane.db").expanduser()
 DEFAULT_DOCS_ROOT = Path("/srv/files")
@@ -312,20 +313,11 @@ def _iso(value: object) -> str:
 
 
 def _latest_heartbeat_event(store: SQLiteStore, node_id: str):
-    for event in reversed(store.list_audit_events()):
-        if event.event_type == "node" and event.subject_id == node_id and event.action == "heartbeat":
-            return event
-    return None
+    return store.latest_node_heartbeat_event(node_id)
 
 
 def _has_successful_heartbeat(store: SQLiteStore, node_id: str) -> bool:
-    return any(
-        event.event_type == "node"
-        and event.subject_id == node_id
-        and event.action == "heartbeat"
-        and event.outcome == "ok"
-        for event in store.list_audit_events()
-    )
+    return store.has_successful_node_heartbeat(node_id)
 
 
 def _formal_node_status(store: SQLiteStore, node) -> str:
@@ -1228,66 +1220,42 @@ def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFA
         path = _docs_file(doc_path)
         return HTMLResponse(_render_markdown_viewer(doc_path, path.read_text(encoding="utf-8")))
 
-    def _service_business_category(service) -> str:
-        metadata = service.metadata or {}
-        for key in ("business_category", "business", "category", "biz_category"):
-            value = metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return "未分类"
-
-    def _service_asset_category(service) -> str:
-        metadata = service.metadata or {}
-        value = metadata.get("asset_category") or getattr(service, "asset_category", "")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        if service.source == "system" or service.kind in {"system", "platform", "infra"}:
-            return "system"
-        if service.source == "discovery" or service.status in {"discovered", "pending", "pending_review"}:
-            return "pending"
-        return "main"
-
-    def _service_asset_score(service) -> int:
-        metadata = service.metadata or {}
-        value = metadata.get("asset_score") or getattr(service, "asset_score", 0)
-        return int(value) if isinstance(value, (int, float, str)) and str(value).lstrip("-").isdigit() else 0
-
-    def _service_why_asset(service) -> list[str]:
-        metadata = service.metadata or {}
-        value = metadata.get("why_asset") or getattr(service, "why_asset", [])
-        return [str(item) for item in value] if isinstance(value, list) else []
-
-    def _service_summary(service) -> str:
-        parts = [service.name]
-        if service.domains:
-            parts.append(", ".join(service.domains))
-        if service.ports:
-            parts.append("ports " + ",".join(map(str, service.ports)))
-        return " · ".join(parts)
-
-    def _service_response(service) -> ConsoleServiceResponse:
-        return ConsoleServiceResponse(
-            service_id=service.service_id,
-            name=service.name,
-            node_id=service.node_id,
-            kind=service.kind,
-            domains=list(service.domains),
-            ports=list(service.ports),
-            status=service.status,
-            monitor_enabled=service.monitor_enabled,
-            docs_path=service.docs_path,
-            source=service.source,
-            business_category=_service_business_category(service),
-            asset_category=_service_asset_category(service),
-            asset_score=_service_asset_score(service),
-            why_asset=_service_why_asset(service),
-            summary=_service_summary(service),
-        )
+    def _kuma_assets() -> list[ConsoleServiceResponse]:
+        db_path = Path(os.environ.get("HMN_KUMA_DB", str(DEFAULT_KUMA_DB))).expanduser()
+        assets = load_kuma_service_assets(db_path)
+        return [
+            ConsoleServiceResponse(
+                service_id=asset.service_id,
+                name=asset.name,
+                node_id=asset.node_id,
+                kind=asset.kind,
+                runtime=asset.runtime,
+                domains=list(asset.domains),
+                ports=list(asset.ports),
+                status=asset.status,
+                monitor_enabled=asset.monitor_enabled,
+                docs_path=asset.docs_path,
+                source=asset.source,
+                business_category=asset.business_category,
+                asset_category=asset.asset_category,
+                asset_score=asset.asset_score,
+                why_asset=list(asset.why_asset),
+                summary=asset.summary,
+                deployment_type=asset.deployment_type,
+                project_name=asset.project_name,
+                business_name=asset.business_name,
+                business_purpose=asset.business_purpose,
+                public_exposed=asset.public_exposed,
+                backup_status=asset.backup_status,
+                tags=list(asset.tags),
+            )
+            for asset in assets
+        ]
 
     @app.get("/api/v1/console/services", response_model=ConsoleServicesResponse)
     def console_services(request: Request) -> ConsoleServicesResponse:
         _require_session(request)
-        services = [_service_response(service) for service in store.list_service_records()]
+        services = _kuma_assets()
         business_groups_map: dict[str, list[ConsoleServiceResponse]] = {}
         pending_discoveries: list[ConsoleServiceResponse] = []
         system_assets: list[ConsoleServiceResponse] = []
@@ -1324,7 +1292,7 @@ def create_app(db_path: str | Path = DEFAULT_DB, *, docs_root: str | Path = DEFA
             options={
                 "business_categories": [group.category for group in business_groups] or ["未分类"],
                 "asset_categories": ["main", "pending", "system"],
-                "sources": ["manual", "discovery", "system"],
+                "sources": ["manual", "uptime-kuma", "system"],
             },
         )
         return ConsoleServicesResponse(

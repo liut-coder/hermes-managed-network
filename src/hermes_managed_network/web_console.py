@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from html import escape
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import markdown
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -12,6 +14,7 @@ from pydantic import BaseModel
 
 from .components import ComponentRegistry
 from .storage import ApprovalRequest, AuditEvent, SQLiteStore, Task
+from .kuma_assets import DEFAULT_KUMA_DB, load_kuma_service_assets
 
 SECRET_KEYS = {"token", "password", "secret", "api_key", "authorization", "private_key", "cookie", "session"}
 LOW_RISK_COMMANDS = {"uptime", "df -h", "hmn health probe"}
@@ -124,6 +127,79 @@ def _approval_card(approval: ApprovalRequest) -> str:
 
 
 def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
+    def _kuma_service_payloads() -> list[dict[str, Any]]:
+        db_path = Path(os.environ.get("HMN_KUMA_DB", str(DEFAULT_KUMA_DB))).expanduser()
+        assets = load_kuma_service_assets(db_path)
+        return [
+            {
+                "service_id": asset.service_id,
+                "name": asset.name,
+                "node_id": asset.node_id,
+                "kind": asset.kind,
+                "domains": list(asset.domains),
+                "ports": list(asset.ports),
+                "status": asset.status,
+                "monitor_enabled": asset.monitor_enabled,
+                "docs_path": asset.docs_path,
+                "source": asset.source,
+                "business_category": asset.business_category,
+                "asset_class": "business" if asset.asset_category == "main" else asset.asset_category,
+                "asset_category": asset.asset_category,
+                "asset_score": asset.asset_score,
+                "why_asset": list(asset.why_asset),
+                "summary": asset.summary,
+            }
+            for asset in assets
+        ]
+
+    def _service_machine_key(service: dict[str, Any]) -> str:
+        domains = service.get("domains") or []
+        if domains:
+            return str(domains[0])
+        return str(service.get("node_id") or service.get("name") or service.get("service_id") or "unknown")
+
+    def _group_services_by_machine(services: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        machine_map: dict[str, dict[str, Any]] = {}
+        for service in services:
+            machine_key = _service_machine_key(service)
+            machine = machine_map.setdefault(
+                machine_key,
+                {
+                    "machine_id": machine_key,
+                    "service_count": 0,
+                    "business_groups": set(),
+                    "statuses": set(),
+                    "services": [],
+                },
+            )
+            machine["service_count"] += 1
+            machine["business_groups"].add(str(service.get("business_category") or "未分类"))
+            machine["statuses"].add(str(service.get("status") or "unknown"))
+            machine["services"].append(service)
+        return [
+            {
+                "machine_id": machine["machine_id"],
+                "service_count": machine["service_count"],
+                "business_groups": sorted(machine["business_groups"]),
+                "statuses": sorted(machine["statuses"]),
+                "services": sorted(machine["services"], key=lambda item: str(item.get("name") or item.get("service_id") or "")),
+            }
+            for machine in sorted(machine_map.values(), key=lambda item: str(item["machine_id"]))
+        ]
+
+    def _service_card_html(service: dict[str, Any]) -> str:
+        machine_key = _service_machine_key(service)
+        detail_href = f"/services/{quote(str(service['service_id']), safe='')}"
+        machine_href = f"/services/nodes/{quote(machine_key, safe='')}"
+        return (
+            "<div class='card'>"
+            f"<b><a href='{detail_href}'>{escape(str(service['name']))}</a></b> "
+            f"<span class='badge'>{escape(str(service['status']))}</span>"
+            f"<div class='muted'>{escape(str(service['summary']))}</div>"
+            f"<div class='muted'>机器：<a href='{machine_href}'>{escape(machine_key)}</a> · 分组：{escape(str(service['business_category']))}</div>"
+            "</div>"
+        )
+
     def _require_session(request: Request) -> None:
         cookie = request.cookies.get("hmn_web_session")
         if not cookie:
@@ -148,13 +224,13 @@ def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
     @router.get("/", response_class=HTMLResponse, include_in_schema=False)
     def dashboard() -> HTMLResponse:
         nodes = store.list_nodes()
-        services = store.list_service_records()
+        services = _kuma_service_payloads()
         tasks = store.list_tasks()[:6]
         approvals = store.list_approval_requests(status="pending")[:6]
         body = "<h1>HMN 控制台</h1>"
         body += f"<div class='card'>节点 {len(nodes)} · 服务 {len(services)} · 待审批 {len(approvals)} · 任务 {len(store.list_tasks())}</div>"
         body += "<h2>节点</h2>" + "".join(f"<div class='card'><a href='/nodes/{escape(n.node_id)}'>{escape(n.hostname)}</a> <span class='badge'>{escape(n.status)}</span></div>" for n in nodes[:6])
-        body += "<h2>服务</h2>" + "".join(f"<div class='card'><a href='/services/{escape(s.service_id)}'>{escape(s.name)}</a> <span class='muted'>{escape(s.node_id)}</span></div>" for s in services[:6])
+        body += "<h2>服务</h2>" + "".join(f"<div class='card'><a href='/services/{escape(s['service_id'])}'>{escape(s['name'])}</a> <span class='muted'>{escape(s['node_id'])}</span></div>" for s in services[:6])
         body += "<h2>任务</h2>" + "".join(_task_card(t) for t in tasks)
         body += "<h2>审批</h2>" + "".join(_approval_card(a) for a in approvals)
         return html_page("HMN 控制台", body)
@@ -176,71 +252,27 @@ def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
         body += f"<p><a class='btn' href='/tasks/new?node_id={escape(node.node_id)}'>下发任务</a></p>"
         return html_page("节点详情", body)
 
-    def _service_business_category(service) -> str:
-        metadata = service.metadata or {}
-        for key in ("business_category", "business", "category", "biz_category"):
-            value = metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return "未分类"
-
-    def _service_asset_class(service) -> str:
-        if service.source == "system" or service.kind in {"system", "platform", "infra"}:
-            return "system"
-        if service.source == "discovery" or service.status in {"discovered", "pending", "pending_review"}:
-            return "pending"
-        return "business"
-
-    def _service_payload(service) -> dict[str, Any]:
-        business_category = _service_business_category(service)
-        asset_class = _service_asset_class(service)
-        summary = service.name
-        if service.domains:
-            summary += f" · {', '.join(service.domains)}"
-        if service.ports:
-            summary += f" · ports {', '.join(map(str, service.ports))}"
-        return {
-            "service_id": service.service_id,
-            "name": service.name,
-            "node_id": service.node_id,
-            "kind": service.kind,
-            "domains": list(service.domains),
-            "ports": list(service.ports),
-            "status": service.status,
-            "monitor_enabled": service.monitor_enabled,
-            "docs_path": service.docs_path,
-            "source": service.source,
-            "business_category": business_category,
-            "asset_class": asset_class,
-            "summary": summary,
-        }
-
     @router.get("/services", response_class=HTMLResponse, include_in_schema=False)
     def services_page() -> HTMLResponse:
-        services = [_service_payload(service) for service in store.list_service_records()]
-        business_groups: dict[str, list[dict[str, Any]]] = {}
-        pending = []
+        services = _kuma_service_payloads()
         system_assets = []
+        business_services = []
         for service in services:
-            if service["asset_class"] == "pending":
-                pending.append(service)
-            elif service["asset_class"] == "system":
+            if service["asset_class"] == "system":
                 system_assets.append(service)
-            else:
-                business_groups.setdefault(service["business_category"], []).append(service)
-        grouped_html = "".join(
-            "<section class='card'>"
-            f"<h2>{escape(category)}</h2>"
+            elif service["asset_class"] == "business":
+                business_services.append(service)
+        machines = _group_services_by_machine(business_services)
+        machine_html = "<section class='card'><h2>机器视图</h2>" + "".join(
+            "<div class='card'>"
+            f"<b><a href='/services/nodes/{quote(machine['machine_id'], safe='')}'>{escape(str(machine['machine_id']))}</a></b> "
+            f"<span class='badge'>服务 {machine['service_count']}</span>"
             + "".join(
-                f"<div class='card'><b>{escape(item['name'])}</b> <span class='badge'>{escape(item['status'])}</span><div class='muted'>{escape(item['summary'])}</div></div>"
-                for item in group
+                f"<div class='muted'>· {escape(str(item['name']))}</div>"
+                for item in machine["services"][:3]
             )
-            + "</section>"
-            for category, group in sorted(business_groups.items(), key=lambda item: item[0])
-        )
-        pending_html = "<section class='card'><h2>待确认发现项</h2>" + "".join(
-            f"<div class='card'><b>{escape(item['name'])}</b> <span class='badge'>{escape(item['status'])}</span><div class='muted'>{escape(item['summary'])}</div></div>"
-            for item in pending
+            + "</div>"
+            for machine in machines
         ) + "</section>"
         system_html = "<details class='card' open><summary><b>系统资产</b></summary>" + "".join(
             f"<div class='card'><b>{escape(item['name'])}</b> <span class='badge'>{escape(item['status'])}</span><div class='muted'>{escape(item['summary'])}</div></div>"
@@ -258,33 +290,56 @@ def register_web_console(app, store: SQLiteStore, docs_base: Path) -> None:
         }
         payload = {
             "services": services,
-            "business_groups": [
-                {"category": category, "count": len(group), "services": group}
-                for category, group in sorted(business_groups.items(), key=lambda item: item[0])
-            ],
-            "pending_discoveries": pending,
+            "machine_groups": machines,
+            "business_groups": [],
+            "pending_discoveries": [],
             "system_assets": system_assets,
             "sheet": sheet or {},
             "create_dialog": create_dialog,
         }
         body = (
             "<h1>服务资产</h1>"
-            f"<div class='card'>总数 {len(services)} · 业务分组 {len(business_groups)} · 待确认 {len(pending)} · 系统资产 {len(system_assets)}</div>"
+            f"<div class='card'>总数 {len(services)} · 机器 {len(machines)} · 系统资产 {len(system_assets)}</div>"
             f"<div data-services-payload='{escape(json.dumps(payload, ensure_ascii=False))}'></div>"
-            f"{grouped_html}"
-            f"{pending_html}"
+            f"{machine_html}"
             f"{system_html}"
         )
         return html_page("服务资产", body)
 
+    @router.get("/services/nodes/{machine_id:path}", response_class=HTMLResponse, include_in_schema=False)
+    def services_node_detail(machine_id: str) -> HTMLResponse:
+        services = _kuma_service_payloads()
+        target = next(
+            (
+                machine
+                for machine in _group_services_by_machine([service for service in services if service["asset_class"] == "business"])
+                if machine["machine_id"] == machine_id
+            ),
+            None,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="service machine not found")
+        payload = {
+            "machine": target,
+            "services": target["services"],
+        }
+        body = (
+            f"<h1>{escape(str(target['machine_id']))}</h1>"
+            f"<div class='card'>服务 {target['service_count']} · 分组 {escape(' / '.join(target['business_groups']))}</div>"
+            f"<p><a class='btn' href='/services'>返回机器视图</a></p>"
+            f"<div data-services-payload='{escape(json.dumps(payload, ensure_ascii=False))}'></div>"
+            + "".join(_service_card_html(service) for service in target["services"])
+        )
+        return html_page("机器服务详情", body)
+
     @router.get("/services/{service_id}", response_class=HTMLResponse, include_in_schema=False)
     def service_detail(service_id: str) -> HTMLResponse:
-        service = store.load_service_record(service_id)
+        service = next((item for item in _kuma_service_payloads() if item["service_id"] == service_id), None)
         if service is None:
             raise HTTPException(status_code=404, detail="service not found")
-        body = f"<h1>{escape(service.name)}</h1><div class='card'><pre>{escape(json.dumps(redact(service.__dict__), ensure_ascii=False, indent=2, default=str))}</pre></div>"
-        if service.docs_path:
-            body += f"<a class='btn' href='/docs/file/{escape(service.docs_path)}'>打开文档</a>"
+        body = f"<h1>{escape(service['name'])}</h1><div class='card'><pre>{escape(json.dumps(redact(service), ensure_ascii=False, indent=2, default=str))}</pre></div>"
+        if service.get("docs_path"):
+            body += f"<a class='btn' href='/docs/file/{escape(service['docs_path'])}'>打开文档</a>"
         return html_page("服务详情", body)
 
     @router.get("/tasks", response_class=HTMLResponse, include_in_schema=False)
