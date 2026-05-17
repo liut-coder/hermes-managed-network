@@ -20,6 +20,78 @@ need_root() {
   fi
 }
 
+detect_package_manager() {
+  if command -v apt-get >/dev/null 2>&1; then
+    printf 'apt-get'
+    return 0
+  fi
+  if command -v dnf >/dev/null 2>&1; then
+    printf 'dnf'
+    return 0
+  fi
+  if command -v yum >/dev/null 2>&1; then
+    printf 'yum'
+    return 0
+  fi
+  if command -v apk >/dev/null 2>&1; then
+    printf 'apk'
+    return 0
+  fi
+  return 1
+}
+
+install_bootstrap_packages() {
+  local manager="$1"
+  case "$manager" in
+    apt-get)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y curl python3 coreutils
+      ;;
+    dnf)
+      dnf install -y curl python3 coreutils
+      ;;
+    yum)
+      yum install -y curl python3 coreutils
+      ;;
+    apk)
+      apk add --no-cache curl python3 coreutils
+      ;;
+    *)
+      echo "unsupported package manager: $manager" >&2
+      return 1
+      ;;
+  esac
+}
+
+auto_install_missing_commands() {
+  local missing=()
+  local manager
+  local cmd
+  for cmd in curl python3 sha256sum; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+  if [ "${#missing[@]}" -eq 0 ]; then
+    return 0
+  fi
+  manager="$(detect_package_manager || true)"
+  if [ -z "$manager" ]; then
+    echo "missing required commands: ${missing[*]}" >&2
+    echo "unable to auto-install dependencies: no supported package manager found" >&2
+    exit 1
+  fi
+  echo "auto-installing missing bootstrap commands via $manager: ${missing[*]}"
+  install_bootstrap_packages "$manager"
+  for cmd in "${missing[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "missing required command after auto-install: $cmd" >&2
+      exit 1
+    fi
+  done
+}
+
 need_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required command: $1" >&2
@@ -136,6 +208,7 @@ EOF
 
 main() {
   need_root
+  auto_install_missing_commands
   need_command curl
   need_command python3
   need_command sha256sum

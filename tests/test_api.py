@@ -955,6 +955,11 @@ def test_control_plane_serves_join_script(tmp_path):
     assert "HERMES_AUTO_CONFIRM=\"${HERMES_AUTO_CONFIRM:-1}\"" in response.text
     assert "HERMES_AUTO_INSTALL_WORKER=\"${HERMES_AUTO_INSTALL_WORKER:-1}\"" in response.text
     assert "HMN_ENABLE_EXEC=\"${HMN_ENABLE_EXEC:-1}\"" in response.text
+    assert "auto_install_missing_commands" in response.text
+    assert "apt-get install -y curl python3 coreutils" in response.text
+    assert "dnf install -y curl python3 coreutils" in response.text
+    assert "yum install -y curl python3 coreutils" in response.text
+    assert "apk add --no-cache curl python3 coreutils" in response.text
     assert "install_worker" in response.text
     assert "systemctl enable --now hermes-managed-network-heartbeat.timer" in response.text
     assert response.headers["content-type"].startswith("text/x-shellscript")
