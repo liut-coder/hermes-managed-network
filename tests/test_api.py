@@ -950,6 +950,8 @@ def test_control_plane_serves_join_script(tmp_path):
 
     assert response.status_code == 200
     assert "HERMES_JOIN_TOKEN" in response.text
+    assert "HMN_MASTER_URL" in response.text
+    assert "HERMES_MASTER_URL=\"$HMN_MASTER_URL\"" in response.text
     assert "HERMES_AUTO_CONFIRM=\"${HERMES_AUTO_CONFIRM:-1}\"" in response.text
     assert "HERMES_AUTO_INSTALL_WORKER=\"${HERMES_AUTO_INSTALL_WORKER:-1}\"" in response.text
     assert "HMN_ENABLE_EXEC=\"${HMN_ENABLE_EXEC:-1}\"" in response.text

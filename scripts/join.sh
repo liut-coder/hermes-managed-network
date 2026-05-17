@@ -2,6 +2,9 @@
 set -euo pipefail
 
 : "${HERMES_JOIN_TOKEN:?HERMES_JOIN_TOKEN is required}"
+if [ -z "${HERMES_MASTER_URL:-}" ] && [ -n "${HMN_MASTER_URL:-}" ]; then
+  HERMES_MASTER_URL="$HMN_MASTER_URL"
+fi
 : "${HERMES_MASTER_URL:?HERMES_MASTER_URL is required}"
 
 HERMES_USER="${HERMES_USER:-hermes}"
